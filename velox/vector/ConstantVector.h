@@ -33,6 +33,7 @@ struct DummyReleaser {
 };
 } // namespace
 
+// `valueVector_` or just a `value_` or even just a `isNull_`.
 template <typename T>
 class ConstantVector final : public SimpleVector<T> {
  public:

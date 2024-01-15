@@ -23,6 +23,7 @@
 #include "velox/vector/FlatVector.h"
 
 namespace facebook::velox::exec {
+// 我觉得你是真的牛批, 直接写了两个 StringWriter, 一个是 reuseInput, 一个是不 reuseInput.
 template <bool reuseInput = false>
 class StringWriter;
 

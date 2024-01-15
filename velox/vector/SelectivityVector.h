@@ -36,6 +36,8 @@ namespace velox {
 // importantly not ever having to re-layout the physical data. Further the
 // SelectivityVector can be used to optimize filtering by skipping elements
 // that where previously filtered by another filter / column
+//
+// 这里的形式还是个 bitset
 class SelectivityVector {
  public:
   SelectivityVector() {}

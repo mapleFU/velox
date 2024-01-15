@@ -32,6 +32,9 @@ class ExprSet;
 class EvalCtx;
 
 // Superclass for functions which are written to run on whole vectors.
+//
+// VectorFunction 的实现, 它不同于 arrow 的 Scalar 和 Vector. 任何 arrow 中的
+// Scalar 对他来说都是 Vector function.
 class VectorFunction {
  public:
   virtual ~VectorFunction() = default;
@@ -52,6 +55,9 @@ class VectorFunction {
   /// see a null row in any of the arguments. They can safely assume that there
   /// are no nulls in any of the arguments in specified positions.
   ///
+  /// 对单参数函数的输入做了优化，如果 isDefaultNull 的话，下面不需要处理 Null Input, 当然多
+  /// 参数也做了优化，那是真的牛逼.
+  ///
   /// If context.isFinalSelection() is false, the result may have been
   /// partially populated for the positions not specified in rows. The function
   /// must take care not to overwrite these values. This happens when evaluating
@@ -64,6 +70,9 @@ class VectorFunction {
   /// Use context.isFinalSelection() to determine whether partially populated
   /// results must be preserved or not.
   ///
+  /// 还有个输出到 Result 中的问题,
+  /// `if(a = 1, f(b), g(c))` 的时候 `f(b)` 不一定能完全输入到 Result 中.
+  ///
   /// If 'result' is not null, it can be dictionary, constant or sequence
   /// encoded and therefore may be read-only. Call BaseVector::ensureWritable
   /// before writing into the "result", e.g.
@@ -75,6 +84,9 @@ class VectorFunction {
   /// BaseVector::create or reuse memory of its argument(s). Memory reuse is
   /// safe if the function returns its argument unmodified or the argument and
   /// its contents are uniquely referenced.
+  ///
+  /// TODO(mwish): 协议上 Velox 可以 reuse input. 如果不是 FinalSelection,
+  ///  那么 result 可以来自 writable 的输入吗？
   virtual void apply(
       const SelectivityVector& rows,
       std::vector<VectorPtr>& args, // Not using const ref so we can reuse args
@@ -89,6 +101,8 @@ class VectorFunction {
   // Returns true if null in any argument always produces null result.
   // In this case, "rows" in "apply" will point only to positions for
   // which all arguments are not null.
+  //
+  // NULL 输入 -> 输出 NULL 就是 defaultNull behavior.
   virtual bool isDefaultNullBehavior() const {
     return true;
   }
@@ -104,17 +118,23 @@ class VectorFunction {
   // The evaluation engine will scan and set the string encoding of the
   // specified input arguments when presented if their type is VARCHAR before
   // applying the function
+  //
+  // TODO(mwish): 啊？
   virtual std::vector<size_t> ensureStringEncodingSetAt() const {
     return {};
   }
 
   // Same as ensureStringEncodingSetAt but for all string inputs
+  //
+  // TODO(mwish): 等价于 input 那个 ascii 的 Flag, 是否是 ascii 特化处理的?
   virtual bool ensureStringEncodingSetAtAllInputs() const {
     return false;
   }
 
   // If set, the string encoding of the results will be set by propagating
   // the string encoding from all provided string inputs.
+  //
+  // is_default_ascii2
   virtual bool propagateStringEncodingFromAllInputs() const {
     return false;
   }
@@ -123,6 +143,8 @@ class VectorFunction {
   // the specified inputs string encodings if presented.
   // If one of the specified inputs have its encoding not determined, the
   // encoding of the result is not determined.
+  //
+  //
   virtual std::optional<std::vector<size_t>> propagateStringEncodingFrom()
       const {
     return std::nullopt;

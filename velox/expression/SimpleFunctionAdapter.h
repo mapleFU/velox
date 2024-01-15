@@ -62,6 +62,7 @@ struct udf_reuse_strings_from_arg<
     util::detail::void_t<decltype(T::reuse_strings_from_arg)>>
     : std::integral_constant<int32_t, T::reuse_strings_from_arg> {};
 
+/// 返回一个 VectorFunction
 template <typename FUNC>
 class SimpleFunctionAdapter : public VectorFunction {
   using T = typename FUNC::exec_return_type;
@@ -78,11 +79,15 @@ class SimpleFunctionAdapter : public VectorFunction {
   std::unique_ptr<FUNC> fn_;
 
   // Whether the return type for this UDF allows for fast path iteration.
+  //
+  // 返回值 Primitive + 定长 (String 也是 Primitive?)
   static constexpr bool fastPathIteration =
       return_type_traits::isPrimitiveType && return_type_traits::isFixedWidth;
 
   // Check that the argument at POSITION is a primitive type, that is not
   // boolean.
+  //
+  // Kth 参数是不是非 Boolean 的 Primitive
   template <int32_t POSITION>
   static constexpr bool isArgFlatConstantFastPathEligible =
       SimpleTypeTrait<arg_at<POSITION>>::isPrimitiveType&&
@@ -121,11 +126,13 @@ class SimpleFunctionAdapter : public VectorFunction {
       std::index_sequence<Is...>) const {
     return ([&]() {
       if constexpr (isVariadicType<arg_at<Is>>::value) {
+        // Variadic -> Flat/Constant
         return true;
       } else if constexpr (!isArgFlatConstantFastPathEligible<Is>) {
         return true; // We only want to check the encodings of primtive
                      // arguments if any exists.
       } else {
+        // Flat/Constant.
         return args[Is]->isFlatEncoding() || args[Is]->isConstantEncoding();
       }
     }() && ...);
@@ -151,6 +158,9 @@ class SimpleFunctionAdapter : public VectorFunction {
   /// When true, a fast path for each possible combination of encodings will be
   /// used for reading arguments when all arguments are flat or constant
   /// primitivies.
+  ///
+  /// https://velox-lib.io/blog/simple-functions-1
+  /// 参考: `To avoid code size blowing` 这一段.
   static constexpr bool specializeForAllEncodings = FUNC::num_args <= 3;
 
   /// If the initialize() method provided by functions throw, we don't (can't)
@@ -162,6 +172,8 @@ class SimpleFunctionAdapter : public VectorFunction {
   /// throw on initialize(). If we throw immediately on initialize() and p1 is
   /// composed only of nulls, the expected behavior would be to optimize this
   /// function out and return null, not to throw.
+  ///
+  /// 把 Initialization 的 throw delegate 到执行层.
   std::exception_ptr initializeException_;
 
   struct ApplyContext {
@@ -175,11 +187,14 @@ class SimpleFunctionAdapter : public VectorFunction {
       // If we're reusing the input, we've already checked that the vector
       // is unique, as is nulls.  We also know the size of the vector is
       // at least as large as the size of rows.
+      //
+      // 如果是 result 就不用重复 check 了.
       if (!isResultReused) {
         context.ensureWritable(*rows, outputType, _result);
       }
       result = reinterpret_cast<result_vector_t*>(_result.get());
 
+      // 初始化 ResultWriter. TODO(mwish): 我感觉即使 zero-copy String 字符串也 copy 了啊！
       if constexpr (return_type_traits::isPrimitiveType) {
         // Avoid checking mutability during initialization.
         // EnsureWritable gurantees uniqueness and mutability hence if
@@ -249,11 +264,17 @@ class SimpleFunctionAdapter : public VectorFunction {
       typename std::enable_if_t<POSITION<FUNC::num_args, int32_t> = 0>
           VectorPtr* findReusableArg(std::vector<VectorPtr>& args) const {
     if constexpr (isVariadicType<arg_at<POSITION>>::value) {
+      // 对 variadic, 在整个后面找, 因为后面都是这个 s.b. 类型了.
       if constexpr (
           SimpleTypeTrait<
               typename arg_at<POSITION>::underlying_type>::typeKind ==
           return_type_traits::typeKind) {
-        for (auto i = POSITION; i < args.size(); i++) {
+        for (auto i = POSITION; i < args.size(); ++i) {
+          // 这个地方我其实没明白为啥这里 `isVectorWritable` 就行,
+          // 下面的得 `isFlatEncoding` + `unique` + `isWritable`.
+          //
+          // 难道这个地方隐含了？我日你妈的：
+          // https://github.com/facebookincubator/velox/pull/2558
           if (BaseVector::isVectorWritable(args[i])) {
             return &args[i];
           }
@@ -265,6 +286,7 @@ class SimpleFunctionAdapter : public VectorFunction {
     } else if constexpr (
         SimpleTypeTrait<arg_at<POSITION>>::typeKind ==
         return_type_traits::typeKind) {
+      // 否则，只在自己这个上面寻找.
       using type =
           typename VectorExec::template resolver<arg_at<POSITION>>::in_type;
       if (args[POSITION]->isFlatEncoding() && args[POSITION].unique() &&
@@ -292,7 +314,8 @@ class SimpleFunctionAdapter : public VectorFunction {
       std::vector<VectorPtr>& args,
       const TypePtr& outputType,
       EvalCtx& context,
-      VectorPtr& result) const override {
+      VectorPtr& result/*result 可以是 nullptr*/) const override {
+
     auto* reusableResult = &result;
     // If result is null, check if one of the arguments can be re-used for
     // storing the result. This is possible if all the following conditions are
@@ -308,7 +331,8 @@ class SimpleFunctionAdapter : public VectorFunction {
         !FUNC::can_produce_null_output && !FUNC::udf_has_callNullFree &&
         return_type_traits::isPrimitiveType &&
         return_type_traits::isFixedWidth) {
-      if (!reusableResult->get()) {
+      // 输入是 NULL 的时候才能使用.
+      if (!reusableResult->get())
         if (auto* arg = findReusableArg<0>(args)) {
           reusableResult = arg;
           isResultReused = true;
@@ -322,6 +346,7 @@ class SimpleFunctionAdapter : public VectorFunction {
     // If the function provides an initialize() method and it threw, we set that
     // exception in all active rows and we're done with it.
     if constexpr (FUNC::udf_has_initialize) {
+      // 处理 Init 的异常.
       if (UNLIKELY(initializeException_ != nullptr)) {
         applyContext.context.setErrors(
             *applyContext.rows, initializeException_);
@@ -349,10 +374,15 @@ class SimpleFunctionAdapter : public VectorFunction {
       }
     }
 
+    // 系统的 DecodedVector
     std::vector<std::optional<LocalDecodedVector>> decoded;
+    // 允许执行并且参数数量小于一定限制的话, 就根据类型去 unpack.
+    // 见: https://velox-lib.io/blog/simple-functions-1
+    // 参考: `To avoid code size blowing` 这一段.
     if (allPrimitiveArgsFlatConstant(args)) {
       if constexpr (
           allArgsFlatConstantFastPathEligible() && specializeForAllEncodings) {
+        // 根据类型做展开然后分发
         unpackSpecializeForAllEncodings<0>(applyContext, args);
       } else {
         decoded.resize(args.size());
@@ -396,6 +426,8 @@ class SimpleFunctionAdapter : public VectorFunction {
 
   // All string vectors within `vector` will acquire shared ownership of all
   // string buffers found within source.
+  //
+  // 把 SOURCE 的 StringBuffer 拿到 BufferPtr, 然后设置 ref
   void tryAcquireStringBuffer(BaseVector* vector, const BaseVector* source)
       const {
     if (auto* flatVector = vector->asFlatVector<StringView>()) {
@@ -474,6 +506,7 @@ class SimpleFunctionAdapter : public VectorFunction {
       using type =
           typename VectorExec::template resolver<arg_at<POSITION>>::in_type;
       if (arg->isConstantEncoding()) {
+        // 展开成 constant reader, 然后继续 delegate 下去
         auto reader = ConstantVectorReader<arg_at<POSITION>>(
             *(arg->asUnchecked<ConstantVector<type>>()));
         unpackSpecializeForAllEncodings<POSITION + 1>(
@@ -490,6 +523,7 @@ class SimpleFunctionAdapter : public VectorFunction {
     }
   }
 
+  // 不用类型分发, 只是用 DecodedVector 来处理这块的逻辑，可能有一定的性能损失.
   template <
       int32_t POSITION,
       bool allPrimitiveArgsFlatConstant,
@@ -543,9 +577,11 @@ class SimpleFunctionAdapter : public VectorFunction {
     }
   }
 
+  // 具体执行的函数，手握所有的 ColumnReader. 然后去生成(行式)执行的代码.
   template <typename... TReader>
   void iterate(ApplyContext& applyContext, TReader&... readers) const {
     // If udf_has_callNullFree is true compute mayHaveNullsRecursive.
+    // 开洞, 不过这玩意好像没啥意思, 感觉有的 NULL 在 Expr 执行的时候甚至不会分发下来
     if constexpr (FUNC::udf_has_callNullFree) {
       (
           [&]() {
@@ -561,10 +597,15 @@ class SimpleFunctionAdapter : public VectorFunction {
     // If !is_default_contains_nulls_behavior we don't invoke callNullFree
     // if the inputs contain any nulls, but rather invoke call or
     // callNullable as usual.
+    //
+    // 1. defaultNull: Expr 系统不会传 Null 下来
+    // 2. callNullFree: Expr 系统会已经判断都是 Null
+    // 3. mayHaveNullsRecursive: 有 Null 啊，得执行了（
     bool callNullFree = FUNC::is_default_contains_nulls_behavior ||
         (FUNC::udf_has_callNullFree && !applyContext.mayHaveNullsRecursive);
 
     // Compute allNotNull.
+    // 计算是否所有输入都是 NotNull
     bool allNotNull;
     if constexpr (FUNC::is_default_null_behavior) {
       allNotNull = true;
@@ -575,6 +616,7 @@ class SimpleFunctionAdapter : public VectorFunction {
     // Iterate the rows.
     if constexpr (fastPathIteration) {
       uint64_t* nullBuffer = nullptr;
+      // 干脆叫 getRawResultData 吧，你们起名字没人 review 吗？
       auto getRawData = [&]() {
         if constexpr (return_type_traits::typeKind == TypeKind::BOOLEAN) {
           return applyContext.result->mutableRawValues();
@@ -585,6 +627,10 @@ class SimpleFunctionAdapter : public VectorFunction {
       };
 
       auto* data = getRawData();
+      // 写入单个 Result.
+      // row: rowId
+      // notNull: out isNull
+      // out: 输出的类型.
       auto writeResult = [&applyContext, &nullBuffer, &data](
                              auto row, bool notNull, auto out) INLINE_LAMBDA {
         // For fast path iteration, all active rows were already set as
@@ -604,6 +650,9 @@ class SimpleFunctionAdapter : public VectorFunction {
         }
       };
       if (callNullFree) {
+        // TODO(mwish): 其实我真不懂这个咋回事. 感觉这个 mayHaveNullsRecursive 只有输入只有
+        //  defaultNull 才可能吧...可能出现这个情况吗?
+        //
         // This results in some code duplication, but applying this check
         // once per batch instead of once per row shows a significant
         // performance improvement when there are no nulls.
@@ -622,6 +671,7 @@ class SimpleFunctionAdapter : public VectorFunction {
             writeResult(row, notNull, out);
           });
         } else {
+          // 没有 Null, 按照 Selector 执行.
           applyContext.applyToSelectedNoThrow([&](auto row) INLINE_LAMBDA {
             typename return_type_traits::NativeType out{};
             bool notNull = doApplyNullFree<0>(row, out, readers...);
@@ -630,6 +680,8 @@ class SimpleFunctionAdapter : public VectorFunction {
           });
         }
       } else if (allNotNull) {
+        // TODO(mwish): callNullFree 应该只有输入不包含 string 的时候才会执行, 因为
+        //  那部分代码没处理 string 和 ascii 有关的逻辑.
         if constexpr (FUNC::has_ascii) {
           if (applyContext.allAscii) {
             applyContext.applyToSelectedNoThrow([&](auto row) INLINE_LAMBDA {
@@ -888,6 +940,7 @@ class SimpleFunctionAdapter : public VectorFunction {
   }
 };
 
+// SimpleFunction 注册函数
 template <typename UDFHolder>
 class SimpleFunctionAdapterFactoryImpl : public SimpleFunctionAdapterFactory {
  public:

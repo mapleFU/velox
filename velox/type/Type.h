@@ -399,6 +399,7 @@ enum class TypeParameterKind {
   kLongLiteral,
 };
 
+// 把 Decimal/Timestamp 的参数之类的封装成 TypeParameter.
 struct TypeParameter {
   const TypeParameterKind kind;
 
@@ -727,6 +728,7 @@ class DecimalType : public ScalarType<KIND> {
   }
 
  private:
+  // 可能有多个, 比如 DECIMAL(10, 2) 有两个参数, Precision 和 Scale.
   const std::vector<TypeParameter> parameters_;
 };
 

@@ -469,6 +469,13 @@ class Expr {
   /// the results of prior evaluations. That logic is implemented in
   /// 'evaluateSharedSubexpr'.
   bool shouldEvaluateSharedSubexp() const {
+    // 需要是:
+    // 1. deterministic
+    // 2. 被多个表达式依赖
+    // 3. 有 input? --> 这个地方其实我不是完全理解. 如果不是的话(类似一个常量),
+    //    会怎么处理??? 注释里说是 -> (i.e. not a constant or field access expression)
+    //
+    // 这个还是看算子树的情况
     return deterministic_ && isMultiplyReferenced_ && !inputs_.empty();
   }
 
@@ -587,14 +594,22 @@ class Expr {
 
   // True if a null in any of 'distinctFields_' causes 'this' to be
   // null for the row.
+  //
+  // Boolean indicating whether a null in any of the input columns causes
+  // this expression to always return null for the row.
+  //
+  // 处理 Null 的行为，方便进行 fast null check.
   bool propagatesNulls_ = false;
 
   // True if this and all children are deterministic.
   bool deterministic_ = true;
 
   // True if this or a sub-expression is an IF, AND or OR.
+  //
+  // Conditionals 可能两边都要处理?
   bool hasConditionals_ = false;
 
+  // 被多个表达式依赖
   bool isMultiplyReferenced_ = false;
 
   std::vector<VectorPtr> inputValues_;
@@ -624,13 +639,19 @@ class Expr {
   // Number of times currently held cacheable vector is seen for a non-first
   // time. Is reset everytime 'baseOfDictionaryRawPtr_' is different from the
   // current input's base.
+  //
+  // 这部分的逻辑应该是 Dictionary Reuse?
   int baseOfDictionaryRepeats_ = 0;
 
   // Values computed for the base dictionary, 1:1 to the positions in
   // 'baseOfDictionaryRawPtr_'.
+  //
+  // 这个是 dict 的父亲? 比如 Filter 的 Dictionary? 还是
   VectorPtr dictionaryCache_;
 
   // The indices that are valid in 'dictionaryCache_'.
+  //
+  // 本身包含在 Dictionary Cache 里面
   std::unique_ptr<SelectivityVector> cachedDictionaryIndices_;
 
   /// Runtime statistics. CPU time, wall time and number of processed rows.
