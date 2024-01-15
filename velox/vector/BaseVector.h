@@ -181,6 +181,8 @@ class BaseVector {
   /// logical representation while maintaining the same physical type.
   /// Additionally, note that the caller must ensure that this vector is not
   /// shared, i.e. singly-referenced.
+  ///
+  /// 变换对应的物理类型
   virtual void setType(const TypePtr& type) {
     VELOX_CHECK_NOT_NULL(type);
     VELOX_CHECK(
@@ -199,6 +201,8 @@ class BaseVector {
    * Returns a smart pointer to the null bitmap data for this
    * vector. May hold nullptr if there are no nulls. Not const because
    * some vectors may generate this on first access.
+   *
+   * Nulls 和 Selectivity 竟然不是一个东西，我操了
    */
   const BufferPtr& nulls() const {
     return nulls_;
@@ -371,6 +375,8 @@ class BaseVector {
 
   // Returns the scalar or complex vector wrapped inside any nesting of
   // dictionary, sequence or constant vectors.
+  //
+  // Dictionary -> 返回
   virtual const BaseVector* wrappedVector() const {
     return this;
   }

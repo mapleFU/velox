@@ -34,6 +34,9 @@ class PeeledEncoding;
 
 // Context for holding the base row vector, error state and various
 // flags for Expr interpreter.
+//
+// ExecCtx 对 <RowVector, ExprSet> 的包装, 因为和 rows 有关, 所以也写了很多数据本身
+// 的属性, 比如 flatNoNulls 什么的.
 class EvalCtx {
  public:
   EvalCtx(
@@ -212,6 +215,9 @@ class EvalCtx {
   // complete, e.g. we are currently not under an IF where expressions are
   // evaluated only on a subset of rows which either passed the condition
   // ("then" branch) or not ("else" branch).
+  //
+  // 这个是 if/else 有关的逻辑, 也就是说, 如果是 if/else, 那么 isFinalSelection
+  // 中间的可能还不是 Final Selection.
   bool isFinalSelection() const {
     return isFinalSelection_;
   }
@@ -365,6 +371,8 @@ class EvalCtx {
   // Stores exception found during expression evaluation. Exceptions are stored
   // in a opaque flat vector, which will translate to a
   // std::shared_ptr<std::exception_ptr>.
+  //
+  // 执行的时候，要么 ThrowOnError, 要么在这里标注?
   ErrorVectorPtr errors_;
 };
 
@@ -435,6 +443,8 @@ class LocalSelectivityVector {
  public:
   // Grab an instance of a SelectivityVector from the pool and resize it to
   // specified size.
+  //
+  // 申请一个本地的 selectivity vector
   LocalSelectivityVector(EvalCtx& context, vector_size_t size)
       : context_(*context.execCtx()),
         vector_(context_.getSelectivityVector(size)) {}
@@ -560,13 +570,8 @@ class LocalDecodedVector {
     get()->decode(vector, rows, loadLazy);
   }
 
-  LocalDecodedVector(LocalDecodedVector&& other) noexcept
-      : context_{other.context_}, vector_{std::move(other.vector_)} {}
-
-  void operator=(LocalDecodedVector&& other) {
-    context_ = other.context_;
-    vector_ = std::move(other.vector_);
-  }
+  LocalDecodedVector(LocalDecodedVector&& other) noexcept = default;
+  LocalDecodedVector& operator=(LocalDecodedVector&& other) noexcept = default;
 
   ~LocalDecodedVector() {
     if (vector_) {
@@ -576,6 +581,7 @@ class LocalDecodedVector {
 
   DecodedVector* FOLLY_NONNULL get() {
     if (!vector_) {
+      // 从池子里拿到 DecodedVector.
       vector_ = context_.get().getDecodedVector();
     }
     return vector_.get();

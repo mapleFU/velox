@@ -125,6 +125,7 @@ struct SubstrFunction {
         stringCore::getByteRange<isAscii>(input.data(), start, length);
 
     // Generating output string
+    // 我日你妈的，要自己设置 setNoCopy, 你这个文档写你妈的呢
     result.setNoCopy(StringView(
         input.data() + byteRange.first, byteRange.second - byteRange.first));
   }

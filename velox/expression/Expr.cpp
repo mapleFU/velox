@@ -236,6 +236,8 @@ void Expr::computeMetadata() {
   // (1) Compute deterministic_.
   // An expression is deterministic if it is a deterministic function call or a
   // special form, and all its inputs are also deterministic.
+  //
+  // TODO(mwish): special form 一定是 deterministic 的? 组册自身属性
   if (vectorFunction_) {
     deterministic_ = vectorFunction_->isDeterministic();
   } else {
@@ -752,10 +754,13 @@ void Expr::evalFlatNoNullsImpl(
   }
 
   if (isSpecialForm()) {
+    // If, And, Or 之类的洞都是 special case.
     evalSpecialFormWithStats(rows, context, result);
     return;
   }
 
+  // Prepare Input
+  // 这个地方 constantInput 还不是 inputValues_ 😅，我操了
   inputValues_.resize(inputs_.size());
   for (int32_t i = 0; i < inputs_.size(); ++i) {
     if (constantInputs_[i]) {
@@ -764,10 +769,13 @@ void Expr::evalFlatNoNullsImpl(
       inputValues_[i] = std::move(constantInputs_[i]);
       inputValues_[i]->resize(rows.end());
     } else {
+      // 这个地方是说 inputValues_ 里面的值是不是 constant 的.
+      // 这个时候需要通过 eval 来拿到值
       inputs_[i]->evalFlatNoNulls(rows, context, inputValues_[i]);
     }
   }
 
+  // Apply VectorFunction
   applyFunction(rows, context, result);
 
   // Move constant values back to constantInputs_.
@@ -777,6 +785,8 @@ void Expr::evalFlatNoNullsImpl(
       VELOX_CHECK_NULL(inputValues_[i]);
     }
   }
+
+  // 处理掉非 Const 的 Input Value.
   releaseInputValues(context);
 }
 
@@ -1158,6 +1168,7 @@ void Expr::evalWithNulls(
       }
     }
 
+    // 这个是查询的 sv 上下文吗
     if (mayHaveNulls) {
       LocalSelectivityVector nonNullHolder(context);
       if (removeSureNulls(rows, context, nonNullHolder)) {
@@ -1180,6 +1191,8 @@ void Expr::evalWithNulls(
 // be memory intensive. Therefore in order to reduce this consumption and ensure
 // it is only employed for cases where it can be useful, it only starts caching
 // result after it encounters the same base at least twice.
+//
+// 复用上层的 dictionary.
 void Expr::evalWithMemo(
     const SelectivityVector& rows,
     EvalCtx& context,
@@ -1503,11 +1516,12 @@ void Expr::applyFunction(
   auto timer = cpuWallTimer();
 
   computeIsAsciiForInputs(vectorFunction_.get(), inputValues_, rows);
-  auto isAscii = type()->isVarchar()
+  std::optional<bool> isAscii = type()->isVarchar()
       ? computeIsAsciiForResult(vectorFunction_.get(), inputValues_, rows)
       : std::nullopt;
 
   try {
+    // 从 inputValues_ 里头拿到对应的 result.
     vectorFunction_->apply(rows, inputValues_, type(), context, result);
   } catch (const VeloxException& ve) {
     throw;
@@ -1550,6 +1564,7 @@ void Expr::evalSpecialFormWithStats(
   stats_.numProcessedRows += rows.countSelected();
   auto timer = cpuWallTimer();
 
+  // TODO(mwish): 为什么 evalSpecialForm 是个特殊函数呢?
   evalSpecialForm(rows, context, result);
 }
 

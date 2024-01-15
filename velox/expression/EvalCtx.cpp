@@ -66,6 +66,7 @@ EvalCtx::EvalCtx(core::ExecCtx* execCtx)
   VELOX_CHECK_NOT_NULL(execCtx);
 }
 
+// TODO(mwish): 切换执行的上下文? 我现在应该不会 touch 到这个?
 void EvalCtx::saveAndReset(ContextSaver& saver, const SelectivityVector& rows) {
   if (saver.context) {
     return;

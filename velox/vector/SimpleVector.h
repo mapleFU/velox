@@ -258,7 +258,7 @@ class SimpleVector : public BaseVector {
   /// This function takes an index and returns:
   /// 1. True if the string at that index is ASCII
   /// 2. False if the string at that index is not ASCII
-  /// 3. std::nullopt if we havent computed ASCII'ness at that index.
+  /// 3. std::nullopt if we haven’t computed ASCII'ness at that index.
   template <typename U = T>
   typename std::enable_if_t<std::is_same_v<U, StringView>, std::optional<bool>>
   isAscii(vector_size_t index) const {
@@ -309,7 +309,7 @@ class SimpleVector : public BaseVector {
     asciiInfo.setIsAllAscii(false);
   }
 
-  /// Explicitly set asciness.
+  /// Explicitly set ascii-ness.
   template <typename U = T>
   typename std::enable_if_t<std::is_same_v<U, StringView>, void> setIsAscii(
       bool ascii,
@@ -434,6 +434,7 @@ class SimpleVector : public BaseVector {
   // FlatVector<StringView> makes buffer overruns.
   const uint8_t elementSize_;
 
+  // 自身 Ascii 相关的信息
   std::conditional_t<std::is_same_v<T, StringView>, AsciiInfo, int> asciiInfo;
   SimpleVectorStats<T> stats_;
 };
