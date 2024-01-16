@@ -188,13 +188,13 @@ class SimpleFunctionAdapter : public VectorFunction {
       // is unique, as is nulls.  We also know the size of the vector is
       // at least as large as the size of rows.
       //
-      // 如果是 result 就不用重复 check 了.
+      // 如果是 result 就不用重复 check 了.(但我觉得你们)
       if (!isResultReused) {
         context.ensureWritable(*rows, outputType, _result);
       }
       result = reinterpret_cast<result_vector_t*>(_result.get());
 
-      // 初始化 ResultWriter. TODO(mwish): 我感觉即使 zero-copy String 字符串也 copy 了啊！
+      // 初始化 ResultWriter. 这里 zero-copy 实现交付给用户了.
       if constexpr (return_type_traits::isPrimitiveType) {
         // Avoid checking mutability during initialization.
         // EnsureWritable gurantees uniqueness and mutability hence if
@@ -326,6 +326,10 @@ class SimpleFunctionAdapter : public VectorFunction {
     // - the argument has flat encoding,
     // - the argument is singly-referenced and has singly-referenced values
     // and nulls buffers.
+    //
+    // 这个要输出不是 Null 才行，为什么呢? 这块在计算的时候, 对于 producing Null
+    // 的结果, 会 clearAllNulls:
+    // 见 https://github.com/facebookincubator/velox/pull/1521
     bool isResultReused = false;
     if constexpr (
         !FUNC::can_produce_null_output && !FUNC::udf_has_callNullFree &&
@@ -356,6 +360,8 @@ class SimpleFunctionAdapter : public VectorFunction {
 
     // Enable fast all-ASCII path if all string inputs are ASCII and the
     // function provides ASCII-only path.
+    //
+    // 检查 Args 是否都是 ASCII 的.
     if constexpr (FUNC::has_ascii) {
       applyContext.allAscii = isAsciiArgs(rows, args);
     }
@@ -369,6 +375,8 @@ class SimpleFunctionAdapter : public VectorFunction {
       // If result is resuing one of the inputs we do not clear nulls, instead
       // we do that after the the input is read. It is safe because reuse only
       // happens when the function does not generate null.
+      //
+      // 如果 result 是重用的，那么就不用 clearNulls 了.
       if (!isResultReused) {
         (*reusableResult)->clearNulls(rows);
       }
@@ -405,6 +413,8 @@ class SimpleFunctionAdapter : public VectorFunction {
 
     // Check if the function reuses input strings for the result, and add
     // references to input string buffers to all result vectors.
+    //
+    // String 由 UDF 自己处理, 框架只负责把 BufferPtr 传递下去.
     auto reuseStringsFromArg = reuseStringsFromArgValue();
     if (reuseStringsFromArg >= 0) {
       VELOX_CHECK_LT(reuseStringsFromArg, args.size());
@@ -580,6 +590,11 @@ class SimpleFunctionAdapter : public VectorFunction {
   // 具体执行的函数，手握所有的 ColumnReader. 然后去生成(行式)执行的代码.
   template <typename... TReader>
   void iterate(ApplyContext& applyContext, TReader&... readers) const {
+    // Null 的行为这里涉及好几个定义:
+    // 1. `callNullable`: 没有定义这个函数为 default, 即输入为 NULL -> 输出为 NULL.
+    //    callNullable 处理
+    // 2. `callNullFree`: 定义了这个函数, 即没有任何 NULL 的时候进行快速 path.
+    //
     // If udf_has_callNullFree is true compute mayHaveNullsRecursive.
     // 开洞, 不过这玩意好像没啥意思, 感觉有的 NULL 在 Expr 执行的时候甚至不会分发下来
     if constexpr (FUNC::udf_has_callNullFree) {
@@ -599,13 +614,15 @@ class SimpleFunctionAdapter : public VectorFunction {
     // callNullable as usual.
     //
     // 1. defaultNull: Expr 系统不会传 Null 下来
-    // 2. callNullFree: Expr 系统会已经判断都是 Null
-    // 3. mayHaveNullsRecursive: 有 Null 啊，得执行了（
+    // 2. has_callNullFree: 有 nullFree 的函数的定义
+    // 3. mayHaveNullsRecursive: 有 Null 啊，得执行了
+    //
+    // 这里是: "Expr 系统不会传 Null 下来" || ("有 nullFree 的函数的定义" && "输入不包含任何 null")
     bool callNullFree = FUNC::is_default_contains_nulls_behavior ||
         (FUNC::udf_has_callNullFree && !applyContext.mayHaveNullsRecursive);
 
     // Compute allNotNull.
-    // 计算是否所有输入都是 NotNull
+    // 计算是否所有输入都是 NotNull, 和上面 callNullFree 有一定重合部分.
     bool allNotNull;
     if constexpr (FUNC::is_default_null_behavior) {
       allNotNull = true;

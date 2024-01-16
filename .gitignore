@@ -320,3 +320,15 @@ src/amalgamation/
 #docs
 velox/docs/sphinx/source/README_generated_*
 velox/docs/bindings/python/_generate/*
+
+# 3rd
+bld/
+third_party/
+folly/
+.cache
+folly/
+range-v3/
+fmt/
+cmake-build-*
+re2/
+double-conversion/

@@ -68,6 +68,8 @@ struct udf_help<T, util::detail::void_t<decltype(T::help)>> {
 
 // Has the value true, unless a Variadic Type appears anywhere but at the end
 // of the parameters.
+//
+// VaArgs 的实现. 负责判断这里的 validity. 即内部不能包含 Variadic.
 template <typename... TArgs>
 struct ValidateVariadicArgs {
   using arg_types = std::tuple<TArgs...>;
@@ -80,6 +82,7 @@ struct ValidateVariadicArgs {
     if constexpr (POSITION >= num_args - 1) {
       return true;
     } else {
+      // 里面不能包含 Variadic.
       return !isVariadicType<arg_at<POSITION>>::value &&
           isValidArg<POSITION + 1, Args...>();
     }
@@ -554,6 +557,7 @@ class UDFHolder final
       void,
       exec_return_type,
       const exec_arg_type<TArgs>&...>::value;
+  // 有最基础的 `call` 方法.
   static constexpr bool udf_has_call =
       udf_has_call_return_bool | udf_has_call_return_void;
   static_assert(
@@ -661,9 +665,12 @@ class UDFHolder final
   // callNullable. In this case if any input is NULL or any complex type in
   // the input contains a NULL element (recursively) the function will return
   // NULL directly, skipping evaluation.
+  //
+  // 没有 call, 也没有 callNullable( implicit 推导 -> 但是有 callNullFree. )
   static constexpr bool is_default_contains_nulls_behavior =
       !udf_has_call && !udf_has_callNullable;
   static constexpr bool has_ascii = udf_has_callAscii;
+  // Default ASCII: ascii input -> ascii output.
   static constexpr bool is_default_ascii_behavior =
       udf_is_default_ascii_behavior<Fun>();
 
@@ -694,12 +701,17 @@ class UDFHolder final
     }
   }
 
+  // (我去, 原来 call 也是包装出来的.)
+  // 包装了 call/callNullable.
   FOLLY_ALWAYS_INLINE bool call(
       exec_return_type& out,
       const typename exec_resolver<TArgs>::in_type&... args) {
     if constexpr (udf_has_call) {
+      // 包装了用户的 `call`. 这个地方包装了返回的否是 nullable
+      // (即 UDF 是否返回一个 bool, 这个 bool 会映射到 nullable).
       return callImpl(out, args...);
     } else if constexpr (udf_has_callNullable) {
+      // 同上
       return callNullableImpl(out, (&args)...);
     } else {
       VELOX_UNREACHABLE(
@@ -714,6 +726,7 @@ class UDFHolder final
     if constexpr (udf_has_callNullable) {
       return callNullableImpl(out, args...);
     } else if constexpr (udf_has_call) {
+      // 任何一个是 Null 都爆了.
       // Default null behavior.
       const bool isAllSet = (args && ...);
       if (LIKELY(isAllSet)) {
@@ -749,6 +762,7 @@ class UDFHolder final
     }
   }
 
+  // Impl 系列的函数都是下列语义, 我觉得 Velox 可以改善一下它的 comment.
   // Helper functions to handle void vs bool return type.
 
   FOLLY_ALWAYS_INLINE bool callImpl(

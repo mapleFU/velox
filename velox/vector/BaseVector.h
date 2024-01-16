@@ -202,7 +202,8 @@ class BaseVector {
    * vector. May hold nullptr if there are no nulls. Not const because
    * some vectors may generate this on first access.
    *
-   * Nulls 和 Selectivity 竟然不是一个东西，我操了
+   * Nulls 和 Selectivity 竟然不是一个东西. 这两个 underlying 都是 Bits, 但是
+   * Selection 额外包了一层.
    */
   const BufferPtr& nulls() const {
     return nulls_;
