@@ -217,6 +217,8 @@ void Expr::mergeFields(
 }
 
 void Expr::computeDistinctFields() {
+  // 在调用这个之前这块( distinctFields_, multiplyReferencedFields_ )应该是 empty 的?
+  // 合并所有子表达式的 distinctFields_, 把出现多次的放到 multiplyReferencedFields_ 里面.
   for (auto& input : inputs_) {
     mergeFields(
         distinctFields_, multiplyReferencedFields_, input->distinctFields_);
@@ -237,8 +239,11 @@ void Expr::computeMetadata() {
   // An expression is deterministic if it is a deterministic function call or a
   // special form, and all its inputs are also deterministic.
   //
-  // TODO(mwish): special form 一定是 deterministic 的? 组册自身属性
+  // 注意到这个 desterminstic 好像不是递归的，只是单纯的看自己的 deterministic_.
+  // 所以 SpecialForm 里面的 inputs_ 本身可以是 deterministic 的, 然后后面再去
+  // 跟子表达式去处理 & desterminstic.
   if (vectorFunction_) {
+    // 利用 vectorFunction_ 的 isDeterministic() 方法
     deterministic_ = vectorFunction_->isDeterministic();
   } else {
     VELOX_CHECK(isSpecialForm());
@@ -250,11 +255,16 @@ void Expr::computeMetadata() {
   }
 
   // (2) Compute distinctFields_ and multiplyReferencedFields_.
+  // 通过计算 inputs_ 的 distinctFields_ 和 multiplyReferencedFields_ 来计算
+  // 自身的 distinctFields_ 和 multiplyReferencedFields_.
   computeDistinctFields();
 
   // (3) Compute propagatesNulls_.
   // propagatesNulls_ is true iff a null in any of the columns this
   // depends on makes the Expr null.
+  //
+  // Constant, FieldReference, CastExpr, SpecialForm 这些当成 Vector 来处理.
+  // TODO(mwish): 为什么 SpecialCase 要这么处理呢?
   if (isSpecialForm() && !is<ConstantExpr>() && !is<FieldReference>() &&
       !is<CastExpr>()) {
     as<SpecialForm>()->computePropagatesNulls();
@@ -262,6 +272,15 @@ void Expr::computeMetadata() {
     if (vectorFunction_ && !vectorFunction_->isDefaultNullBehavior()) {
       propagatesNulls_ = false;
     } else {
+      // vectorFunction 已经是 defaultNull. 或者是 Const, fieldRef, Cast 这样的.
+      // 现在要检查 inputs_ 的 NullPropagating.
+      // 规则:
+      // * 整个表达式的输入来源于所有子表达式的输入, 根输入是 `distinctFields_`.
+      // * input 要么是 PropagateNull, 要么不是
+      // * 那么, 如果自身是 PropagateNull, 然后如果 `!PropagateNull` 的子表达式中,
+      //   全部是 `distinctFields_` 的子集, 这里输入中如果有任何一个 Null, 那么
+      //   返回就是 Null.
+
       // Logic for handling default-null vector functions.
       // cast, constant and fieldReference expressions act as vector functions
       // with default null behavior.
@@ -294,6 +313,8 @@ void Expr::computeMetadata() {
 
   for (auto& input : inputs_) {
     if (isSameFields(distinctFields_, input->distinctFields_)) {
+      // 这个是一个反向依赖关系, 由父亲设置子表达式的 sameAsParentDistinctFields_.
+      // TODO(mwish): 对 SharedSubexpr 有什么影响?
       input->sameAsParentDistinctFields_ = true;
     }
   }

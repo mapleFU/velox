@@ -22,6 +22,8 @@ namespace facebook::velox::exec {
 
 void FieldReference::computeDistinctFields() {
   SpecialForm::computeDistinctFields();
+  // 其实我不知道 FieldReference 哪来的 distinctFields_...
+  // 这个对我来说有点抽象了.
   if (inputs_.empty()) {
     mergeFields(
         distinctFields_,
