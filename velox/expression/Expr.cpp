@@ -320,6 +320,7 @@ void Expr::computeMetadata() {
   }
 
   // (5) Compute hasConditionals_.
+  // 这个 hasConditional 是递归的, 也判断了 Child 是否包含了 if / else.
   hasConditionals_ = hasConditionals(this);
 
   metaDataComputed_ = true;
@@ -818,6 +819,9 @@ void Expr::eval(
     const ExprSet* parentExprSet) {
   if (supportsFlatNoNullsFastPath_ && context.throwOnError() &&
       context.inputFlatNoNulls() && rows.countSelected() < 1'000) {
+    // 满足了 ML 那种 FastPath 的条件, 执行 FlatNoNull 函数
+    // 具体见这个 patch: https://github.com/facebookincubator/velox/pull/1943
+    // 把细节说的比较清楚.
     evalFlatNoNulls(rows, context, result, parentExprSet);
     checkResultInternalState(result);
     return;
@@ -825,11 +829,13 @@ void Expr::eval(
 
   // Make sure to include current expression in the error message in case of an
   // exception.
+  // TODO(mwish): 这两个 Context 是怎么影响异常的?
   ExprExceptionContext exprExceptionContext{this, context.row(), parentExprSet};
   ExceptionContextSetter exceptionContext(
       {parentExprSet ? onTopLevelException : onException,
        parentExprSet ? (void*)&exprExceptionContext : this});
 
+  // FastPath for nothing selected.
   if (!rows.hasSelections()) {
     checkOrSetEmptyResult(type(), context.pool(), result);
     checkResultInternalState(result);
@@ -860,6 +866,13 @@ void Expr::eval(
   // tree might need only a subset, whereas other might need a different subset.
   //
   // TODO: Re-work the logic of deciding when to load which field.
+  //
+  // 这里是处理 Lazy 的逻辑, Lazy 和编码无关, 本身是说可能读文件的时候某列完全没有加载起来.
+  // 这里逻辑是:
+  // 1. 只有一个的话那吊毛 Lazy, 反正都要加载(类似 Calc(input)? )
+  // 2. 如果没有 condition 的话, 都加载, 这个其实涉及 Lazy 的逻辑了, 理论上 Lazy 应该是
+  //    `a > 1.0 and b > 2.0`, 如果第一个表达式的过滤性好的话, 后面就不用执行了.
+  // 3. TODO(mwish): SharedSubexp, 这个没懂
   if (!hasConditionals_ || distinctFields_.size() == 1 ||
       shouldEvaluateSharedSubexp()) {
     // Load lazy vectors if any.

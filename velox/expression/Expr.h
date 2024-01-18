@@ -468,6 +468,8 @@ class Expr {
   /// Evaluation of such expression is optimized by memoizing and reusing
   /// the results of prior evaluations. That logic is implemented in
   /// 'evaluateSharedSubexpr'.
+  ///
+  /// Shared Sub Expr 在 comment 里面定义又叫 CSE.
   bool shouldEvaluateSharedSubexp() const {
     // 需要是:
     // 1. deterministic
@@ -620,7 +622,7 @@ class Expr {
 
   // True if this or a sub-expression is an IF, AND or OR.
   //
-  // 是否是 if/and/or.
+  // 表达式或者表达式的 child 是否包含 if/and/or. 
   // TODO(mwish): 这个和 specialForm 有什么区别或者联系?
   bool hasConditionals_ = false;
 
