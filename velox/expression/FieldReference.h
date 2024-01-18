@@ -19,6 +19,9 @@
 
 namespace facebook::velox::exec {
 
+// 以名称的形式来 Bind 在:
+// 1. EvalCtx 输入行的一个字段上
+// 2. Inputs 仅包含一个表达式时, 在该表达式的输出上.
 class FieldReference : public SpecialForm {
  public:
   FieldReference(

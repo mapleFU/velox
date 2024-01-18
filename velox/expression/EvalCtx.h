@@ -40,6 +40,9 @@ class PeeledEncoding;
 //
 // 在执行的时候这里包含了输入的信息, 也包含了 error 的上下文处理(包括 throwOnError_),
 // 和输出的 nulls(isFinalSelection). 这里还维护了一些对象池啊什么的(比如 vectorPool).
+//
+// 因为输入本身的信息只有一组, EvalCtx 又包含了输入的信息, 所以允许在 EvalCtx 里面处理一些
+// Peeled 的包装.
 class EvalCtx {
  public:
   EvalCtx(
@@ -230,7 +233,8 @@ class EvalCtx {
   // ("then" branch) or not ("else" branch).
   //
   // 这个是 if/else 有关的逻辑, 也就是说, 如果是 if/else, 那么 isFinalSelection
-  // 中间的可能还不是 Final Selection.
+  // 中间的可能还不是 Final Selection. 如果不是 final Selection, 那么不能覆盖或者
+  // clear 结果中的 Selection 或者值.
   bool isFinalSelection() const {
     return isFinalSelection_;
   }
@@ -566,6 +570,7 @@ class LocalSelectivityVector {
   std::unique_ptr<SelectivityVector> vector_ = nullptr;
 };
 
+// 从 EvalCtx 里面拿到一个 DecodedVector, 当作临时的 Vector.
 class LocalDecodedVector {
  public:
   explicit LocalDecodedVector(core::ExecCtx& context) : context_(context) {}

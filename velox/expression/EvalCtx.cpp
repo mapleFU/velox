@@ -391,6 +391,7 @@ void EvalCtx::addNulls(
   result->addNulls(rawNulls, rows);
 }
 
+// Final Selection 的上下文.
 ScopedFinalSelectionSetter::ScopedFinalSelectionSetter(
     EvalCtx& evalCtx,
     const SelectivityVector* finalSelection,
