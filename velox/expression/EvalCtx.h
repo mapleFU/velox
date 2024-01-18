@@ -463,7 +463,7 @@ class LocalSelectivityVector {
   // Grab an instance of a SelectivityVector from the pool and resize it to
   // specified size.
   //
-  // 申请一个本地的 selectivity vector
+  // 申请一个本地的 selectivity vector, 用完之后会自动释放, 方便区间内 xjb 改.
   LocalSelectivityVector(EvalCtx& context, vector_size_t size)
       : context_(*context.execCtx()),
         vector_(context_.getSelectivityVector(size)) {}

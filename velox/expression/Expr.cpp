@@ -391,6 +391,7 @@ inline void checkResultInternalState(VectorPtr& result) {
 
 } // namespace
 
+// 以 default null 方式展开子表达式(args), 这里需要按照 Selector 增量展开 input 的表达式.
 template <typename EvalArg>
 bool Expr::evalArgsDefaultNulls(
     MutableRemainingRows& rows,
@@ -872,7 +873,9 @@ void Expr::eval(
   // 1. 只有一个的话那吊毛 Lazy, 反正都要加载(类似 Calc(input)? )
   // 2. 如果没有 condition 的话, 都加载, 这个其实涉及 Lazy 的逻辑了, 理论上 Lazy 应该是
   //    `a > 1.0 and b > 2.0`, 如果第一个表达式的过滤性好的话, 后面就不用执行了.
-  // 3. TODO(mwish): SharedSubexp, 这个没懂
+  // 3. 这部分参考: https://github.com/facebookincubator/velox/pull/3926
+  //    CSE 会缓存表达式的结果, 然后要保证能做范围比较. 比较需要 EnsureLoaded?
+  //    这快应该是完全实现相关的.
   if (!hasConditionals_ || distinctFields_.size() == 1 ||
       shouldEvaluateSharedSubexp()) {
     // Load lazy vectors if any.
@@ -891,6 +894,7 @@ void Expr::eval(
   }
 
   if (inputs_.empty()) {
+    // 没有 input 直接快速 evalAll.
     evalAll(rows, context, result);
     checkResultInternalState(result);
     return;
@@ -900,6 +904,7 @@ void Expr::eval(
   checkResultInternalState(result);
 }
 
+// 增量模式去 eval subexpr.
 template <typename TEval>
 void Expr::evaluateSharedSubexpr(
     const SelectivityVector& rows,
@@ -1446,16 +1451,22 @@ void Expr::evalAllImpl(
   VELOX_DCHECK(rows.hasSelections());
 
   if (isSpecialForm()) {
+    // 开洞执行, 我也不知道咋搞的.
     evalSpecialFormWithStats(rows, context, result);
     return;
   }
+  // TODO(mwish): peel 和这部分逻辑什么关系呢?
   bool tryPeelArgs = deterministic_ ? true : false;
   bool defaultNulls = vectorFunction_->isDefaultNullBehavior();
 
   // Tracks what subset of rows shall un-evaluated inputs and current expression
   // evaluates. Initially points to rows.
+  //
+  // 套一层本次执行的 Selector, 可以分清本次和增量的 Selector.
   MutableRemainingRows remainingRows(rows, context);
   if (defaultNulls) {
+    // 以 default null 方式展开子表达式(args), 这里需要按照 Selector 增量展开 input
+    // defaultNull 下, 一个为 null, 结果为 null.
     if (!evalArgsDefaultNulls(
             remainingRows,
             [&](auto i) {

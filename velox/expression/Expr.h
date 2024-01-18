@@ -77,6 +77,8 @@ struct ExprStats {
 /// Maintains a set of rows for evaluation and removes rows with
 /// nulls or errors as needed. Helps to avoid copying SelectivityVector in cases
 /// when evaluation doesn't encounter nulls or errors.
+///
+/// 相当于一个区域内再次 selector, 用于处理 null 和 error.
 class MutableRemainingRows {
  public:
   /// @param rows Initial set of rows.
@@ -567,6 +569,10 @@ class Expr {
   // can be loaded on first use and not before starting evaluating the form.
   // This is so because a subsequent use will never access rows that were not in
   // scope for the previous one.
+  //
+  // 这个应该是和 LazyLoad / Incremental Exec 有关的.
+  // 在 https://github.com/facebookincubator/velox/pull/7433 引入. 如果是 AND 这种
+  // 前面会降低后面 Selectivity 的, 可能可以有一些优化. 目前只有它是 ConjunctAnd 才会出现.
   virtual bool evaluatesArgumentsOnNonIncreasingSelection() const {
     return false;
   }
