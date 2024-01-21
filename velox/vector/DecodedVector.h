@@ -33,6 +33,7 @@ namespace facebook::velox {
 /// the following steps are taken:
 /// 1. It first traverses the top dictionary layers (if they exist) and
 ///    combines their indices and nulls
+///    展开并且结合第一层字典/Constant 的 index 和 nulls
 /// 2. Next, if it encounters a constant layer, it does the following:
 ///    ** If the dictionary layers over it were adding additional nulls, then it
 ///    replaces all non-null indices with the constant index.
@@ -45,11 +46,13 @@ namespace facebook::velox {
 ///    ** Finally, if the constant is a scalar, the base is set to the
 ///    constantVector itself, otherwise the base points to the complex vector
 ///    wrapped underneath the constant layer
+///    展开输入的 Null, 每层去 Combine Indices.
 /// 3. Next, If it encounters a non-constant base layer:
 ///    ** It combines the nulls from that base layer into the set of nulls that
 ///    it is tracking
 ///    ** Additionally, it will flatten the base layer if its not already flat.
 ///    Currently, such a transformation is only supported for bias encoding.
+///    结合输出
 ///
 /// Having access to a flat base’s data buffer and a single level of indices and
 /// nulls (or a constant index) means that we can read all values in constant
@@ -73,6 +76,16 @@ namespace facebook::velox {
 /// PeeledEncodings and should only be used there. Please refrain from using
 /// those APIs as their behaviour can diverge significantly from others, namely,
 /// makeIndices(), wrap(), dictionaryWrapping().
+///
+/// DecodedVector 不直接等于 Peel, 应该类似一个展开成正常处理 Null 的状态.
+/// 这里的原因还是 DecodedVector 可以嵌套 Constant 和 Dictionary, 所以需要展开.
+/// (我感觉 DecodedVector 构造函数说的更清楚.)
+///
+/// Decoded 的目的是为了拿到「真正的内部」. Peel 则是为了剥离出字典和常量, 然后能够直接对字典和常量执行
+/// Expr.
+///
+/// TODO(mwish): 这么说来我感觉 LocalDecodedVector 这玩意是不是有点意义不明, 这个不是一展开永展开吗?
+///  还是有的场景只需要展开 Null?
 class DecodedVector {
  public:
   /// Default constructor. The caller must call decode() or makeIndices() next.
@@ -379,16 +392,22 @@ class DecodedVector {
   // (hasExtraNulls_ is false). Otherwise, null bitmask of the base vector
   // combined with null bitmasks in all the wrappings (hasExtraNulls_ is true).
   // May be nullptr if there are no nulls.
+  //
+  // baseVector 的 Null, 如果有 hasExtraNull, 可能会需要输出到 `allNulls_` 中.
   const uint64_t* nulls_ = nullptr;
 
   // Nulls bitmask indexed using top-level row numbers and containing null bits
   // of the base vector combined with null bits in all the wrappings. May be
   // nullptr if there are no nulls or allNullsInitialized_ is false. Initialized
   // on first access.
+  //
+  // 最终输出的总 Null.
   std::optional<const uint64_t*> allNulls_ = nullptr;
 
   // The base vector of 'vector' given to decode(). This is the data
   // after constant and dictionary vectors have been peeled off.
+  //
+  // TODO(mwish): baseVector_ 是展开后的 Vector?
   const BaseVector* baseVector_ = nullptr;
 
   // True if either the leaf vector has nulls or if nulls were added
@@ -398,8 +417,9 @@ class DecodedVector {
   // True if nulls added by a dictionary wrapper.
   bool hasExtraNulls_ = false;
 
+  //! 输入的 index == 输出的 index
   bool isIdentityMapping_ = false;
-
+  //! index 在 `constantIndex_` 中.
   bool isConstantMapping_ = false;
 
   bool loadLazy_ = false;
@@ -411,13 +431,19 @@ class DecodedVector {
 
   // Holds indices if an array of indices needs to be materialized,
   // e.g. when combining nested dictionaries.
+  //
+  // 当 `isIdentityMapping_` 和 `isConstantMapping_` 为 false 时, 会用这个来存储 index.
   std::vector<vector_size_t> copiedIndices_;
 
   // Used as backing for 'nulls_' when null-ness is combined from
   // dictionary and base values.
+  //
+  // temp nulls. 表面上是 uint64_t, 其实是 bits.
   std::vector<uint64_t> copiedNulls_;
 
   // Used as 'nulls_' for a null constant vector.
+  //
+  // Pure Nulls!
   static uint64_t constantNullMask_;
 };
 

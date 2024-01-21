@@ -571,6 +571,9 @@ class LocalSelectivityVector {
 };
 
 // 从 EvalCtx 里面拿到一个 DecodedVector, 当作临时的 Vector.
+//
+// TODO(mwish): 我其实并不知道为什么需要一个 LocalDecodedVector, 难道 Decoded 不是解析完
+// 一劳永逸的吗? (比如有一个地方 decode 完了就一直是 decode 完成的情况).
 class LocalDecodedVector {
  public:
   explicit LocalDecodedVector(core::ExecCtx& context) : context_(context) {}

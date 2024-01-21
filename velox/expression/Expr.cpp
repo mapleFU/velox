@@ -392,6 +392,8 @@ inline void checkResultInternalState(VectorPtr& result) {
 } // namespace
 
 // 以 default null 方式展开子表达式(args), 这里需要按照 Selector 增量展开 input 的表达式.
+//
+// return false 表示没有任何输入需要执行了.
 template <typename EvalArg>
 bool Expr::evalArgsDefaultNulls(
     MutableRemainingRows& rows,
@@ -414,10 +416,18 @@ bool Expr::evalArgsDefaultNulls(
         context.mutableThrowOnError(), throwArgumentErrors(context));
 
     for (int32_t i = 0; i < inputs_.size(); ++i) {
+      // 展开 this->inputs_ 的 Arg
       evalArg(i);
+      // 拿到一轮 flatNull.
       const uint64_t* flatNulls = nullptr;
       auto& arg = inputValues_[i];
       if (arg->mayHaveNulls()) {
+        // default eval. mayHaveNull 的时候, 会把 null 的位置标记出来.
+        // 这里的 rows.rows() 是一句 filter 过一轮的, 即前面的参数标注为 null 的
+        // 后面也不用解析了. 这个感觉可以减轻一些比较重的地方的计算, 这块见:
+        // https://github.com/facebookincubator/velox/pull/3189
+        //
+        // 这个地方通过 DecodedVector 只是为了拿到 Null, 和 Peel 其实关系不大.
         decoded.get()->decode(*arg, rows.rows());
         flatNulls = decoded.get()->nulls();
       }
@@ -431,6 +441,8 @@ bool Expr::evalArgsDefaultNulls(
         if (flatNulls) {
           // There are both nulls and errors. Only a null with no error removes
           // a row.
+          //
+          // error + Null 的时候可能不会移除一行, error 的优先级高于 Null.
           auto errorNulls = newErrors->rawNulls();
           auto rowBits = rows.mutableRows().asMutableRange().bits();
           auto nwords = bits::nwords(rows.rows().end());
@@ -455,6 +467,7 @@ bool Expr::evalArgsDefaultNulls(
   mergeOrThrowArgumentErrors(
       rows.rows(), originalErrors, argumentErrors, context);
 
+  // 如果所有行都被 deselect 了, 那就可以不用执行后面的逻辑了.
   if (!rows.deselectErrors()) {
     releaseInputValues(context);
     setAllNulls(rows.originalRows(), context, result);
@@ -464,6 +477,7 @@ bool Expr::evalArgsDefaultNulls(
   return true;
 }
 
+// 这里不会按照 Null 来增量展开, 但是会按照 Error 来做增量展开.
 template <typename EvalArg>
 bool Expr::evalArgsWithNulls(
     MutableRemainingRows& rows,
@@ -1074,6 +1088,7 @@ Expr::PeelEncodingsResult Expr::peelEncodings(
   DCHECK_EQ(peeledVectors.size(), distinctFields_.size());
   for (int i = 0; i < peeledVectors.size(); ++i) {
     auto fieldIndex = distinctFields_[i]->index(context);
+    // peeled 结果固化到 context 中.
     context.setPeeled(fieldIndex, peeledVectors[i]);
   }
 
@@ -1465,12 +1480,15 @@ void Expr::evalAllImpl(
   // 套一层本次执行的 Selector, 可以分清本次和增量的 Selector.
   MutableRemainingRows remainingRows(rows, context);
   if (defaultNulls) {
-    // 以 default null 方式展开子表达式(args), 这里需要按照 Selector 增量展开 input
+    // 以 default null 方式展开子表达式(args), 这里需要按照 Selector 增量展开 input 设置到
+    // this->inputValues_ 里头.
     // defaultNull 下, 一个为 null, 结果为 null.
     if (!evalArgsDefaultNulls(
             remainingRows,
             [&](auto i) {
+              // 按照上一轮剩下的 Selector 去展开 input.
               inputs_[i]->eval(remainingRows.rows(), context, inputValues_[i]);
+              // 设置是否要 peeling
               tryPeelArgs =
                   tryPeelArgs && isPeelable(inputValues_[i]->encoding());
             },
@@ -1479,6 +1497,7 @@ void Expr::evalAllImpl(
       return;
     }
   } else {
+    // !defaultNulls 下, 一个为 null, 结果不一定为 Null
     if (!evalArgsWithNulls(
             remainingRows,
             [&](auto i) {
@@ -1492,6 +1511,7 @@ void Expr::evalAllImpl(
     }
   }
 
+  // 如果有 tryPeel 的话, 就需要 Peel. 执行 applyFunction 的时候需要考虑这个.
   if (!tryPeelArgs ||
       !applyFunctionWithPeeling(remainingRows.rows(), context, result)) {
     applyFunction(remainingRows.rows(), context, result);
@@ -1499,6 +1519,8 @@ void Expr::evalAllImpl(
 
   // Write non-selected rows in remainingRows as nulls in the result if some
   // rows have been skipped.
+  //
+  // 产生了新的 Null, 需要 Deselect.
   if (remainingRows.mayHaveChanged()) {
     addNulls(rows, remainingRows.rows().asRange().bits(), context, result);
   }
@@ -1574,6 +1596,7 @@ void Expr::applyFunction(
     VELOX_USER_FAIL(e.what());
   }
 
+  // 处理 Result 和标注 Meta.
   if (!result) {
     MutableRemainingRows remainingRows(rows, context);
 

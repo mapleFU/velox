@@ -94,6 +94,8 @@ class MutableRemainingRows {
 
   /// @return current set of rows which may be different from the initial set if
   /// deselectNulls or deselectErrors were called.
+  ///
+  /// 产生的是最终的 selectedRows.
   const SelectivityVector& rows() const {
     return *rows_;
   }
@@ -635,6 +637,8 @@ class Expr {
   // 被多个表达式依赖
   bool isMultiplyReferenced_ = false;
 
+  // 具体 input 的 Value Vector, 需要和 inputs_(输入表达式)
+  // 区分出来, 会在执行的时候设置.
   std::vector<VectorPtr> inputValues_;
 
   struct SharedResults {
@@ -658,7 +662,7 @@ class Expr {
   // `baseOfDictionaryRepeats_` > 1. This is to ensure that the vector held is
   // not modified and re-used in-place.
   //
-  // 缓存了需要 reuse 的 Dictionary. 这里是 Dictionary 内部的咯叽.
+  // 缓存了需要 reuse 的 Dictionary. 这里是 Dictionary 内部的逻辑.
   VectorPtr baseOfDictionary_;
 
   // Number of times currently held cacheable vector is seen for a non-first
