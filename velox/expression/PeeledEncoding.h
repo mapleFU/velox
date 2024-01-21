@@ -102,7 +102,7 @@ class LocalSelectivityVector;
 ///    peel: DictNoNulls
 ///
 /// Peel 和 DecodedVector 不同, 这里可能借助 DecodedVector 来实现, 但是核心是一种
-/// 展开.
+/// 展开, 做的是一个执行层公共表达式抽取.
 class PeeledEncoding {
  public:
   /// Factory method for constructing a PeeledEncoding object only if peeling

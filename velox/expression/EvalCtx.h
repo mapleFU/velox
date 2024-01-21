@@ -376,7 +376,7 @@ class EvalCtx {
   // selectivity vector). Only possible is all expressions have default null
   // behavior.
   //
-  // TODO(mwish): 这个应该和 Dense Read 有关, 如果是 dense 读的话本身就是个 Null Pruned.
+  // nullsPruned_ 和
   bool nullsPruned_{false};
   // Error Handling 的上下文, 对 Try(T) 这样的肯定要处理一层, 此外 Velox 还会 Filter Reorder,
   // 这里应该都会影响 Error 的处理.

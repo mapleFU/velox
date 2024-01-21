@@ -314,7 +314,8 @@ void Expr::computeMetadata() {
   for (auto& input : inputs_) {
     if (isSameFields(distinctFields_, input->distinctFields_)) {
       // 这个是一个反向依赖关系, 由父亲设置子表达式的 sameAsParentDistinctFields_.
-      // TODO(mwish): 对 SharedSubexpr 有什么影响?
+      // Q: 对 SharedSubexpr 有什么影响?
+      // A: 见 skipFieldDependentOptimizations().
       input->sameAsParentDistinctFields_ = true;
     }
   }
@@ -1048,6 +1049,7 @@ Expr::PeelEncodingsResult Expr::peelEncodings(
   auto numFields = context.row()->childrenSize();
   std::vector<VectorPtr> vectorsToPeel;
   vectorsToPeel.reserve(distinctFields_.size());
+  // 对所有的输入尝试 Peel 出公共的表达式.
   for (auto* field : distinctFields_) {
     auto fieldIndex = field->index(context);
     assert(fieldIndex >= 0 && fieldIndex < numFields);
@@ -1132,6 +1134,7 @@ void Expr::evalEncodings(
             decodedHolder,
             newRowsHolder,
             finalRowsHolder);
+        // 尝试给输入做 Peel, 抽取公共的 Rows.
         auto* newRows = peelEncodingsResult.newRows;
         if (newRows) {
           VectorPtr peeledResult;
@@ -1151,7 +1154,7 @@ void Expr::evalEncodings(
         }
       });
 
-      // wrappedResult 失败就会走到下面的 evalWithNulls 里面.
+      // 如果能生成 newRows, 那么就可以直接返回了.
       if (wrappedResult != nullptr) {
         context.moveOrCopyResult(wrappedResult, rows, result);
         return;
@@ -1471,7 +1474,9 @@ void Expr::evalAllImpl(
     evalSpecialFormWithStats(rows, context, result);
     return;
   }
-  // TODO(mwish): peel 和这部分逻辑什么关系呢?
+  // tryPeelArgs 指的是内部执行是否可以尝试 Peel.
+  // 这里需要 deterministic_ 为 true, 且所有的 input 都是 Peelable 的, 然后才可以抽取公共
+  // 字典.
   bool tryPeelArgs = deterministic_ ? true : false;
   bool defaultNulls = vectorFunction_->isDefaultNullBehavior();
 

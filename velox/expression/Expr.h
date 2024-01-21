@@ -704,7 +704,7 @@ class Expr {
   // True if distinctFields_ are identical to at least one of the parent
   // expression's distinct fields.
   //
-  // 
+  // 影响见 skipFieldDependentOptimizations() 的注释.
   bool sameAsParentDistinctFields_ = false;
 };
 

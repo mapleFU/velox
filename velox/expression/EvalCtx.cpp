@@ -70,6 +70,8 @@ void EvalCtx::saveAndReset(ContextSaver& saver, const SelectivityVector& rows) {
   if (saver.context) {
     return;
   }
+  // 这部分应该是给 Peeled 类似的场景用的, 在这个场景下, 输入本身一些性质, 比如 rowCount, 都会
+  // 发生变化.
   // 缓存一下当前的上下文.
   saver.context = this;
   saver.rows = &rows;
