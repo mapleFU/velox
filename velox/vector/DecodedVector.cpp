@@ -384,6 +384,8 @@ DecodedVector::DictionaryWrapping DecodedVector::dictionaryWrapping(
   // Only copy nulls if we have nulls coming from one of the wrappers, don't
   // do it if nulls are missing or from the base vector.
   // TODO: remove the check for hasExtraNulls_ after #3553 is merged.
+  //
+  // 结合 Nulls.
   BufferPtr nulls =
       hasExtraNulls_ ? copyNullsBuffer(nulls_, size, wrapper.pool()) : nullptr;
   return {std::move(indices), std::move(nulls)};

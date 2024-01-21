@@ -66,11 +66,13 @@ EvalCtx::EvalCtx(core::ExecCtx* execCtx)
   VELOX_CHECK_NOT_NULL(execCtx);
 }
 
-// TODO(mwish): 切换执行的上下文? 我现在应该不会 touch 到这个?
 void EvalCtx::saveAndReset(ContextSaver& saver, const SelectivityVector& rows) {
   if (saver.context) {
     return;
   }
+  // 这部分应该是给 Peeled 类似的场景用的, 在这个场景下, 输入本身一些性质, 比如 rowCount, 都会
+  // 发生变化.
+  // 缓存一下当前的上下文.
   saver.context = this;
   saver.rows = &rows;
   saver.finalSelection = finalSelection_;
@@ -391,6 +393,7 @@ void EvalCtx::addNulls(
   result->addNulls(rawNulls, rows);
 }
 
+// Final Selection 的上下文.
 ScopedFinalSelectionSetter::ScopedFinalSelectionSetter(
     EvalCtx& evalCtx,
     const SelectivityVector* finalSelection,

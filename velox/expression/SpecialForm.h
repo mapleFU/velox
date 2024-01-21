@@ -19,6 +19,8 @@
 
 namespace facebook::velox::exec {
 
+/// Constant, Cast, Coalesce, Conjunct(And, Or), FieldReference, Switch, Lambda, Try.
+/// TODO(mwish): 我也不知道为什么这些就是 SpecialForm
 class SpecialForm : public Expr {
  public:
   SpecialForm(
@@ -37,6 +39,8 @@ class SpecialForm : public Expr {
 
   // This is safe to call only after all metadata is computed for input
   // expressions.
+  //
+  // TODO(mwish): 我也想知道这个为啥需要有一个特殊的 PropagateNulls 的过程.
   virtual void computePropagatesNulls() {
     VELOX_NYI();
   }

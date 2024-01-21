@@ -981,6 +981,11 @@ inline RowTypePtr asRowType(const TypePtr& type) {
 
 /// Represents a lambda function. The children are the argument types
 /// followed by the return value type.
+///
+/// 这里要说明一下, 这里代表 Velox 的 Lambda:
+/// https://facebookincubator.github.io/velox/develop/lambda-functions.html
+/// 这里之所以要专门设置一个类型, 是因为也需要让这个 lamdba 可以当作一个参数 pass
+/// 给别的函数.
 class FunctionType : public TypeBase<TypeKind::FUNCTION> {
  public:
   FunctionType(

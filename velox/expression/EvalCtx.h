@@ -37,6 +37,12 @@ class PeeledEncoding;
 //
 // ExecCtx 对 <RowVector, ExprSet> 的包装, 因为和 rows 有关, 所以也写了很多数据本身
 // 的属性, 比如 flatNoNulls 什么的.
+//
+// 在执行的时候这里包含了输入的信息, 也包含了 error 的上下文处理(包括 throwOnError_),
+// 和输出的 nulls(isFinalSelection). 这里还维护了一些对象池啊什么的(比如 vectorPool).
+//
+// 因为输入本身的信息只有一组, EvalCtx 又包含了输入的信息, 所以允许在 EvalCtx 里面处理一些
+// Peeled 的包装.
 class EvalCtx {
  public:
   EvalCtx(
@@ -47,12 +53,15 @@ class EvalCtx {
   /// For testing only.
   explicit EvalCtx(core::ExecCtx* FOLLY_NONNULL execCtx);
 
+  // Input Row Vector.
   const RowVector* FOLLY_NONNULL row() const {
     return row_;
   }
 
   /// Returns true if all input vectors in 'row' are flat or constant and have
   /// no nulls.
+  ///
+  /// input 是否满足 flatNoNulls 的条件.
   bool inputFlatNoNulls() const {
     return inputFlatNoNulls_;
   }
@@ -86,6 +95,8 @@ class EvalCtx {
 
   // If exceptionPtr is known to be a VeloxException use setVeloxExceptionError
   // instead.
+  //
+  // 设置执行的 Error.
   void setError(vector_size_t index, const std::exception_ptr& exceptionPtr);
 
   // Similar to setError but more performant, should be used when the user knows
@@ -94,6 +105,7 @@ class EvalCtx {
       vector_size_t index,
       const std::exception_ptr& exceptionPtr);
 
+  // Batch 按照 rows 来设置 Error.
   void setErrors(
       const SelectivityVector& rows,
       const std::exception_ptr& exceptionPtr);
@@ -101,12 +113,15 @@ class EvalCtx {
   /// Invokes a function on each selected row. Records per-row exceptions by
   /// calling 'setError'. The function must take a single "row" argument of type
   /// vector_size_t and return void.
+  //
+  // 一个向量化包装 callback function 的函数.
   template <typename Callable>
   void applyToSelectedNoThrow(const SelectivityVector& rows, Callable func) {
     rows.template applyToSelected([&](auto row) INLINE_LAMBDA {
       try {
         func(row);
       } catch (const VeloxException& e) {
+        // TODO(mwish): UDF 函数异常抛出? 内部异常自己框架 capture?
         if (!e.isUserError()) {
           throw;
         }
@@ -149,6 +164,7 @@ class EvalCtx {
       const BufferPtr& elementToTopLevelRows,
       VectorPtr& result);
 
+  // 给 Error 的列设置为 null.
   void deselectErrors(SelectivityVector& rows) const {
     if (!errors_) {
       return;
@@ -217,7 +233,8 @@ class EvalCtx {
   // ("then" branch) or not ("else" branch).
   //
   // 这个是 if/else 有关的逻辑, 也就是说, 如果是 if/else, 那么 isFinalSelection
-  // 中间的可能还不是 Final Selection.
+  // 中间的可能还不是 Final Selection. 如果不是 final Selection, 那么不能覆盖或者
+  // clear 结果中的 Selection 或者值.
   bool isFinalSelection() const {
     return isFinalSelection_;
   }
@@ -358,7 +375,11 @@ class EvalCtx {
   // True if nulls in the input vectors were pruned (removed from the current
   // selectivity vector). Only possible is all expressions have default null
   // behavior.
+  //
+  // nullsPruned_ 和
   bool nullsPruned_{false};
+  // Error Handling 的上下文, 对 Try(T) 这样的肯定要处理一层, 此外 Velox 还会 Filter Reorder,
+  // 这里应该都会影响 Error 的处理.
   bool throwOnError_{true};
 
   // True if the current set of rows will not grow, e.g. not under and IF or OR.
@@ -371,8 +392,6 @@ class EvalCtx {
   // Stores exception found during expression evaluation. Exceptions are stored
   // in a opaque flat vector, which will translate to a
   // std::shared_ptr<std::exception_ptr>.
-  //
-  // 执行的时候，要么 ThrowOnError, 要么在这里标注?
   ErrorVectorPtr errors_;
 };
 
@@ -444,7 +463,7 @@ class LocalSelectivityVector {
   // Grab an instance of a SelectivityVector from the pool and resize it to
   // specified size.
   //
-  // 申请一个本地的 selectivity vector
+  // 申请一个本地的 selectivity vector, 用完之后会自动释放, 方便区间内 xjb 改.
   LocalSelectivityVector(EvalCtx& context, vector_size_t size)
       : context_(*context.execCtx()),
         vector_(context_.getSelectivityVector(size)) {}
@@ -551,6 +570,10 @@ class LocalSelectivityVector {
   std::unique_ptr<SelectivityVector> vector_ = nullptr;
 };
 
+// 从 EvalCtx 里面拿到一个 DecodedVector, 当作临时的 Vector.
+//
+// TODO(mwish): 我其实并不知道为什么需要一个 LocalDecodedVector, 难道 Decoded 不是解析完
+// 一劳永逸的吗? (比如有一个地方 decode 完了就一直是 decode 完成的情况).
 class LocalDecodedVector {
  public:
   explicit LocalDecodedVector(core::ExecCtx& context) : context_(context) {}

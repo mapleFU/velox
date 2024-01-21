@@ -77,6 +77,8 @@ struct ExprStats {
 /// Maintains a set of rows for evaluation and removes rows with
 /// nulls or errors as needed. Helps to avoid copying SelectivityVector in cases
 /// when evaluation doesn't encounter nulls or errors.
+///
+/// 相当于一个区域内再次 selector, 用于处理 null 和 error.
 class MutableRemainingRows {
  public:
   /// @param rows Initial set of rows.
@@ -92,6 +94,8 @@ class MutableRemainingRows {
 
   /// @return current set of rows which may be different from the initial set if
   /// deselectNulls or deselectErrors were called.
+  ///
+  /// 产生的是最终的 selectedRows.
   const SelectivityVector& rows() const {
     return *rows_;
   }
@@ -385,6 +389,12 @@ class Expr {
   // reference it) and have the same distinct fields as its parent.
   // The reason is because such optimizations would be redundant in that case,
   // since they would have been performed identically on the parent.
+  //
+  // 如果没有 distinctField(什么字段都不 Ref), 或者 Parent 和自身的 distinctField
+  // 一样, 就不 Peeling. 这里含义其实比较简单, Parent 传来的 Vector 已经是 Peeled 了,
+  // Null 也已经处理了
+  //
+  // 这里本质就是父亲算过 Null / Distinct 的优化, 自己就不用做了.
   bool skipFieldDependentOptimizations() const {
     if (!isMultiplyReferenced_ && sameAsParentDistinctFields_) {
       return true;
@@ -399,6 +409,8 @@ class Expr {
   struct PeelEncodingsResult {
     SelectivityVector* FOLLY_NULLABLE newRows;
     SelectivityVector* FOLLY_NULLABLE newFinalSelection;
+    // True if the peeled encodings can be cached.
+    // 这个应该是 cacheDictionary 的先决条件.
     bool mayCache;
 
     static PeelEncodingsResult empty() {
@@ -468,6 +480,8 @@ class Expr {
   /// Evaluation of such expression is optimized by memoizing and reusing
   /// the results of prior evaluations. That logic is implemented in
   /// 'evaluateSharedSubexpr'.
+  ///
+  /// Shared Sub Expr 在 comment 里面定义又叫 CSE.
   bool shouldEvaluateSharedSubexp() const {
     // 需要是:
     // 1. deterministic
@@ -565,31 +579,49 @@ class Expr {
   // can be loaded on first use and not before starting evaluating the form.
   // This is so because a subsequent use will never access rows that were not in
   // scope for the previous one.
+  //
+  // 这个应该是和 LazyLoad / Incremental Exec 有关的.
+  // 在 https://github.com/facebookincubator/velox/pull/7433 引入. 如果是 AND 这种
+  // 前面会降低后面 Selectivity 的, 可能可以有一些优化. 目前只有它是 ConjunctAnd 才会出现.
   virtual bool evaluatesArgumentsOnNonIncreasingSelection() const {
     return false;
   }
 
+  // Output 的类型.
   const TypePtr type_;
   const std::vector<std::shared_ptr<Expr>> inputs_;
   const std::string name_;
+  // 包装 Function 的函数
+  // 在 Arrow Expression 系统中, Expr 直接分为 Call, Parameter, Literal.
+  // 这里 Velox 的 Call 就是直接 Expr 的 vectorFunction.
   const std::shared_ptr<VectorFunction> vectorFunction_;
+  // 子类做的标记.
   const bool specialForm_;
   const bool supportsFlatNoNullsFastPath_;
   const bool trackCpuUsage_;
 
+  // 如果是 Constant Input, 这里会设置为 true. 执行的时候丢过去(算缓存).
   std::vector<VectorPtr> constantInputs_;
   std::vector<bool> inputIsConstant_;
 
+  // 下面都是 metadata 列, 来自 computeMetadata 的计算.
+  //
   // TODO make the following metadata const, e.g. call computeMetadata in the
   // constructor
 
   // The distinct references to input columns in 'inputs_'
   // subtrees. Empty if this is the same as 'distinctFields_' of
   // parent Expr.
+  //
+  // Input 的 distinct fields, 就是来源的字段是第几个, 应该可以帮助做一些计算.
+  // 这里保证是某种 SpecialForm. 可以来自 EvalCtx 输入行的一个字段上, 
+  // 或者是一个表达式结果.
   std::vector<FieldReference * FOLLY_NONNULL> distinctFields_;
 
   // Fields referenced by multiple inputs, which is subset of distinctFields_.
   // Used to determine pre-loading of lazy vectors at current expr.
+  //
+  // 被多个表达式依赖. 这个允许做一些重复计算.
   std::unordered_set<FieldReference * FOLLY_NONNULL> multiplyReferencedFields_;
 
   // True if a null in any of 'distinctFields_' causes 'this' to be
@@ -598,7 +630,8 @@ class Expr {
   // Boolean indicating whether a null in any of the input columns causes
   // this expression to always return null for the row.
   //
-  // 处理 Null 的行为，方便进行 fast null check.
+  // 处理 Null 的行为，方便进行 fast null check. 这里的语义比表达式的各种 null 弱一些,
+  // 只表示 "输入是 Null, 输出一定是 Null". 输入不是 Null 的情况也可以输出 Null.
   bool propagatesNulls_ = false;
 
   // True if this and all children are deterministic.
@@ -606,12 +639,15 @@ class Expr {
 
   // True if this or a sub-expression is an IF, AND or OR.
   //
-  // Conditionals 可能两边都要处理?
+  // 表达式或者表达式的 child 是否包含 if/and/or. 
+  // TODO(mwish): 这个和 specialForm 有什么区别或者联系?
   bool hasConditionals_ = false;
 
   // 被多个表达式依赖
   bool isMultiplyReferenced_ = false;
 
+  // 具体 input 的 Value Vector, 需要和 inputs_(输入表达式)
+  // 区分出来, 会在执行的时候设置.
   std::vector<VectorPtr> inputValues_;
 
   struct SharedResults {
@@ -634,6 +670,8 @@ class Expr {
   // This is a strong reference to the base vector and is only set if
   // `baseOfDictionaryRepeats_` > 1. This is to ensure that the vector held is
   // not modified and re-used in-place.
+  //
+  // 缓存了需要 reuse 的 Dictionary. 这里是 Dictionary 内部的逻辑.
   VectorPtr baseOfDictionary_;
 
   // Number of times currently held cacheable vector is seen for a non-first
@@ -659,10 +697,14 @@ class Expr {
 
   // If true computeMetaData returns, otherwise meta data is computed and the
   // flag is set to true.
+  //
+  // 给 metaData 是否计算用的 flag, 单线程.
   bool metaDataComputed_ = false;
 
   // True if distinctFields_ are identical to at least one of the parent
   // expression's distinct fields.
+  //
+  // 影响见 skipFieldDependentOptimizations() 的注释.
   bool sameAsParentDistinctFields_ = false;
 };
 
@@ -859,6 +901,7 @@ bool registerExprSetListener(std::shared_ptr<ExprSetListener> listener);
 bool unregisterExprSetListener(
     const std::shared_ptr<ExprSetListener>& listener);
 
+// 表达式的 Evaluator.
 class SimpleExpressionEvaluator : public core::ExpressionEvaluator {
  public:
   SimpleExpressionEvaluator(core::QueryCtx* queryCtx, memory::MemoryPool* pool)

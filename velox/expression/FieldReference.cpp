@@ -22,6 +22,8 @@ namespace facebook::velox::exec {
 
 void FieldReference::computeDistinctFields() {
   SpecialForm::computeDistinctFields();
+  // 其实我不知道 FieldReference 哪来的 distinctFields_...
+  // 这个对我来说有点抽象了.
   if (inputs_.empty()) {
     mergeFields(
         distinctFields_,
@@ -67,8 +69,10 @@ void FieldReference::apply(
   LocalSelectivityVector nonNullRowsHolder(*context.execCtx());
   const SelectivityVector* nonNullRows = &rows;
   if (inputs_.empty()) {
+    // 不含 Input 就是直接从 EvalCtx 中取出来.
     row = context.row();
   } else {
+    // 执行第一个表达式, 从中抽取.
     inputs_[0]->eval(rows, context, input);
 
     if (auto rowTry = input->as<RowVector>()) {
@@ -82,6 +86,7 @@ void FieldReference::apply(
       }
     }
 
+    // 按照 selectivityVector, 丢到 decoded 中.
     decoded.decode(*input, rows);
     if (decoded.mayHaveNulls()) {
       nonNullRowsHolder.get(rows);
@@ -94,6 +99,7 @@ void FieldReference::apply(
       }
     }
     useDecode = !decoded.isIdentityMapping();
+    // 再拿到 row.
     if (useDecode) {
       std::vector<VectorPtr> peeledVectors;
       LocalDecodedVector localDecoded{context};

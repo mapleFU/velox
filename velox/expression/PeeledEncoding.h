@@ -64,7 +64,7 @@ class LocalSelectivityVector;
 /// 4. A single vector with constant encoding layer over a complex vector can
 ///    be peeled.
 ///    Input Vectors: Const1(Complex1)
-///    Peeled Vectors: Complex
+///    Peeled Vectors: Complex1
 ///    peel: Const1
 ///
 /// 5. A single vector with arbitrary dictionary layers over a constant
@@ -100,6 +100,9 @@ class LocalSelectivityVector;
 ///    Peeled Vectors: DictWithNulls(Flat1), Const1,
 ///                    DictWithNulls(Dict3(Flat2))
 ///    peel: DictNoNulls
+///
+/// Peel 和 DecodedVector 不同, 这里可能借助 DecodedVector 来实现, 但是核心是一种
+/// 展开, 做的是一个执行层公共表达式抽取.
 class PeeledEncoding {
  public:
   /// Factory method for constructing a PeeledEncoding object only if peeling
