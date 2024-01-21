@@ -844,7 +844,6 @@ void Expr::eval(
 
   // Make sure to include current expression in the error message in case of an
   // exception.
-  // TODO(mwish): 这两个 Context 是怎么影响异常的?
   ExprExceptionContext exprExceptionContext{this, context.row(), parentExprSet};
   ExceptionContextSetter exceptionContext(
       {parentExprSet ? onTopLevelException : onException,
@@ -908,7 +907,7 @@ void Expr::eval(
   }
 
   if (inputs_.empty()) {
-    // 没有 input 直接快速 evalAll.
+    // 没有 input 直接快速 evalAll, 这个地方应该是常量表达式?
     evalAll(rows, context, result);
     checkResultInternalState(result);
     return;
@@ -1141,6 +1140,7 @@ void Expr::evalEncodings(
           // here we check for such a case.
           if (newRows->hasSelections()) {
             if (peelEncodingsResult.mayCache) {
+              // 在 Dictionary Peeled 的情况下, 才会尝试去 Peel.
               evalWithMemo(*newRows, context, peeledResult);
             } else {
               evalWithNulls(*newRows, context, peeledResult);
@@ -1151,6 +1151,7 @@ void Expr::evalEncodings(
         }
       });
 
+      // wrappedResult 失败就会走到下面的 evalWithNulls 里面.
       if (wrappedResult != nullptr) {
         context.moveOrCopyResult(wrappedResult, rows, result);
         return;
@@ -1222,7 +1223,6 @@ void Expr::evalWithNulls(
       }
     }
 
-    // 这个是查询的 sv 上下文吗
     if (mayHaveNulls) {
       LocalSelectivityVector nonNullHolder(context);
       if (removeSureNulls(rows, context, nonNullHolder)) {
@@ -1246,7 +1246,8 @@ void Expr::evalWithNulls(
 // it is only employed for cases where it can be useful, it only starts caching
 // result after it encounters the same base at least twice.
 //
-// 复用上层的 dictionary.
+// 复用上层的 dictionary. TableScan 传过来的 dictionary 可能是不会变的(即类似 Parquet 
+// 用 RowGroup 的 dictionary, 这样有助于 Peeling 的执行).
 void Expr::evalWithMemo(
     const SelectivityVector& rows,
     EvalCtx& context,
@@ -1511,7 +1512,8 @@ void Expr::evalAllImpl(
     }
   }
 
-  // 如果有 tryPeel 的话, 就需要 Peel. 执行 applyFunction 的时候需要考虑这个.
+  // 1. 如果有 tryPeel 的话, 尝试 applyFunctionWithPeeling. 
+  // 2. 否则执行 applyFunction, 直接 apply. 里面在参数少的时候可能也会展开(即字典处理，但是不会减少输入参数)
   if (!tryPeelArgs ||
       !applyFunctionWithPeeling(remainingRows.rows(), context, result)) {
     applyFunction(remainingRows.rows(), context, result);
@@ -1551,6 +1553,8 @@ bool Expr::applyFunctionWithPeeling(
   // Note: We do not need to translate final selection since at this stage those
   // rows are not used but isFinalSelection() is only used to check whether
   // pre-existing rows need to be preserved.
+  //
+  // 只对 Peeled inner rows 执行函数.
   auto newRows = peeledEncoding->translateToInnerRows(applyRows, newRowsHolder);
 
   withContextSaver([&](ContextSaver& saver) {
@@ -1963,6 +1967,7 @@ void ExprSet::eval(
     EvalCtx& context,
     std::vector<VectorPtr>& result) {
   result.resize(exprs_.size());
+  // 处理 CSE 的共享上下文.
   if (initialize) {
     clearSharedSubexprs();
   }
@@ -1974,6 +1979,9 @@ void ExprSet::eval(
   // If b is a LazyVector and f(a) AND g(b) expression is evaluated first, it
   // will load b only for rows where f(a) is true. However, h(b) projection
   // needs all rows for "b".
+  //
+  // 保证被 Ref 的 Rows 共享上下文的 LazyVector 需要的 rows 上都被加载, 感觉又是修什么奇葩
+  // 问题的时候出现的: https://github.com/facebookincubator/velox/pull/2501
   for (const auto& field : multiplyReferencedFields_) {
     context.ensureFieldLoaded(field->index(context), rows);
   }

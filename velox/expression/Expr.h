@@ -389,6 +389,12 @@ class Expr {
   // reference it) and have the same distinct fields as its parent.
   // The reason is because such optimizations would be redundant in that case,
   // since they would have been performed identically on the parent.
+  //
+  // 如果没有 distinctField(什么字段都不 Ref), 或者 Parent 和自身的 distinctField
+  // 一样, 就不 Peeling. 这里含义其实比较简单, Parent 传来的 Vector 已经是 Peeled 了,
+  // Null 也已经处理了
+  //
+  // 这里本质就是父亲算过 Null / Distinct 的优化, 自己就不用做了.
   bool skipFieldDependentOptimizations() const {
     if (!isMultiplyReferenced_ && sameAsParentDistinctFields_) {
       return true;
@@ -403,6 +409,8 @@ class Expr {
   struct PeelEncodingsResult {
     SelectivityVector* FOLLY_NULLABLE newRows;
     SelectivityVector* FOLLY_NULLABLE newFinalSelection;
+    // True if the peeled encodings can be cached.
+    // 这个应该是 cacheDictionary 的先决条件.
     bool mayCache;
 
     static PeelEncodingsResult empty() {
@@ -606,7 +614,8 @@ class Expr {
   // parent Expr.
   //
   // Input 的 distinct fields, 就是来源的字段是第几个, 应该可以帮助做一些计算.
-  // TODO(mwish): 解释一下这个玩意.
+  // 这里保证是某种 SpecialForm. 可以来自 EvalCtx 输入行的一个字段上, 
+  // 或者是一个表达式结果.
   std::vector<FieldReference * FOLLY_NONNULL> distinctFields_;
 
   // Fields referenced by multiple inputs, which is subset of distinctFields_.
@@ -892,6 +901,7 @@ bool registerExprSetListener(std::shared_ptr<ExprSetListener> listener);
 bool unregisterExprSetListener(
     const std::shared_ptr<ExprSetListener>& listener);
 
+// 表达式的 Evaluator.
 class SimpleExpressionEvaluator : public core::ExpressionEvaluator {
  public:
   SimpleExpressionEvaluator(core::QueryCtx* queryCtx, memory::MemoryPool* pool)
