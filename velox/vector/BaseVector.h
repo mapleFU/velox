@@ -370,6 +370,8 @@ class BaseVector {
   // Returns true if this vector has a scalar type. If so, values are
   // accessed by valueAt after casting the vector to a type()
   // dependent instantiation of SimpleVector<T>.
+  //
+  // 这个地方是 "类型是否是 Scalar", 而不是 "Type 是否是 Scalar Type".
   virtual bool isScalar() const {
     return false;
   }

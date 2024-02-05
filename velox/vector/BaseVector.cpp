@@ -228,6 +228,7 @@ static VectorPtr addConstant(
   }
 
   if (copyBase) {
+    // 拷贝内部的 value.
     VectorPtr copy = BaseVector::create(vector->type(), 1, pool);
     copy->copy(vector.get(), 0, index, 1);
     return std::make_shared<ConstantVector<T>>(

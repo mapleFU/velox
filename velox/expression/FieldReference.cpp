@@ -22,8 +22,9 @@ namespace facebook::velox::exec {
 
 void FieldReference::computeDistinctFields() {
   SpecialForm::computeDistinctFields();
-  // 其实我不知道 FieldReference 哪来的 distinctFields_...
-  // 这个对我来说有点抽象了.
+  // 对 FieldReference, distinctFields 来自:
+  // 1. 如果 inputs_ 为空, 那感觉就等价于父级的表达式( `Expr::computeDistinctFields()` 会计算 input ).
+  // 2. 否则其实自身没有 distinctFields_ 和 multiplyReferencedFields_, 会把自己作为 underlying 加入进去.
   if (inputs_.empty()) {
     mergeFields(
         distinctFields_,
@@ -37,6 +38,8 @@ void FieldReference::computeDistinctFields() {
 // whenever the RowVector is constructed or mutated (eager propagation of
 // nulls).  The current lazy propagation might still be better (more efficient)
 // when adding extra nulls.
+//
+// 在从 `input` 中取的情况下, 如果 `result` 不为空且 unique,
 bool FieldReference::addNullsFast(
     const SelectivityVector& rows,
     EvalCtx& context,
@@ -51,6 +54,7 @@ bool FieldReference::addNullsFast(
     if (!child.unique()) {
       return false;
     }
+    // 尝试去 Hack Input, 给 input 加上 nulls, 然后设置到 result 上.
     addNulls(rows, row->rawNulls(), context, const_cast<VectorPtr&>(child));
   }
   result = child;
@@ -68,11 +72,13 @@ void FieldReference::apply(
   bool useDecode = false;
   LocalSelectivityVector nonNullRowsHolder(*context.execCtx());
   const SelectivityVector* nonNullRows = &rows;
+  // 抽出 Input Rows 到 `row` 中.
   if (inputs_.empty()) {
-    // 不含 Input 就是直接从 EvalCtx 中取出来.
+    // 不含 Input 就是直接从 EvalCtx 中取出来(从 Input Vector 中抽取)
     row = context.row();
   } else {
-    // 执行第一个表达式, 从中抽取.
+    // 执行第一个表达式(也只有一个), 从中执行并且抽取.
+    // rows 作为完整的限定.
     inputs_[0]->eval(rows, context, input);
 
     if (auto rowTry = input->as<RowVector>()) {
@@ -94,13 +100,14 @@ void FieldReference::apply(
           decoded.nulls(), rows.begin(), rows.end());
       nonNullRows = nonNullRowsHolder.get();
       if (!nonNullRows->hasSelections()) {
+        // 一个都没选中就跑路咯.
         addNulls(rows, decoded.nulls(), context, result);
         return;
       }
     }
     useDecode = !decoded.isIdentityMapping();
-    // 再拿到 row.
     if (useDecode) {
+      // 根据 PeeledEncoding 来解码内部.
       std::vector<VectorPtr> peeledVectors;
       LocalDecodedVector localDecoded{context};
       peeledEncoding = PeeledEncoding::peel(
@@ -117,14 +124,18 @@ void FieldReference::apply(
       row = input->as<const RowVector>();
     }
   }
+  // 上面的逻辑取出了 input (row), 然后就是根据 index_ 来取出对应的 child.
   if (index_ == -1) {
     auto rowType = dynamic_cast<const RowType*>(row->type().get());
     VELOX_CHECK(rowType);
     index_ = rowType->getChildIdx(field_);
   }
+  // 能够在 Input 快速设置 Null 并直接返回
   if (!useDecode && addNullsFast(rows, context, result, row)) {
     return;
   }
+  // 拿到 child, 然后拷贝
+  // 如果 unshared 的话, 会要求 load, 不知道为什么, 这个地方是不是可以作为一个优化.
   VectorPtr child =
       inputs_.empty() ? context.getField(index_) : row->childAt(index_);
   if (child->encoding() == VectorEncoding::Simple::LAZY) {
@@ -158,8 +169,10 @@ void FieldReference::evalSpecialForm(
     const SelectivityVector& rows,
     EvalCtx& context,
     VectorPtr& result) {
+  // 直接产生一个 nullptr 作为 localResult.
   VectorPtr localResult;
   apply(rows, context, localResult);
+  // 将 localResult 移动(或者拷贝) 到 result 中.
   context.moveOrCopyResult(localResult, rows, result);
 }
 

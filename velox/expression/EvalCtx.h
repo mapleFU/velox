@@ -270,6 +270,9 @@ class EvalCtx {
     peeledEncoding_ = std::move(peel);
   }
 
+  // result 如果是 !finalSelection 的某个操作, 并且传来的输入有这些 selection, 
+  // 那么就需要保留原来的 null 之类的 selection信息(关注 `moveOrCopyResult` 的 rows 参数), 
+  // 要不然该怎么搞怎么搞.
   bool resultShouldBePreserved(
       const VectorPtr& result,
       const SelectivityVector& rows) const {
@@ -288,6 +291,7 @@ class EvalCtx {
       localResult->validate();
     }
 #endif
+    // 如果是 finalSelection, 那么就需要保留原来的 null 之类的 selection.
     if (resultShouldBePreserved(result, rows)) {
       BaseVector::ensureWritable(rows, result->type(), result->pool(), result);
       result->copy(localResult.get(), rows, nullptr);
@@ -423,6 +427,8 @@ void withContextSaver(F&& f) {
 
 /// Produces a SelectivityVector with a single row selected using a pool of
 /// SelectivityVectors managed by the EvalCtx::execCtx().
+///
+/// 特化的单行 Selection Vector.
 class LocalSingleRow {
  public:
   LocalSingleRow(EvalCtx& context, vector_size_t row)
