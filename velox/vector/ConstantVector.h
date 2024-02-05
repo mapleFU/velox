@@ -223,6 +223,7 @@ class ConstantVector final : public SimpleVector<T> {
     return const_cast<ConstantVector<T>*>(this)->loadedVector();
   }
 
+  // 这个地方是 "类型是否是 Scalar", 而不是 "Type 是否是 Scalar Type".
   bool isScalar() const override {
     return valueVector_ ? valueVector_->isScalar()
                         : (this->typeKind() != TypeKind::UNKNOWN);

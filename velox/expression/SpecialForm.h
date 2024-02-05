@@ -20,7 +20,6 @@
 namespace facebook::velox::exec {
 
 /// Constant, Cast, Coalesce, Conjunct(And, Or), FieldReference, Switch, Lambda, Try.
-/// TODO(mwish): 我也不知道为什么这些就是 SpecialForm
 class SpecialForm : public Expr {
  public:
   SpecialForm(
@@ -40,7 +39,14 @@ class SpecialForm : public Expr {
   // This is safe to call only after all metadata is computed for input
   // expressions.
   //
-  // TODO(mwish): 我也想知道这个为啥需要有一个特殊的 PropagateNulls 的过程.
+  // Q: 我也想知道这个为啥需要有一个特殊的 PropagateNulls 的过程.
+  // A: 这个接口的引入在: https://github.com/facebookincubator/velox/pull/5287
+  //
+  // 1. 对于 VectorFunction 的表达式, 从 VectorFuction 上直接拿到 propagateNull 就可以了.
+  //    Expr 上也有 `bool propagateNulls() const` 的接口.
+  // 2. 对于 SpecialForm, 额外从 `!vectorFunction` 来计算 propagateNulls.
+  //
+  // 其实本质上就是说, Expr 也是一种特殊的 SpecialFunction, 也需要 computePropagatesNulls.
   virtual void computePropagatesNulls() {
     VELOX_NYI();
   }

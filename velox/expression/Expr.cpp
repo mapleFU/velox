@@ -1836,6 +1836,7 @@ ExprSet::ExprSet(
     : execCtx_(execCtx) {
   exprs_ = compileExpressions(sources, execCtx, this, enableConstantFolding);
   std::vector<FieldReference*> allDistinctFields;
+  // 生成子表达式的 distinctFields_ 和 multiplyReferencedFields_.
   for (auto& expr : exprs_) {
     Expr::mergeFields(
         distinctFields_, multiplyReferencedFields_, expr->distinctFields());

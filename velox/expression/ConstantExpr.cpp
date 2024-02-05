@@ -26,6 +26,9 @@ void ConstantExpr::evalSpecialForm(
   } else {
     // By reassigning sharedConstantValue_ we increase the chances that it will
     // be unique the next time this expression is evaluated.
+    //
+    // 这个不拷贝 base, 就直接再构造一个 vec, 让他成 unique
+    // 我真心觉得有、离谱...
     sharedConstantValue_ =
         BaseVector::wrapInConstant(rows.end(), 0, sharedConstantValue_);
   }
@@ -42,6 +45,10 @@ void ConstantExpr::evalSpecialForm(
     needToSetIsAscii_ = false;
   }
 
+  // 把 sharedConstantValue_ 的值复制到 result 的 rows 中.
+  // 这里也会处理 result 不是 null 或者 finalSelection 的情况.
+  // (吐槽: 如果侥幸 isFinalSelection, 这里是不是 isAscii, 这里是不是飞了? 不过看 `BaseVector::wrapInConstant`
+  //  里面会设置, 真的有点 hack 了)
   context.moveOrCopyResult(sharedConstantValue_, rows, result);
 }
 

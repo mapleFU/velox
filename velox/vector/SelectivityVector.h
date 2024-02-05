@@ -37,7 +37,8 @@ namespace velox {
 // SelectivityVector can be used to optimize filtering by skipping elements
 // that where previously filtered by another filter / column
 //
-// 这里的形式还是个 bitset
+// 这里的形式还是个 bitset. 这里有个特别的地方是, 内部抽出了 `begin`, `end` 做 set
+// 的值的优化. `applyToSelected` 也用到了这个优化.
 class SelectivityVector {
  public:
   SelectivityVector() {}

@@ -230,6 +230,8 @@ class Expr {
 
   // Allow special form expressions to overwrite and implement a simplified
   // path; fallback to the regular implementation by default.
+  //
+  // 都是 Flatten 的实现.
   virtual void evalSpecialFormSimplified(
       const SelectivityVector& rows,
       EvalCtx& context,
@@ -713,6 +715,8 @@ singleRow(LocalSelectivityVector& holder, vector_size_t row);
 
 using ExprPtr = std::shared_ptr<Expr>;
 
+// compileExpression 生成, 表达式的集合.
+//
 // A set of Exprs that get evaluated together. Common subexpressions
 // can be deduplicated. This is the top level handle on an expression
 // and is used also if only one Expr is to be evaluated. TODO: Rename to
@@ -800,6 +804,8 @@ class ExprSet {
   std::vector<std::shared_ptr<Expr>> exprs_;
 
   // The distinct references to input columns among all expressions in ExprSet.
+  //
+  // 这个是所有 Expr 的 distinctFields 的并集.
   std::vector<FieldReference * FOLLY_NONNULL> distinctFields_;
 
   // Fields referenced by multiple expressions in ExprSet.
