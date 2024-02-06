@@ -217,7 +217,7 @@ void Expr::mergeFields(
 }
 
 void Expr::computeDistinctFields() {
-  // 在调用这个之前这块( distinctFields_, multiplyReferencedFields_ )应该是 empty 的?
+  // 在调用这个之前这块( distinctFields_, multiplyReferencedFields_ ) 是 empty 的.
   // 合并所有子表达式的 distinctFields_, 把出现多次的放到 multiplyReferencedFields_ 里面.
   for (auto& input : inputs_) {
     mergeFields(
@@ -264,7 +264,10 @@ void Expr::computeMetadata() {
   // depends on makes the Expr null.
   //
   // Constant, FieldReference, CastExpr, SpecialForm 这些当成 Vector 来处理.
-  // TODO(mwish): 为什么 SpecialCase 要这么处理呢?
+  // Q: 为什么 SpecialCase 要这么处理呢?
+  // A: Vector 直接用里头的就可以了. Constant, FieldReference, CastExpr 这些
+  //    是零条/多条输入流 - 抛出 null 的, 和正常函数一起处理, if/switch/try 这种就
+  //    自己 compute 了
   if (isSpecialForm() && !is<ConstantExpr>() && !is<FieldReference>() &&
       !is<CastExpr>()) {
     as<SpecialForm>()->computePropagatesNulls();
@@ -589,6 +592,9 @@ namespace {
 /// Data needed to generate exception context for the top-level expression. It
 /// also provides functionality to persist both data and sql to disk for
 /// debugging purpose
+///
+/// ExprExceptionContext类的主要作用是在表达式执行过程中出现异常时，提供一种机制来生成异常上下文，
+/// 包括持久化相关的数据和SQL，以便于后续的调试和问题排查。
 class ExprExceptionContext {
  public:
   ExprExceptionContext(
@@ -782,6 +788,8 @@ void Expr::evalFlatNoNullsImpl(
     VectorPtr& result,
     const ExprSet* parentExprSet) {
   ExprExceptionContext exprExceptionContext{this, context.row(), parentExprSet};
+  // 内部用 ExceptionContextSetter 来包装 `ExprExceptionContext`, 
+  // 添加异常的时候打印这个表达式的逻辑.
   ExceptionContextSetter exceptionContext(
       {parentExprSet ? onTopLevelException : onException,
        parentExprSet ? (void*)&exprExceptionContext : this});
@@ -836,6 +844,7 @@ void Expr::eval(
   if (supportsFlatNoNullsFastPath_ && context.throwOnError() &&
       context.inputFlatNoNulls() && rows.countSelected() < 1'000) {
     // 满足了 ML 那种 FastPath 的条件, 执行 FlatNoNull 函数
+    // 主要是在 ML 之类的场景，处理 encoding 和 Null 本身有一定开销, 框架就不处理了.
     // 具体见这个 patch: https://github.com/facebookincubator/velox/pull/1943
     // 把细节说的比较清楚.
     evalFlatNoNulls(rows, context, result, parentExprSet);

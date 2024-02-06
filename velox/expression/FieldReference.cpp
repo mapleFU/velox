@@ -108,6 +108,9 @@ void FieldReference::apply(
     useDecode = !decoded.isIdentityMapping();
     if (useDecode) {
       // 根据 PeeledEncoding 来解码内部.
+      // 这里实际是强制用 Peel 来展开, 把乱序的 Dictionary 之类的表达式拍平.
+      // 我个人觉得不拍平好一点, 不过这个应该是只有 nested field 才会这样? 感觉其实大部分时候开销并不大
+      // (即大部分时候甚至不是表达式的结果吧...是 struct 的话很多时候也是平坦的?)
       std::vector<VectorPtr> peeledVectors;
       LocalDecodedVector localDecoded{context};
       peeledEncoding = PeeledEncoding::peel(
@@ -120,6 +123,7 @@ void FieldReference::apply(
       VELOX_CHECK(peeledVectors[0]->encoding() == VectorEncoding::Simple::ROW);
       row = peeledVectors[0]->as<const RowVector>();
     } else {
+      // `decoded.isIdentityMapping()`, 可以直接用 `input` 的结构.
       VELOX_CHECK(input->encoding() == VectorEncoding::Simple::ROW);
       row = input->as<const RowVector>();
     }

@@ -640,8 +640,7 @@ class Expr {
 
   // True if this or a sub-expression is an IF, AND or OR.
   //
-  // 表达式或者表达式的 child 是否包含 if/and/or. 
-  // TODO(mwish): 这个和 specialForm 有什么区别或者联系?
+  // 表达式或者表达式的 child 是否包含 if/and/or.
   bool hasConditionals_ = false;
 
   // 被多个表达式依赖

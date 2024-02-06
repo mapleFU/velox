@@ -112,6 +112,7 @@ inline constexpr auto kFileNotFound = "FILE_NOT_FOUND"_fs;
 inline constexpr auto kUnknown = "UNKNOWN"_fs;
 } // namespace error_code
 
+// Velox 定义的内部 Exception.
 class VeloxException : public std::exception {
  public:
   enum class Type { kUser = 0, kSystem = 1 };
@@ -259,6 +260,7 @@ class VeloxException : public std::exception {
   const std::shared_ptr<const State> state_;
 };
 
+// VELOX_USER_CHECK 之类的会丢出这个.
 class VeloxUserError : public VeloxException {
  public:
   VeloxUserError(
@@ -359,6 +361,10 @@ struct ExceptionContext {
 
   /// Calls `messageFunc(arg)` and returns the result. Returns empty string if
   /// `messageFunc` is null.
+  ///
+  /// 这里允许调用 `messageFunc(exceptionType, arg)` 来获取额外的 context.
+  /// 默认的话, 提供空字符串, 定义了 messageFunc 才会有额外的 context, 用
+  /// suspended 来防止递归异常.
   std::string message(VeloxException::Type exceptionType) {
     if (!messageFunc || suspended) {
       return "";
@@ -378,6 +384,7 @@ struct ExceptionContext {
     return theMessage;
   }
 
+  // 防止递归调用.
   bool suspended{false};
 };
 
@@ -390,12 +397,17 @@ std::exception_ptr toVeloxException(const std::exception_ptr& exceptionPtr);
 /// case an exception occurs. This is to used in cases when stack trace would
 /// not provide enough information, e.g. in case of hierarchical processing like
 /// expression evaluation.
+///
+/// 单线程的 Exception context, 用来记录当前的 context. 内部包装了一个 TLS.
+/// VeloxException 的构造函数会 `getExceptionContext` 来获取当前的 context.
 ExceptionContext& getExceptionContext();
 
 /// RAII class to set and restore context for exceptions. Links the new
 /// exception context with the previous context held by the thread_local
 /// variable to allow retrieving the top-level context when there is an
 /// exception context hierarchy.
+///
+/// RAII 类型, 设置 TLS 的 ExceptionContext.
 class ExceptionContextSetter {
  public:
   explicit ExceptionContextSetter(ExceptionContext value)

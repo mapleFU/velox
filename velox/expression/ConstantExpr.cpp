@@ -21,6 +21,11 @@ void ConstantExpr::evalSpecialForm(
     const SelectivityVector& rows,
     EvalCtx& context,
     VectorPtr& result) {
+  // 这里会在每个循环的地方处理, 如果第一次是 unique 就尝试 resize(然后可能 copy 或者 ref 出去)
+  // 如果是 shared 就展开成 constant (这里可能是找到内部的，再包装一个 ConstantVector, 不会包两层).
+  //
+  // 还有一个比较值得关注的细节是这里展开的大小是 `rows.end()`. 这里首先关注性质, 没 select 的地方只会被
+  // deselect, 不会被赋值, 所以这里的 `rows.end()` 是合理的. (不同于 null).
   if (sharedConstantValue_.unique()) {
     sharedConstantValue_->resize(rows.end());
   } else {
