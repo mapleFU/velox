@@ -806,25 +806,29 @@ void Expr::evalFlatNoNullsImpl(
   }
 
   // Prepare Input
-  // 这个地方 constantInput 还不是 inputValues_ 😅，我操了
+  // 这个地方 constantInput 还不是 inputValues_ 😅
+  // 想了一下, 应该本质是因为 eval 的时候需要 resize, 所以特判一下.
   inputValues_.resize(inputs_.size());
   for (int32_t i = 0; i < inputs_.size(); ++i) {
     if (constantInputs_[i]) {
       // No need to re-evaluate constant expression. Simply move constant values
       // from constantInputs_.
       inputValues_[i] = std::move(constantInputs_[i]);
+      // 这里是 constant 的时候, 需要 resize 到 `rows.end()`.
       inputValues_[i]->resize(rows.end());
     } else {
-      // 这个地方是说 inputValues_ 里面的值是不是 constant 的.
+      // 这个地方是说 inputValues_ 里面的值不是 constant 的.
       // 这个时候需要通过 eval 来拿到值
       inputs_[i]->evalFlatNoNulls(rows, context, inputValues_[i]);
     }
   }
 
   // Apply VectorFunction
+  // 执行 Vector Function.
   applyFunction(rows, context, result);
 
   // Move constant values back to constantInputs_.
+  // 恢复 constantInputs_ 的值, 等待下一次继续 resize.
   for (int32_t i = 0; i < inputs_.size(); ++i) {
     if (inputIsConstant_[i]) {
       constantInputs_[i] = std::move(inputValues_[i]);
@@ -832,7 +836,13 @@ void Expr::evalFlatNoNullsImpl(
     }
   }
 
-  // 处理掉非 Const 的 Input Value.
+  // 处理掉非 Const 的 Input Value, 这些来自表达式的生成.
+  //
+  // Q: reuse input 会怎么处理这些?
+  // A: reuse input 要求输入和输出列类型相同, 然后是 unique 的.
+  //    结果它会 reuse 相同的内存. 
+  //    重点是 `releaseInputValues` 下层 `VectorPool::release`
+  //    的时候, 如果 !unique, 就不会把这个内存释放掉.
   releaseInputValues(context);
 }
 
@@ -1600,6 +1610,7 @@ void Expr::applyFunction(
   stats_.numProcessedRows += rows.countSelected();
   auto timer = cpuWallTimer();
 
+  // 计算输入输出的 ascii metadata.
   computeIsAsciiForInputs(vectorFunction_.get(), inputValues_, rows);
   std::optional<bool> isAscii = type()->isVarchar()
       ? computeIsAsciiForResult(vectorFunction_.get(), inputValues_, rows)
@@ -1620,6 +1631,8 @@ void Expr::applyFunction(
 
     // If there are rows with no result and no exception this is a bug in the
     // function implementation.
+    //
+    // 尝试 de-select context 中的 error.
     if (remainingRows.deselectErrors()) {
       try {
         // This isn't performant, but it gives us the relevant context and
@@ -1633,6 +1646,8 @@ void Expr::applyFunction(
 
     // Since result was empty, and either the function set errors for every
     // row or we did above, set it to be all NULL.
+    //
+    // 处理成 All-Nulls
     result = BaseVector::createNullConstant(type(), rows.end(), context.pool());
   }
 
@@ -1650,7 +1665,9 @@ void Expr::evalSpecialFormWithStats(
   stats_.numProcessedRows += rows.countSelected();
   auto timer = cpuWallTimer();
 
-  // TODO(mwish): 为什么 evalSpecialForm 是个特殊函数呢?
+  // Q: 为什么 evalSpecialForm 是个特殊函数呢?
+  // A: 因为这套东西继承写的一把shit, 拆分出了 eval(base class, non virtual),
+  //    和 evalSpecial.
   evalSpecialForm(rows, context, result);
 }
 

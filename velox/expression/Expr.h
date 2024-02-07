@@ -564,6 +564,8 @@ class Expr {
 
   /// Returns an instance of CpuWallTimer if cpu usage tracking is enabled. Null
   /// otherwise.
+  ///
+  /// 框架只有在内部选择 trackCpuUsage 的时候才会记录.
   std::unique_ptr<CpuWallTimer> cpuWallTimer() {
     return trackCpuUsage_ ? std::make_unique<CpuWallTimer>(stats_.timing)
                           : nullptr;
@@ -693,6 +695,8 @@ class Expr {
   std::unique_ptr<SelectivityVector> cachedDictionaryIndices_;
 
   /// Runtime statistics. CPU time, wall time and number of processed rows.
+  ///
+  /// 表达式本身的 stats, 这里
   ExprStats stats_;
 
   // If true computeMetaData returns, otherwise meta data is computed and the
