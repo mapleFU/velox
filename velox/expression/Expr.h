@@ -485,10 +485,10 @@ class Expr {
   /// Shared Sub Expr 在 comment 里面定义又叫 CSE.
   bool shouldEvaluateSharedSubexp() const {
     // 需要是:
-    // 1. deterministic
+    // 1. deterministic (不 determinstic 感觉不能增量算, 要每次自己算了)
     // 2. 被多个表达式依赖
-    // 3. 有 input? --> 这个地方其实我不是完全理解. 如果不是的话(类似一个常量),
-    //    会怎么处理??? 注释里说是 -> (i.e. not a constant or field access expression)
+    // 3. 有 input --> i.e. not a constant or field access (并非指向表达式结果的 FieldRef) 
+    //   expression. 这些表达式都很轻, 感觉也没必要 CSE 这种搞法了.
     //
     // 这个还是看算子树的情况
     return deterministic_ && isMultiplyReferenced_ && !inputs_.empty();
@@ -654,13 +654,19 @@ class Expr {
 
   struct SharedResults {
     // The rows for which 'sharedSubexprValues_' has a value.
+    //
+    // CSE 之已经计算过的 rows.
     std::unique_ptr<SelectivityVector> sharedSubexprRows_ = nullptr;
     // If multiply referenced or literal, these are the values.
+    //
+    // CSE 的结果 Vector.
     VectorPtr sharedSubexprValues_ = nullptr;
   };
 
   // Maps the inputs referenced by distinctFields_ captuered when
   // evaluateSharedSubexpr() is called to the cached shared results.
+  //
+  // CSE 计算的结果, 受到 `maxSharedSubexprResultsCached()` 的限制.
   std::map<std::vector<const BaseVector*>, SharedResults> sharedSubexprResults_;
 
   // Pointers to the last base vector of cachable dictionary input. Used to

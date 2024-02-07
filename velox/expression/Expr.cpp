@@ -937,7 +937,7 @@ void Expr::eval(
   checkResultInternalState(result);
 }
 
-// 增量模式去 eval subexpr.
+// 增量模式去 eval CSE.
 template <typename TEval>
 void Expr::evaluateSharedSubexpr(
     const SelectivityVector& rows,
@@ -969,6 +969,9 @@ void Expr::evaluateSharedSubexpr(
               .first;
     } else {
       // Otherwise, simply evaluate it and return without caching the results.
+      //
+      // 不匹配, `sharedSubexprResults_` 也没有足够空间. 这里不走 CSE 的逻辑了, 
+      // 给 input rows 做全量 Eval.
       eval(rows, context, result);
 
       return;
@@ -979,6 +982,7 @@ void Expr::evaluateSharedSubexpr(
       sharedSubexprResultsIter->second;
 
   if (sharedSubexprValues == nullptr) {
+    // 之前没有, 全量计算本次需要的并且去 cache 住.
     eval(rows, context, result);
 
     if (!sharedSubexprRows) {
@@ -1000,6 +1004,7 @@ void Expr::evaluateSharedSubexpr(
     return;
   }
 
+  // 如果全部输入都计算过, 那么移动计算结果.
   if (rows.isSubset(*sharedSubexprRows)) {
     // We have results for all requested rows. No need to compute anything.
     context.moveOrCopyResult(sharedSubexprValues, rows, result);
@@ -1011,6 +1016,8 @@ void Expr::evaluateSharedSubexpr(
 
   // Identify a subset of rows that need to be computed: rows -
   // sharedSubexprRows_.
+  //
+  // 增量计算 missing rows, 然后结果合并到 sharedSubexprValues.
   LocalSelectivityVector missingRowsHolder(context, rows);
   auto missingRows = missingRowsHolder.get();
   missingRows->deselect(*sharedSubexprRows);
@@ -1019,6 +1026,8 @@ void Expr::evaluateSharedSubexpr(
   // Fix finalSelection to avoid losing values outside missingRows.
   // Final selection of rows need to include sharedSubexprRows_, missingRows and
   // current final selection of rows if set.
+  //
+  // 这里 Hook 了一个 FinalSelection 的 Hack, 让结果不被 overwrite.
   LocalSelectivityVector newFinalSelectionHolder(context, *sharedSubexprRows);
   auto newFinalSelection = newFinalSelectionHolder.get();
   newFinalSelection->select(*missingRows);
@@ -1651,6 +1660,9 @@ void Expr::applyFunction(
     result = BaseVector::createNullConstant(type(), rows.end(), context.pool());
   }
 
+  // https://github.com/facebookincubator/velox/pull/32
+  // 这个地方是 Partial 的 ascii 信息.
+  // TODO(mwish): SimpleFunction 没有算这个吗?
   if (isAscii.has_value()) {
     result->asUnchecked<SimpleVector<StringView>>()->setIsAscii(
         isAscii.value(), rows);
