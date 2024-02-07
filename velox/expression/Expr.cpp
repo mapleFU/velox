@@ -927,7 +927,9 @@ void Expr::eval(
   }
 
   if (inputs_.empty()) {
-    // 没有 input 直接快速 evalAll, 这个地方应该是常量表达式?
+    // 没有 input 直接快速 evalAll, 这个地方应该是常量表达式或者 FieldRef 之类的
+    // (或者甚至 non-determinstic 的生成表达式), 反正也不用管你 encoding 什么
+    // 的, 直接 evalAll 执行最内层逻辑就是.
     evalAll(rows, context, result);
     checkResultInternalState(result);
     return;
@@ -1072,6 +1074,8 @@ Expr::PeelEncodingsResult Expr::peelEncodings(
   // Use finalSelection to generate peel to ensure those rows can be translated
   // and ensure consistent peeling across multiple calls to this expression if
   // its a shared subexpression.
+  //
+  // 生成更多的 rows, 用来做 Peel.
   const auto& rowsToPeel =
       context.isFinalSelection() ? rows : *context.finalSelection();
   auto numFields = context.row()->childrenSize();
@@ -1086,7 +1090,7 @@ Expr::PeelEncodingsResult Expr::peelEncodings(
       // Make sure constant encoded fields are loaded
       fieldVector = context.ensureFieldLoaded(fieldIndex, rowsToPeel);
     }
-    vectorsToPeel.push_back(fieldVector);
+    vectorsToPeel.push_back(std::move(fieldVector));
   }
 
   // Attempt peeling.
@@ -1102,6 +1106,7 @@ Expr::PeelEncodingsResult Expr::peelEncodings(
   // Translate the relevant rows.
   SelectivityVector* newFinalSelection = nullptr;
   if (!context.isFinalSelection()) {
+    // 置换一层 FinalSelection, 把原来的内容做 Peel 之后的.
     newFinalSelection = peeledEncoding->translateToInnerRows(
         *context.finalSelection(), finalRowsHolder);
   }
@@ -1109,7 +1114,10 @@ Expr::PeelEncodingsResult Expr::peelEncodings(
 
   // Save context and set the peel, peeled fields and final selection (if
   // applicable).
+  //
+  // 设置用来恢复的上下文.
   context.saveAndReset(saver, rows);
+  // 设置 ctx 的 Peeling 上下文.
   context.setPeeledEncoding(peeledEncoding);
   if (newFinalSelection) {
     *context.mutableFinalSelection() = newFinalSelection;
@@ -1138,6 +1146,9 @@ void Expr::evalEncodings(
     const SelectivityVector& rows,
     EvalCtx& context,
     VectorPtr& result) {
+  // 如果不是 determinstic 的, 那么就不会尝试去做 Encoding 的处理. 因为 Peeling
+  // 本身会改变 input(可能会减少输入 size), 所以不是 determinstic 的话, 这个优化
+  // 本身也不合法.
   if (deterministic_ && !skipFieldDependentOptimizations()) {
     bool hasFlat = false;
     for (auto* field : distinctFields_) {
@@ -1147,10 +1158,13 @@ void Expr::evalEncodings(
       }
     }
 
+    // 一旦有 Flat, 这里本身都无法 Peel.
     if (!hasFlat) {
       VectorPtr wrappedResult;
       // Attempt peeling and bound the scope of the context used for it.
-
+      //
+      // ContextSaver: 用来保存当前的 Context, 主要是执行 Peeling 的时候(`peelEncodings`),
+      // 会修改 EvalCtx 和 Row 的数量, 所以需要在执行完之后恢复.
       withContextSaver([&](ContextSaver& saveContext) {
         LocalSelectivityVector newRowsHolder(context);
         LocalSelectivityVector finalRowsHolder(context);
@@ -1162,7 +1176,7 @@ void Expr::evalEncodings(
             decodedHolder,
             newRowsHolder,
             finalRowsHolder);
-        // 尝试给输入做 Peel, 抽取公共的 Rows.
+        // 尝试给输入做 Peel, 抽取公共的 Rows, 抽取成功的话就去执行.
         auto* newRows = peelEncodingsResult.newRows;
         if (newRows) {
           VectorPtr peeledResult;
@@ -1177,6 +1191,7 @@ void Expr::evalEncodings(
               evalWithNulls(*newRows, context, peeledResult);
             }
           }
+          // 根据 Peeling 的结果恢复外层的结果.
           wrappedResult = context.getPeeledEncoding()->wrap(
               this->type(), context.pool(), peeledResult, rows);
         }
@@ -1189,6 +1204,7 @@ void Expr::evalEncodings(
       }
     }
   }
+  // 公共 Encoding 处理完成, 开始 resolve Null.
   evalWithNulls(rows, context, result);
 }
 

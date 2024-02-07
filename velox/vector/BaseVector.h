@@ -633,6 +633,8 @@ class BaseVector {
 
   // If 'this' is a wrapper, returns the wrap info, interpretation depends on
   // encoding.
+  //
+  // 对于 Constant 返回一个单值 Vector; 对于字典返回 indices.
   virtual BufferPtr wrapInfo() const {
     throw std::runtime_error("Vector is not a wrapper");
   }

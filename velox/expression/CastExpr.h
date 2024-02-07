@@ -68,6 +68,8 @@ class CastOperator {
       VectorPtr& result) const = 0;
 };
 
+/// TryCast: null on failure, Cast: throw on failure
+/// 上面这两个逻辑都会走到 Cast 的表达式中.
 class CastExpr : public SpecialForm {
  public:
   /// @param type The target type of the cast expression
@@ -80,8 +82,8 @@ class CastExpr : public SpecialForm {
       bool nullOnFailure,
       std::shared_ptr<CastHooks> hooks)
       : SpecialForm(
-            type,
-            std::vector<ExprPtr>({expr}),
+            std::move(type),
+            std::vector<ExprPtr>({std::move(expr)}),
             nullOnFailure ? kTryCast.data() : kCast.data(),
             false /* supportsFlatNoNullsFastPath */,
             trackCpuUsage),

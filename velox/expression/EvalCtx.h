@@ -370,6 +370,9 @@ class EvalCtx {
 
   // Corresponds 1:1 to children of 'row_'. Set to an inner vector
   // after removing dictionary/sequence wrappers.
+  //
+  // 这个字段和 peeledEncoding_ 都存储 Peel 的上下文. 在 Expr Eval 的时候,
+  // 会有 Peel 操作, 然后切换一些行. 这里就使用 PeeledFields.
   std::vector<VectorPtr> peeledFields_;
 
   // Set if peeling was successful, that is, common encodings from inputs were

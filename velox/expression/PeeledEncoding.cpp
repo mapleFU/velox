@@ -122,11 +122,15 @@ bool PeeledEncoding::peelInternal(
   bool peeled;
   bool nonConstant = false;
   int32_t firstPeeled = -1;
+  // 尝试匹配 `numLevels` 层, 前面的东西相当于已经匹配, 每个循环会扫一遍整个 `numFields`.
+  // peeledVectors 会在每次循环中被更新, 相当于上一轮的 Peel 结果.
   do {
     peeled = true;
     BufferPtr firstIndices;
     maybePeeled.resize(numFields);
     for (int fieldIndex = 0; fieldIndex < numFields; fieldIndex++) {
+      // 这里应该对应 `peeledVectors = std::move(maybePeeled);` 这里的情况,
+      // 即第一次用 `vectorsToPeel`, 之后用 `peeledVectors`.
       auto leaf = peeledVectors.empty() ? vectorsToPeel[fieldIndex]
                                         : peeledVectors[fieldIndex];
       if (leaf == nullptr) {
@@ -134,8 +138,10 @@ bool PeeledEncoding::peelInternal(
       }
       if (leaf->isLazy() && leaf->asUnchecked<LazyVector>()->isLoaded()) {
         auto lazy = leaf->asUnchecked<LazyVector>();
+        // 拿到之前 load 过的 vector.
         leaf = lazy->loadedVectorShared();
       }
+      // constant 表示上一层这里是 constant.
       if (!constantFields.empty() && constantFields[fieldIndex]) {
         setPeeled(leaf, fieldIndex, maybePeeled);
         continue;
@@ -148,6 +154,7 @@ bool PeeledEncoding::peelInternal(
       // D1(C1), if this check is in place then peeling will stop at D1,
       // otherwise peeling will continue and peel off D2 as well.
       if (numLevels == 0 && leaf->isConstantEncoding()) {
+        // 设置 constant flag, 然后拷贝 到 maybePeeled, 继续下一轮.
         setPeeled(leaf, fieldIndex, maybePeeled);
         constantFields.resize(numFields);
         constantFields.at(fieldIndex) = true;
@@ -159,20 +166,27 @@ bool PeeledEncoding::peelInternal(
         if (!canPeelsHaveNulls && leaf->rawNulls()) {
           // A dictionary that adds nulls over an Expr that is not null for a
           // null argument cannot be peeled.
+          //
+          // 有 Null 并设置了 canPeelsHaveNulls 为 false, 则不能 peel.
           peeled = false;
           break;
         }
+        // 拿到 indices.
         BufferPtr indices = leaf->wrapInfo();
         if (!firstIndices) {
           firstIndices = std::move(indices);
         } else if (indices != firstIndices) {
           // different fields use different dictionaries
+          //
+          // NOTE(mwish): 这个地方是不是只能证明 indices 不相同, 本层的 indices 不相同,
+          //  上层可能指向同一个 dictionary.
           peeled = false;
           break;
         }
         if (firstPeeled == -1) {
           firstPeeled = fieldIndex;
         }
+        // 这里设置的是 valueVector.
         setPeeled(leaf->valueVector(), fieldIndex, maybePeeled);
       } else {
         // Non-peelable encoding.

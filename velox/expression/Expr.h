@@ -391,8 +391,9 @@ class Expr {
   // The reason is because such optimizations would be redundant in that case,
   // since they would have been performed identically on the parent.
   //
-  // 如果没有 distinctField(什么字段都不 Ref), 或者 Parent 和自身的 distinctField
-  // 一样, 就不 Peeling. 这里含义其实比较简单, Parent 传来的 Vector 已经是 Peeled 了,
+  // 如果没有distinctField(什么字段都不 Ref), 或者 Parent 和自身的 distinctField
+  // 一样(sameAsParent 需要 !isMultiplyReferenced_ 才有意义), 就不 Peeling. 
+  // 这里含义其实比较简单, Parent 传来的 Vector 已经是 Peeled 了,
   // Null 也已经处理了
   //
   // 这里本质就是父亲算过 Null / Distinct 的优化, 自己就不用做了.
@@ -714,7 +715,8 @@ class Expr {
   // True if distinctFields_ are identical to at least one of the parent
   // expression's distinct fields.
   //
-  // 影响见 skipFieldDependentOptimizations() 的注释.
+  // 影响见 skipFieldDependentOptimizations() 的注释(个人感觉这个东西需要
+  // isMultiplyReferenced_ 才有意义).
   bool sameAsParentDistinctFields_ = false;
 };
 

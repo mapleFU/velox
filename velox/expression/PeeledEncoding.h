@@ -60,6 +60,8 @@ class LocalSelectivityVector;
 ///                   Dict1(Dict2(Dict3(Flat2)))
 ///    Peeled Vectors: Flat, Const1, Dict3(Flat2)
 ///    peel: Dict1(Dict2) => collapsed into one dictionary
+///    这里 Constant 不会影响 Peeling. Constant -> Constant 不变, 外部拿到的还是这个
+///    vector.
 ///
 /// 4. A single vector with constant encoding layer over a complex vector can
 ///    be peeled.
