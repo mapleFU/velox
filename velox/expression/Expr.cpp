@@ -217,7 +217,7 @@ void Expr::mergeFields(
 }
 
 void Expr::computeDistinctFields() {
-  // 在调用这个之前这块( distinctFields_, multiplyReferencedFields_ )应该是 empty 的?
+  // 在调用这个之前这块( distinctFields_, multiplyReferencedFields_ ) 是 empty 的.
   // 合并所有子表达式的 distinctFields_, 把出现多次的放到 multiplyReferencedFields_ 里面.
   for (auto& input : inputs_) {
     mergeFields(
@@ -264,7 +264,10 @@ void Expr::computeMetadata() {
   // depends on makes the Expr null.
   //
   // Constant, FieldReference, CastExpr, SpecialForm 这些当成 Vector 来处理.
-  // TODO(mwish): 为什么 SpecialCase 要这么处理呢?
+  // Q: 为什么 SpecialCase 要这么处理呢?
+  // A: Vector 直接用里头的就可以了. Constant, FieldReference, CastExpr 这些
+  //    是零条/多条输入流 - 抛出 null 的, 和正常函数一起处理, if/switch/try 这种就
+  //    自己 compute 了
   if (isSpecialForm() && !is<ConstantExpr>() && !is<FieldReference>() &&
       !is<CastExpr>()) {
     as<SpecialForm>()->computePropagatesNulls();
@@ -589,6 +592,9 @@ namespace {
 /// Data needed to generate exception context for the top-level expression. It
 /// also provides functionality to persist both data and sql to disk for
 /// debugging purpose
+///
+/// ExprExceptionContext类的主要作用是在表达式执行过程中出现异常时，提供一种机制来生成异常上下文，
+/// 包括持久化相关的数据和SQL，以便于后续的调试和问题排查。
 class ExprExceptionContext {
  public:
   ExprExceptionContext(
@@ -782,6 +788,8 @@ void Expr::evalFlatNoNullsImpl(
     VectorPtr& result,
     const ExprSet* parentExprSet) {
   ExprExceptionContext exprExceptionContext{this, context.row(), parentExprSet};
+  // 内部用 ExceptionContextSetter 来包装 `ExprExceptionContext`, 
+  // 添加异常的时候打印这个表达式的逻辑.
   ExceptionContextSetter exceptionContext(
       {parentExprSet ? onTopLevelException : onException,
        parentExprSet ? (void*)&exprExceptionContext : this});
@@ -798,25 +806,29 @@ void Expr::evalFlatNoNullsImpl(
   }
 
   // Prepare Input
-  // 这个地方 constantInput 还不是 inputValues_ 😅，我操了
+  // 这个地方 constantInput 还不是 inputValues_ 😅
+  // 想了一下, 应该本质是因为 eval 的时候需要 resize, 所以特判一下.
   inputValues_.resize(inputs_.size());
   for (int32_t i = 0; i < inputs_.size(); ++i) {
     if (constantInputs_[i]) {
       // No need to re-evaluate constant expression. Simply move constant values
       // from constantInputs_.
       inputValues_[i] = std::move(constantInputs_[i]);
+      // 这里是 constant 的时候, 需要 resize 到 `rows.end()`.
       inputValues_[i]->resize(rows.end());
     } else {
-      // 这个地方是说 inputValues_ 里面的值是不是 constant 的.
+      // 这个地方是说 inputValues_ 里面的值不是 constant 的.
       // 这个时候需要通过 eval 来拿到值
       inputs_[i]->evalFlatNoNulls(rows, context, inputValues_[i]);
     }
   }
 
   // Apply VectorFunction
+  // 执行 Vector Function.
   applyFunction(rows, context, result);
 
   // Move constant values back to constantInputs_.
+  // 恢复 constantInputs_ 的值, 等待下一次继续 resize.
   for (int32_t i = 0; i < inputs_.size(); ++i) {
     if (inputIsConstant_[i]) {
       constantInputs_[i] = std::move(inputValues_[i]);
@@ -824,7 +836,13 @@ void Expr::evalFlatNoNullsImpl(
     }
   }
 
-  // 处理掉非 Const 的 Input Value.
+  // 处理掉非 Const 的 Input Value, 这些来自表达式的生成.
+  //
+  // Q: reuse input 会怎么处理这些?
+  // A: reuse input 要求输入和输出列类型相同, 然后是 unique 的.
+  //    结果它会 reuse 相同的内存. 
+  //    重点是 `releaseInputValues` 下层 `VectorPool::release`
+  //    的时候, 如果 !unique, 就不会把这个内存释放掉.
   releaseInputValues(context);
 }
 
@@ -836,6 +854,7 @@ void Expr::eval(
   if (supportsFlatNoNullsFastPath_ && context.throwOnError() &&
       context.inputFlatNoNulls() && rows.countSelected() < 1'000) {
     // 满足了 ML 那种 FastPath 的条件, 执行 FlatNoNull 函数
+    // 主要是在 ML 之类的场景，处理 encoding 和 Null 本身有一定开销, 框架就不处理了.
     // 具体见这个 patch: https://github.com/facebookincubator/velox/pull/1943
     // 把细节说的比较清楚.
     evalFlatNoNulls(rows, context, result, parentExprSet);
@@ -908,7 +927,9 @@ void Expr::eval(
   }
 
   if (inputs_.empty()) {
-    // 没有 input 直接快速 evalAll, 这个地方应该是常量表达式?
+    // 没有 input 直接快速 evalAll, 这个地方应该是常量表达式或者 FieldRef 之类的
+    // (或者甚至 non-determinstic 的生成表达式), 反正也不用管你 encoding 什么
+    // 的, 直接 evalAll 执行最内层逻辑就是.
     evalAll(rows, context, result);
     checkResultInternalState(result);
     return;
@@ -918,7 +939,7 @@ void Expr::eval(
   checkResultInternalState(result);
 }
 
-// 增量模式去 eval subexpr.
+// 增量模式去 eval CSE.
 template <typename TEval>
 void Expr::evaluateSharedSubexpr(
     const SelectivityVector& rows,
@@ -950,6 +971,9 @@ void Expr::evaluateSharedSubexpr(
               .first;
     } else {
       // Otherwise, simply evaluate it and return without caching the results.
+      //
+      // 不匹配, `sharedSubexprResults_` 也没有足够空间. 这里不走 CSE 的逻辑了, 
+      // 给 input rows 做全量 Eval.
       eval(rows, context, result);
 
       return;
@@ -960,6 +984,7 @@ void Expr::evaluateSharedSubexpr(
       sharedSubexprResultsIter->second;
 
   if (sharedSubexprValues == nullptr) {
+    // 之前没有, 全量计算本次需要的并且去 cache 住.
     eval(rows, context, result);
 
     if (!sharedSubexprRows) {
@@ -981,6 +1006,7 @@ void Expr::evaluateSharedSubexpr(
     return;
   }
 
+  // 如果全部输入都计算过, 那么移动计算结果.
   if (rows.isSubset(*sharedSubexprRows)) {
     // We have results for all requested rows. No need to compute anything.
     context.moveOrCopyResult(sharedSubexprValues, rows, result);
@@ -992,6 +1018,8 @@ void Expr::evaluateSharedSubexpr(
 
   // Identify a subset of rows that need to be computed: rows -
   // sharedSubexprRows_.
+  //
+  // 增量计算 missing rows, 然后结果合并到 sharedSubexprValues.
   LocalSelectivityVector missingRowsHolder(context, rows);
   auto missingRows = missingRowsHolder.get();
   missingRows->deselect(*sharedSubexprRows);
@@ -1000,6 +1028,8 @@ void Expr::evaluateSharedSubexpr(
   // Fix finalSelection to avoid losing values outside missingRows.
   // Final selection of rows need to include sharedSubexprRows_, missingRows and
   // current final selection of rows if set.
+  //
+  // 这里 Hook 了一个 FinalSelection 的 Hack, 让结果不被 overwrite.
   LocalSelectivityVector newFinalSelectionHolder(context, *sharedSubexprRows);
   auto newFinalSelection = newFinalSelectionHolder.get();
   newFinalSelection->select(*missingRows);
@@ -1044,6 +1074,8 @@ Expr::PeelEncodingsResult Expr::peelEncodings(
   // Use finalSelection to generate peel to ensure those rows can be translated
   // and ensure consistent peeling across multiple calls to this expression if
   // its a shared subexpression.
+  //
+  // 生成更多的 rows, 用来做 Peel.
   const auto& rowsToPeel =
       context.isFinalSelection() ? rows : *context.finalSelection();
   auto numFields = context.row()->childrenSize();
@@ -1058,7 +1090,7 @@ Expr::PeelEncodingsResult Expr::peelEncodings(
       // Make sure constant encoded fields are loaded
       fieldVector = context.ensureFieldLoaded(fieldIndex, rowsToPeel);
     }
-    vectorsToPeel.push_back(fieldVector);
+    vectorsToPeel.push_back(std::move(fieldVector));
   }
 
   // Attempt peeling.
@@ -1074,6 +1106,7 @@ Expr::PeelEncodingsResult Expr::peelEncodings(
   // Translate the relevant rows.
   SelectivityVector* newFinalSelection = nullptr;
   if (!context.isFinalSelection()) {
+    // 置换一层 FinalSelection, 把原来的内容做 Peel 之后的.
     newFinalSelection = peeledEncoding->translateToInnerRows(
         *context.finalSelection(), finalRowsHolder);
   }
@@ -1081,7 +1114,10 @@ Expr::PeelEncodingsResult Expr::peelEncodings(
 
   // Save context and set the peel, peeled fields and final selection (if
   // applicable).
+  //
+  // 设置用来恢复的上下文.
   context.saveAndReset(saver, rows);
+  // 设置 ctx 的 Peeling 上下文.
   context.setPeeledEncoding(peeledEncoding);
   if (newFinalSelection) {
     *context.mutableFinalSelection() = newFinalSelection;
@@ -1110,6 +1146,9 @@ void Expr::evalEncodings(
     const SelectivityVector& rows,
     EvalCtx& context,
     VectorPtr& result) {
+  // 如果不是 determinstic 的, 那么就不会尝试去做 Encoding 的处理. 因为 Peeling
+  // 本身会改变 input(可能会减少输入 size), 所以不是 determinstic 的话, 这个优化
+  // 本身也不合法.
   if (deterministic_ && !skipFieldDependentOptimizations()) {
     bool hasFlat = false;
     for (auto* field : distinctFields_) {
@@ -1119,10 +1158,13 @@ void Expr::evalEncodings(
       }
     }
 
+    // 一旦有 Flat, 这里本身都无法 Peel, 避免一轮框架开销了.
     if (!hasFlat) {
       VectorPtr wrappedResult;
       // Attempt peeling and bound the scope of the context used for it.
-
+      //
+      // ContextSaver: 用来保存当前的 Context, 主要是执行 Peeling 的时候(`peelEncodings`),
+      // 会修改 EvalCtx 和 Row 的数量, 所以需要在执行完之后恢复.
       withContextSaver([&](ContextSaver& saveContext) {
         LocalSelectivityVector newRowsHolder(context);
         LocalSelectivityVector finalRowsHolder(context);
@@ -1134,7 +1176,7 @@ void Expr::evalEncodings(
             decodedHolder,
             newRowsHolder,
             finalRowsHolder);
-        // 尝试给输入做 Peel, 抽取公共的 Rows.
+        // 尝试给输入做 Peel, 抽取公共的 Rows, 抽取成功的话就去执行.
         auto* newRows = peelEncodingsResult.newRows;
         if (newRows) {
           VectorPtr peeledResult;
@@ -1143,24 +1185,28 @@ void Expr::evalEncodings(
           // here we check for such a case.
           if (newRows->hasSelections()) {
             if (peelEncodingsResult.mayCache) {
-              // 在 Dictionary Peeled 的情况下, 才会尝试去 Peel.
+              // 对于 Constant / Dictionary Peeling, 尝试增量执行, 缓存 Eval 的结果.
               evalWithMemo(*newRows, context, peeledResult);
             } else {
               evalWithNulls(*newRows, context, peeledResult);
             }
           }
+          // 根据 Peeling 的结果恢复外层的结果.
+          // 这里就相当于内层执行完了, 然后反向给外层处理.
           wrappedResult = context.getPeeledEncoding()->wrap(
               this->type(), context.pool(), peeledResult, rows);
         }
       });
 
       // 如果能生成 newRows, 那么就可以直接返回了.
+      // 否则上面 ContextSaver 会恢复 ctx.
       if (wrappedResult != nullptr) {
         context.moveOrCopyResult(wrappedResult, rows, result);
         return;
       }
     }
   }
+  // 公共 Encoding 处理完成, 开始 resolve Null.
   evalWithNulls(rows, context, result);
 }
 
@@ -1227,6 +1273,7 @@ void Expr::evalWithNulls(
     }
 
     if (mayHaveNulls) {
+      // 使用一个临时的 Holder, 然后在 Selection 中去掉 Null, 再回来执行.
       LocalSelectivityVector nonNullHolder(context);
       if (removeSureNulls(rows, context, nonNullHolder)) {
         ScopedVarSetter noMoreNulls(context.mutableNullsPruned(), true);
@@ -1591,6 +1638,7 @@ void Expr::applyFunction(
   stats_.numProcessedRows += rows.countSelected();
   auto timer = cpuWallTimer();
 
+  // 计算输入输出的 ascii metadata.
   computeIsAsciiForInputs(vectorFunction_.get(), inputValues_, rows);
   std::optional<bool> isAscii = type()->isVarchar()
       ? computeIsAsciiForResult(vectorFunction_.get(), inputValues_, rows)
@@ -1611,6 +1659,8 @@ void Expr::applyFunction(
 
     // If there are rows with no result and no exception this is a bug in the
     // function implementation.
+    //
+    // 尝试 de-select context 中的 error.
     if (remainingRows.deselectErrors()) {
       try {
         // This isn't performant, but it gives us the relevant context and
@@ -1624,9 +1674,14 @@ void Expr::applyFunction(
 
     // Since result was empty, and either the function set errors for every
     // row or we did above, set it to be all NULL.
+    //
+    // 处理成 All-Nulls
     result = BaseVector::createNullConstant(type(), rows.end(), context.pool());
   }
 
+  // https://github.com/facebookincubator/velox/pull/32
+  // 这个地方是 Partial 的 ascii 信息.
+  // TODO(mwish): SimpleFunction 没有算这个吗?
   if (isAscii.has_value()) {
     result->asUnchecked<SimpleVector<StringView>>()->setIsAscii(
         isAscii.value(), rows);
@@ -1641,7 +1696,9 @@ void Expr::evalSpecialFormWithStats(
   stats_.numProcessedRows += rows.countSelected();
   auto timer = cpuWallTimer();
 
-  // TODO(mwish): 为什么 evalSpecialForm 是个特殊函数呢?
+  // Q: 为什么 evalSpecialForm 是个特殊函数呢?
+  // A: 因为这套东西继承写的一把shit, 拆分出了 eval(base class, non virtual),
+  //    和 evalSpecial.
   evalSpecialForm(rows, context, result);
 }
 

@@ -57,6 +57,7 @@ SelectivityVector* PeeledEncoding::translateToInnerRows(
     LocalSelectivityVector& innerRowsHolder) const {
   VELOX_CHECK(wrapEncoding_ != VectorEncoding::Simple::FLAT);
   if (wrapEncoding_ == VectorEncoding::Simple::CONSTANT) {
+    // Constant: 直接生成长度 `constantWrapIndex_ + 1`, 只有 `[constantWrapIndex_]` 合法的 innerRows.
     auto newRows = innerRowsHolder.get(constantWrapIndex_ + 1, false);
     newRows->setValid(constantWrapIndex_, true);
     newRows->updateBounds();
@@ -98,6 +99,8 @@ void PeeledEncoding::setDictionaryWrapping(
     BaseVector& firstWrapper) {
   wrapEncoding_ = VectorEncoding::Simple::DICTIONARY;
   baseSize_ = decoded.base()->size();
+  // 如果是一层的话, 直接返回
+  // 否则用 decoded.dictionaryWrapping 来把中间层缝合(使用 DecodedVector 来缝合).
   if (isDictionaryOverFlat(firstWrapper)) {
     // Re-use indices and nulls buffers.
     wrap_ = firstWrapper.wrapInfo();
@@ -122,11 +125,23 @@ bool PeeledEncoding::peelInternal(
   bool peeled;
   bool nonConstant = false;
   int32_t firstPeeled = -1;
+  // 尝试匹配 `numLevels` 层, 前面的东西相当于已经匹配, 每个循环会扫一遍整个 `numFields`.
+  // peeledVectors 会在每次循环中被更新, 相当于上一轮的 Peel 结果.
+  //
+  // 每轮如果整轮 Peel 成功, 会增加 numLevels, 然后推进下一轮. Peeled 表示本轮是否成功,
+  // nonConstant 表示本轮是否有非 constant 的 vector.
+  //
+  // 想了一下, 这里有一层非常关键的特性, 就是比如 DICT(DICT(...)), 如果能 Peel 出最内层的
+  // Dict, 那么可以只用一层的 Dict 来表示, 外层的 indices 都是没必要的. 所以这里每次一层检查
+  // 完, 如果 Peel 成功, 就把 Peel 出来的 vector 保存下来到 `peeledVectors`, 然后继续下一轮.
   do {
     peeled = true;
+    // 本轮尝试的 indices.
     BufferPtr firstIndices;
     maybePeeled.resize(numFields);
     for (int fieldIndex = 0; fieldIndex < numFields; fieldIndex++) {
+      // 这里应该对应 `peeledVectors = std::move(maybePeeled);` 这里的情况,
+      // 即第一次用 `vectorsToPeel`, 之后用 `peeledVectors`.
       auto leaf = peeledVectors.empty() ? vectorsToPeel[fieldIndex]
                                         : peeledVectors[fieldIndex];
       if (leaf == nullptr) {
@@ -134,8 +149,10 @@ bool PeeledEncoding::peelInternal(
       }
       if (leaf->isLazy() && leaf->asUnchecked<LazyVector>()->isLoaded()) {
         auto lazy = leaf->asUnchecked<LazyVector>();
+        // 拿到之前 load 过的 vector.
         leaf = lazy->loadedVectorShared();
       }
+      // constant 表示上一层这里是 constant. 上轮是 Constant 的话本轮一定是.
       if (!constantFields.empty() && constantFields[fieldIndex]) {
         setPeeled(leaf, fieldIndex, maybePeeled);
         continue;
@@ -147,7 +164,11 @@ bool PeeledEncoding::peelInternal(
       // dictionary vectors have further layers. For eg. take D1(D2(FLAT)),
       // D1(C1), if this check is in place then peeling will stop at D1,
       // otherwise peeling will continue and peel off D2 as well.
+      //
+      // 这个地方的逻辑应该只处理了一层的 Constant. 按上面注释所说，多层就不考虑 Peeling 
+      // Constant 了.
       if (numLevels == 0 && leaf->isConstantEncoding()) {
+        // 设置 constant flag, 然后拷贝 到 maybePeeled, 继续下一轮.
         setPeeled(leaf, fieldIndex, maybePeeled);
         constantFields.resize(numFields);
         constantFields.at(fieldIndex) = true;
@@ -159,20 +180,27 @@ bool PeeledEncoding::peelInternal(
         if (!canPeelsHaveNulls && leaf->rawNulls()) {
           // A dictionary that adds nulls over an Expr that is not null for a
           // null argument cannot be peeled.
+          //
+          // 有 Null 并设置了 canPeelsHaveNulls 为 false, 则不能 peel.
           peeled = false;
           break;
         }
+        // 拿到 indices.
         BufferPtr indices = leaf->wrapInfo();
         if (!firstIndices) {
           firstIndices = std::move(indices);
         } else if (indices != firstIndices) {
           // different fields use different dictionaries
+          //
+          // NOTE(mwish): 这个地方是不是只能证明 indices 不相同, 本层的 indices 不相同,
+          //  上层可能指向同一个 dictionary.
           peeled = false;
           break;
         }
         if (firstPeeled == -1) {
           firstPeeled = fieldIndex;
         }
+        // 这里设置的是 valueVector, 这里每次剥离出来的都是 value.
         setPeeled(leaf->valueVector(), fieldIndex, maybePeeled);
       } else {
         // Non-peelable encoding.
@@ -180,6 +208,7 @@ bool PeeledEncoding::peelInternal(
         break;
       }
     }
+    // 本层是 Peeled, 尝试设置 maybePeeled 和推进 Level.
     if (peeled) {
       ++numLevels;
       peeledVectors = std::move(maybePeeled);
@@ -191,6 +220,7 @@ bool PeeledEncoding::peelInternal(
   }
 
   if (firstPeeled == -1) {
+    // 最后一层遇到的都是 constant, 没有 dictionary.
     wrapEncoding_ = VectorEncoding::Simple::CONSTANT;
     // Check if constant encoding can be peeled off too if the input is of the
     // form Constant(complex).
@@ -212,6 +242,7 @@ bool PeeledEncoding::peelInternal(
       numLevels++; // include the constant layer while decoding.
       peeledVectors.back() = peeledVectors.back()->valueVector();
     }
+    // 折叠字典.
     decodedVector.makeIndices(*firstWrapper, rows, numLevels);
     if (decodedVector.isConstantMapping()) {
       // This can only happen if the attempt to peel a constant encoding layer

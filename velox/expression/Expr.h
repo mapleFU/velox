@@ -391,8 +391,9 @@ class Expr {
   // The reason is because such optimizations would be redundant in that case,
   // since they would have been performed identically on the parent.
   //
-  // 如果没有 distinctField(什么字段都不 Ref), 或者 Parent 和自身的 distinctField
-  // 一样, 就不 Peeling. 这里含义其实比较简单, Parent 传来的 Vector 已经是 Peeled 了,
+  // 如果没有distinctField(什么字段都不 Ref), 或者 Parent 和自身的 distinctField
+  // 一样(sameAsParent 需要 !isMultiplyReferenced_ 才有意义), 就不 Peeling. 
+  // 这里含义其实比较简单, Parent 传来的 Vector 已经是 Peeled 了,
   // Null 也已经处理了
   //
   // 这里本质就是父亲算过 Null / Distinct 的优化, 自己就不用做了.
@@ -485,10 +486,10 @@ class Expr {
   /// Shared Sub Expr 在 comment 里面定义又叫 CSE.
   bool shouldEvaluateSharedSubexp() const {
     // 需要是:
-    // 1. deterministic
+    // 1. deterministic (不 determinstic 感觉不能增量算, 要每次自己算了)
     // 2. 被多个表达式依赖
-    // 3. 有 input? --> 这个地方其实我不是完全理解. 如果不是的话(类似一个常量),
-    //    会怎么处理??? 注释里说是 -> (i.e. not a constant or field access expression)
+    // 3. 有 input --> i.e. not a constant or field access (并非指向表达式结果的 FieldRef) 
+    //   expression. 这些表达式都很轻, 感觉也没必要 CSE 这种搞法了.
     //
     // 这个还是看算子树的情况
     return deterministic_ && isMultiplyReferenced_ && !inputs_.empty();
@@ -564,6 +565,8 @@ class Expr {
 
   /// Returns an instance of CpuWallTimer if cpu usage tracking is enabled. Null
   /// otherwise.
+  ///
+  /// 框架只有在内部选择 trackCpuUsage 的时候才会记录.
   std::unique_ptr<CpuWallTimer> cpuWallTimer() {
     return trackCpuUsage_ ? std::make_unique<CpuWallTimer>(stats_.timing)
                           : nullptr;
@@ -640,8 +643,7 @@ class Expr {
 
   // True if this or a sub-expression is an IF, AND or OR.
   //
-  // 表达式或者表达式的 child 是否包含 if/and/or. 
-  // TODO(mwish): 这个和 specialForm 有什么区别或者联系?
+  // 表达式或者表达式的 child 是否包含 if/and/or.
   bool hasConditionals_ = false;
 
   // 被多个表达式依赖
@@ -653,13 +655,19 @@ class Expr {
 
   struct SharedResults {
     // The rows for which 'sharedSubexprValues_' has a value.
+    //
+    // CSE 之已经计算过的 rows.
     std::unique_ptr<SelectivityVector> sharedSubexprRows_ = nullptr;
     // If multiply referenced or literal, these are the values.
+    //
+    // CSE 的结果 Vector.
     VectorPtr sharedSubexprValues_ = nullptr;
   };
 
   // Maps the inputs referenced by distinctFields_ captuered when
   // evaluateSharedSubexpr() is called to the cached shared results.
+  //
+  // CSE 计算的结果, 受到 `maxSharedSubexprResultsCached()` 的限制.
   std::map<std::vector<const BaseVector*>, SharedResults> sharedSubexprResults_;
 
   // Pointers to the last base vector of cachable dictionary input. Used to
@@ -694,6 +702,8 @@ class Expr {
   std::unique_ptr<SelectivityVector> cachedDictionaryIndices_;
 
   /// Runtime statistics. CPU time, wall time and number of processed rows.
+  ///
+  /// 表达式本身的 stats, 这里
   ExprStats stats_;
 
   // If true computeMetaData returns, otherwise meta data is computed and the
@@ -705,7 +715,8 @@ class Expr {
   // True if distinctFields_ are identical to at least one of the parent
   // expression's distinct fields.
   //
-  // 影响见 skipFieldDependentOptimizations() 的注释.
+  // 影响见 skipFieldDependentOptimizations() 的注释(个人感觉这个东西需要
+  // isMultiplyReferenced_ 才有意义).
   bool sameAsParentDistinctFields_ = false;
 };
 

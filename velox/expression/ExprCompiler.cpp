@@ -509,6 +509,7 @@ ExprPtr compileRewrittenExpression(
     VELOX_UNSUPPORTED("Unknown typed expression");
   }
 
+  // 在编译完后计算 Metadata
   result->computeMetadata();
 
   // If the expression is constant folding it is redundant.
