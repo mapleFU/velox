@@ -142,6 +142,8 @@ class PeeledEncoding {
   }
 
   /// Return the encoding of the peeled wrap.
+  ///
+  /// 
   VectorEncoding::Simple wrapEncoding() const;
 
   /// Translates row numbers of the outer vector via the peel into row numbers

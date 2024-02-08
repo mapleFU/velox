@@ -253,6 +253,8 @@ class DecodedVector {
   /// Dictionary1 will have indices and nulls merged and the nulls from the
   /// Complex flat vector will not be merged. If instead Level is set to 3, then
   /// additionally nulls from the complex base vector will also be merged.
+  ///
+  /// 折叠字典.
   void makeIndices(
       const BaseVector& vector,
       const SelectivityVector& rows,
