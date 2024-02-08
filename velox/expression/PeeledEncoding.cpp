@@ -57,6 +57,7 @@ SelectivityVector* PeeledEncoding::translateToInnerRows(
     LocalSelectivityVector& innerRowsHolder) const {
   VELOX_CHECK(wrapEncoding_ != VectorEncoding::Simple::FLAT);
   if (wrapEncoding_ == VectorEncoding::Simple::CONSTANT) {
+    // Constant: 直接生成长度 `constantWrapIndex_ + 1`, 只有 `[constantWrapIndex_]` 合法的 innerRows.
     auto newRows = innerRowsHolder.get(constantWrapIndex_ + 1, false);
     newRows->setValid(constantWrapIndex_, true);
     newRows->updateBounds();

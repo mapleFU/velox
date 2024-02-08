@@ -210,6 +210,8 @@ class PeeledEncoding {
 
   /// The size of one of the peeled vectors. Only valid if wrapEncoding_ =
   /// DICTIONARY.
+  ///
+  /// 字典编码的时候 `base_` 的大小.
   vector_size_t baseSize_ = 0;
 
   /// The constant index. Only valid if wrapEncoding_ = CONSTANT.

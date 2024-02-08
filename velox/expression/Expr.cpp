@@ -1158,7 +1158,7 @@ void Expr::evalEncodings(
       }
     }
 
-    // 一旦有 Flat, 这里本身都无法 Peel.
+    // 一旦有 Flat, 这里本身都无法 Peel, 避免一轮框架开销了.
     if (!hasFlat) {
       VectorPtr wrappedResult;
       // Attempt peeling and bound the scope of the context used for it.
@@ -1185,19 +1185,21 @@ void Expr::evalEncodings(
           // here we check for such a case.
           if (newRows->hasSelections()) {
             if (peelEncodingsResult.mayCache) {
-              // 在 Dictionary Peeled 的情况下, 才会尝试去 Peel.
+              // 对于 Constant / Dictionary Peeling, 尝试增量执行, 缓存 Eval 的结果.
               evalWithMemo(*newRows, context, peeledResult);
             } else {
               evalWithNulls(*newRows, context, peeledResult);
             }
           }
           // 根据 Peeling 的结果恢复外层的结果.
+          // 这里就相当于内层执行完了, 然后反向给外层处理.
           wrappedResult = context.getPeeledEncoding()->wrap(
               this->type(), context.pool(), peeledResult, rows);
         }
       });
 
       // 如果能生成 newRows, 那么就可以直接返回了.
+      // 否则上面 ContextSaver 会恢复 ctx.
       if (wrappedResult != nullptr) {
         context.moveOrCopyResult(wrappedResult, rows, result);
         return;
@@ -1271,6 +1273,7 @@ void Expr::evalWithNulls(
     }
 
     if (mayHaveNulls) {
+      // 使用一个临时的 Holder, 然后在 Selection 中去掉 Null, 再回来执行.
       LocalSelectivityVector nonNullHolder(context);
       if (removeSureNulls(rows, context, nonNullHolder)) {
         ScopedVarSetter noMoreNulls(context.mutableNullsPruned(), true);
