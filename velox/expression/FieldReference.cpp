@@ -33,34 +33,6 @@ void FieldReference::computeDistinctFields() {
   }
 }
 
-// Fast path to avoid copying result.  An alternative way to do this is to
-// ensure that children has null if parent has nulls on corresponding rows,
-// whenever the RowVector is constructed or mutated (eager propagation of
-// nulls).  The current lazy propagation might still be better (more efficient)
-// when adding extra nulls.
-//
-// 在从 `input` 中取的情况下, 如果 `result` 不为空且 unique,
-bool FieldReference::addNullsFast(
-    const SelectivityVector& rows,
-    EvalCtx& context,
-    VectorPtr& result,
-    const RowVector* row) {
-  if (result) {
-    return false;
-  }
-  auto& child =
-      inputs_.empty() ? context.getField(index_) : row->childAt(index_);
-  if (row->mayHaveNulls()) {
-    if (!child.unique()) {
-      return false;
-    }
-    // 尝试去 Hack Input, 给 input 加上 nulls, 然后设置到 result 上.
-    addNulls(rows, row->rawNulls(), context, const_cast<VectorPtr&>(child));
-  }
-  result = child;
-  return true;
-}
-
 void FieldReference::apply(
     const SelectivityVector& rows,
     EvalCtx& context,
@@ -133,10 +105,6 @@ void FieldReference::apply(
     auto rowType = dynamic_cast<const RowType*>(row->type().get());
     VELOX_CHECK(rowType);
     index_ = rowType->getChildIdx(field_);
-  }
-  // 能够在 Input 快速设置 Null 并直接返回
-  if (!useDecode && addNullsFast(rows, context, result, row)) {
-    return;
   }
   // 拿到 child, 然后拷贝
   // 如果 unshared 的话, 会要求 load, 不知道为什么, 这个地方是不是可以作为一个优化.
