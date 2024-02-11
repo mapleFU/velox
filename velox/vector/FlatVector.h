@@ -600,7 +600,8 @@ using FlatVectorPtr = std::shared_ptr<FlatVector<T>>;
 // double pointer in the form of std::shared_ptr<std::exception_ptr>. This is
 // fine since we only need to actually follow the pointer in failure cases.
 //
-// Error 用 nulls 来表示是否有 error，values 来存储异常的指针
+// Error 用 nulls 来表示是否有 error，values 来存储异常的指针. 同上面注释, 里面存了
+// shared_ptr<exception_ptr>.
 using ErrorVector = FlatVector<std::shared_ptr<void>>;
 using ErrorVectorPtr = std::shared_ptr<ErrorVector>;
 

@@ -21,6 +21,15 @@ namespace facebook::velox::exec {
 
 enum class BooleanMix { kAllTrue, kAllFalse, kAllNull, kMixNonNull, kMix };
 
+// Return a BooleanMix representing the status of boolean values in vector. If
+// vector contains a mix of true and false, extract the boolean values to a raw
+// buffer valuesOut. valuesOut may point to a raw buffer possessed by vector.
+// nullsOut remain unchanged if there is no null in vector. tempValues and
+// tempNulls may or may not be set by this function.
+//
+// 把复杂 Boolean 的状态抽取出来, 并且设置 `mergeNullsToValues`, 如果是的话不会返回 null,
+// 而是会把 nulls 合并到 values 里面(if null, then false). 然后返回一个 BooleanMix(整个 vec
+// 的状态).
 BooleanMix getFlatBool(
     BaseVector* vector,
     const SelectivityVector& activeRows,
