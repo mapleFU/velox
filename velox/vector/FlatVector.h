@@ -599,6 +599,8 @@ using FlatVectorPtr = std::shared_ptr<FlatVector<T>>;
 // Since opaque types are stored as shared_ptr<void>, this ends up being a
 // double pointer in the form of std::shared_ptr<std::exception_ptr>. This is
 // fine since we only need to actually follow the pointer in failure cases.
+//
+// Error 用 nulls 来表示是否有 error，values 来存储异常的指针
 using ErrorVector = FlatVector<std::shared_ptr<void>>;
 using ErrorVectorPtr = std::shared_ptr<ErrorVector>;
 

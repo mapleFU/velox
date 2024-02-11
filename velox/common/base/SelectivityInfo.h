@@ -22,6 +22,7 @@
 namespace facebook {
 namespace velox {
 
+/// Statistics about (Input value count, output value count, filter time).
 class SelectivityInfo {
  public:
   void addOutput(uint64_t numOut) {

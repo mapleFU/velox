@@ -22,6 +22,7 @@ namespace facebook::velox::exec {
 
 namespace {
 
+// 拿到总的 ErrorMask, 然后给 context 里面的 errors 塞最终的 error.
 uint64_t* rowsWithError(
     const SelectivityVector& rows,
     const SelectivityVector& activeRows,
@@ -34,6 +35,7 @@ uint64_t* rowsWithError(
     context.swapErrors(previousErrors);
     return nullptr;
   }
+  // 下面会从 `errorRowsHolder` 来 Normalize 本轮的 errorMask.
   uint64_t* errorMask = nullptr;
   SelectivityVector* errorRows = errorRowsHolder.get();
   if (!errorRows) {
@@ -98,6 +100,19 @@ void ConjunctExpr::evalSpecialForm(
     const SelectivityVector& rows,
     EvalCtx& context,
     VectorPtr& result) {
+  /*
+  参考: https://facebookincubator.github.io/velox/develop/expression-evaluation.html#error-handling-in-and-or-try
+  对 AND 而言, false > error > true; 对 OR 而言, true > error > false.
+
+  When evaluating AND expression, If some input generates an error for a row on which 
+  another input returns false,  the error is suppressed.
+
+  When evaluating OR expression, If some input generates an error for a row on which
+  another input returns true, the error is suppressed.
+
+  The error suppression logic in the AND and OR expressions is designed to deliver 
+  consistent results regardless of the order of the conjuncts.
+  */
   // TODO Revisit error handling
   bool throwOnError = *context.mutableThrowOnError();
   ScopedVarSetter saveError(context.mutableThrowOnError(), false);
@@ -111,18 +126,24 @@ void ConjunctExpr::evalSpecialForm(
   // Initialize result to all true for AND and all false for OR.
   auto values = flatResult->mutableValues(rows.end())->asMutable<uint64_t>();
   if (isAnd_) {
+    // 对 AND, 先给所有的 `rows` 设置 True.
     bits::orBits(values, rows.asRange().bits(), rows.begin(), rows.end());
   } else {
+    // 对 OR, &(!rows), 应该相当于给 `rows` 设置 False.
     bits::andWithNegatedBits(
         values, rows.asRange().bits(), rows.begin(), rows.end());
   }
 
+  // 如果是 OR, 设置为 !finalSelection.
+  // TODO(mwish): 为什么 AND 不要呢?
   // OR: fix finalSelection at "rows" unless already fixed
   ScopedFinalSelectionSetter scopedFinalSelectionSetter(
       context, &rows, !isAnd_);
 
   bool handleErrors = false;
   LocalSelectivityVector errorRows(context);
+  // 先选全 rows 作为 activeRows, 如果拿到 AND 的 false, OR 的 true 这几个
+  // 最高优先级的对象, 后面就可以不 eval 了.
   LocalSelectivityVector activeRowsHolder(context, rows);
   auto activeRows = activeRowsHolder.get();
   VELOX_DCHECK(activeRows != nullptr);
@@ -130,12 +151,16 @@ void ConjunctExpr::evalSpecialForm(
   for (int32_t i = 0; i < inputs_.size(); ++i) {
     VectorPtr inputResult;
     VectorRecycler inputResultRecycler(inputResult, context.vectorPool());
+    // 第一次 handleErrors 为 false, 不会执行这个分支.
+    // 后续有 error 的时候, 会执行这个分支, 把 ctx 中 err 拿出来.
     ErrorVectorPtr errors;
     if (handleErrors) {
       context.swapErrors(errors);
     }
 
     SelectivityTimer timer(selectivity_[inputOrder_[i]], numActive);
+    // https://github.com/facebookincubator/velox/pull/7433
+    // 对于 AND 这样的, 尝试 load. 这段代码和上面的 pr 有关 (即 Expr 框架中没有 load).
     if (evaluatesArgumentsOnNonIncreasingSelection()) {
       // Exclude loading rows that we know for sure will have a false result.
       for (auto* field : inputs_[inputOrder_[i]]->distinctFields()) {
