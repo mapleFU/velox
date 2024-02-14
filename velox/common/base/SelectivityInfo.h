@@ -29,6 +29,8 @@ class SelectivityInfo {
     numOut_ += numOut;
   }
 
+  // Drop 单个值的时间.
+  // 如果啥都没 drop (selectivity 高), 返回一个贼高的总时间.
   float timeToDropValue() const {
     if (numIn_ == numOut_) {
       return timeClocks_;

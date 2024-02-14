@@ -1132,6 +1132,7 @@ Expr::PeelEncodingsResult Expr::peelEncodings(
   // If the expression depends on one dictionary, results are cacheable.
   bool mayCache = false;
   if (context.cacheEnabled()) {
+    // cache 的条件要求只有一个参数, 然后需要是字典, 然后 Peel 层不能设置 memoDisabled.
     mayCache = distinctFields_.size() == 1 &&
         VectorEncoding::isDictionary(context.wrapEncoding()) &&
         !peeledVectors[0]->memoDisabled();
@@ -1298,10 +1299,15 @@ void Expr::evalWithNulls(
 //
 // 复用上层的 dictionary. TableScan 传过来的 dictionary 可能是不会变的(即类似 Parquet 
 // 用 RowGroup 的 dictionary, 这样有助于 Peeling 的执行).
+//
+// evalWithMemo 要求只有一个 distinctField 而且还是字典的时候才可以执行.
+// 这里和 Peeling 的逻辑结合了, 这个字段是一个完整的字典, rows 可能很大,
+// 表示在这个字典中的位置.
 void Expr::evalWithMemo(
     const SelectivityVector& rows,
     EvalCtx& context,
     VectorPtr& result) {
+  // Load Input, 这里要求只有一个 distinct field.
   VectorPtr base;
   distinctFields_[0]->evalSpecialForm(rows, context, base);
 
@@ -1318,6 +1324,8 @@ void Expr::evalWithMemo(
   ++baseOfDictionaryRepeats_;
 
   if (baseOfDictionaryRepeats_ == 1) {
+    // 第二次遇到相同的 base 才开始缓存.
+    // 见: https://github.com/facebookincubator/velox/pull/7226
     evalWithNulls(rows, context, result);
     baseOfDictionary_ = base;
     dictionaryCache_ = result;

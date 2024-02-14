@@ -216,8 +216,8 @@ void ConjunctExpr::evalSpecialForm(
 
 void ConjunctExpr::maybeReorderInputs() {
   // 根据 timeToDropValue() 来 reorder inputs.
-  // (我日, 纯靠耗时...)
-  // TODO(mwish): 纯靠耗时合理吗?
+  // 这里 timeToDropValue() 越小, 说明越快 drop. 如果啥都没 drop,
+  // 会返回总体执行的 Time.
   bool reorder = false;
   for (auto i = 1; i < inputs_.size(); ++i) {
     if (selectivity_[inputOrder_[i - 1]].timeToDropValue() >
