@@ -296,11 +296,16 @@ class CastExpr : public SpecialForm {
   CastOperatorPtr getCastOperator(const TypePtr& type);
 
   // Custom cast operators for to and from top-level as well as nested types.
+  //
+  // 这里也会缓存 getCustomTypeCastOperator 的内容.
   folly::F14FastMap<std::string, CastOperatorPtr> castOperators_;
 
   bool nullOnFailure_;
   std::shared_ptr<CastHooks> hooks_;
 
+  // TopLevel 是一个执行期的上下文, 用来标记当前的执行是否是在顶层.
+  // 对于 nested type + try, 顶层的执行会把错误的结果设置为 NULL, 否则,
+  // 会需要 propagate 到顶层. 这个地方可以注意代码 `setNullInResultAtError()`.
   bool inTopLevel = false;
 };
 

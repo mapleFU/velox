@@ -72,7 +72,7 @@ class ConjunctExpr : public SpecialForm {
   static TypePtr resolveType(const std::vector<TypePtr>& argTypes);
 
   void computePropagatesNulls() override {
-    // TODO(mwish): 这个地方为什么不是 `isAnd_`?
+    // 这里逻辑会有 False/True > NULL 的情况, 所以不能 propagate nulls.
     propagatesNulls_ = false;
   }
 

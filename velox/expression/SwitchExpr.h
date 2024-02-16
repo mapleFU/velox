@@ -38,6 +38,8 @@ class SwitchExpr : public SpecialForm {
  public:
   /// Inputs are concatenated conditions and results with an optional "else" at
   /// the end, e.g. {condition1, result1, condition2, result2,..else}
+  ///
+  /// 按照 Pair + [Optional] Final Else 的方式来构造 SwitchExpr.
   SwitchExpr(
       TypePtr type,
       const std::vector<ExprPtr>& inputs,

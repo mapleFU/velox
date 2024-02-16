@@ -22,6 +22,7 @@ namespace facebook::velox::exec {
 
 const char* const kCoalesce = "coalesce";
 
+/// SQL 中的 COALESCE 表达式用于返回第一个非空表达式
 class CoalesceExpr : public SpecialForm {
  public:
   CoalesceExpr(

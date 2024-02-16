@@ -200,6 +200,8 @@ void ConjunctExpr::evalSpecialForm(
     }
   }
   // Clear errors for 'rows' that are not in 'activeRows'.
+  // 这里 throwOnError 在执行期间是 false, 因为有一个 False/True 可能覆盖 Error 的逻辑,
+  // 然后在收尾的时候处理异常.
   finalizeErrors(rows, *activeRows, throwOnError, context);
   if (!reorderEnabledChecked_) {
     reorderEnabled_ = context.execCtx()

@@ -31,6 +31,9 @@ void TryExpr::evalSpecialForm(
   // This also prevents this TRY expression from leaking exceptions to the
   // parent TRY expression, so the parent won't incorrectly null out rows that
   // threw exceptions which this expression already handled.
+  //
+  // 这里不希望 clear 掉已有的 errors, 所以传入 nullptr. (不过我也很好奇为什么不 de-select errors,
+  // 感觉本身 error 不是特别 hot 的 path, 也无所谓)
   ScopedVarSetter<ErrorVectorPtr> errorsSetter(context.errorsPtr(), nullptr);
   inputs_[0]->eval(rows, context, result);
 
@@ -60,6 +63,8 @@ namespace {
 
 // Apply onError methods of registered listeners on every row that encounters
 // errors. The error vector must exist.
+//
+// 构造一个 `rows` 范围内的 error rows, 然后丢给 listener::onError 处理.
 void applyListenersOnError(
     const SelectivityVector& rows,
     const EvalCtx& context) {
@@ -103,11 +108,13 @@ void TryExpr::nullOutErrors(
       // 0 arbitrarily.
       if (result->isNullAt(0)) {
         // The result is already a NULL constant, so this is a no-op.
+        // 没有必要再设置一次 NULL constant.
         return;
       }
 
       if (errors->isConstantEncoding()) {
         // Set the result to be a NULL constant.
+        // (这里的含义应该是只有一个 NULL 值, 所以直接设置为 NULL constant.)
         result = BaseVector::createNullConstant(
             result->type(), result->size(), context.pool());
       } else {
@@ -122,10 +129,15 @@ void TryExpr::nullOutErrors(
           }
         });
         // Wrap in dictionary indices all pointing to index 0.
+        //
+        // Constant 不能表达 indices on NULL 的语义, 所以要展开成 Dictionary.
+        // 这段逻辑来自: https://github.com/facebookincubator/velox/pull/4282
+        // 主要是也希望 `try(coalesce(foo(c0), 1))` 能比较好处理 constant.
         auto indices = allocateIndices(size, context.pool());
         result = BaseVector::wrapInDictionary(nulls, indices, size, result);
       }
     } else {
+      // 直接写, 可以选择就地写或者复制写.
       if (result.unique() && result->isNullsWritable()) {
         rows.applyToSelected([&](auto row) {
           if (row < errors->size() && !errors->isNullAt(row)) {
