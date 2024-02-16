@@ -611,6 +611,7 @@ VectorPtr CastExpr::applyDecimal(
   return castResult;
 }
 
+// 执行逻辑 (Peeled 之后的逻辑)
 void CastExpr::applyPeeled(
     const SelectivityVector& rows,
     const BaseVector& input,
@@ -618,6 +619,9 @@ void CastExpr::applyPeeled(
     const TypePtr& fromType,
     const TypePtr& toType,
     VectorPtr& result) {
+  // 下面这个代码有点奇怪, 来自: https://github.com/facebookincubator/velox/pull/7256
+  // 主要是类型可能有自己定义的 CastOperator. ( 比如 JSON 的之类的 ). 先检测这些 specific
+  // operator.
   auto castFromOperator = getCastOperator(fromType);
   if (castFromOperator && !castFromOperator->isSupportedToType(toType)) {
     VELOX_USER_FAIL(
@@ -755,6 +759,7 @@ void CastExpr::apply(
   auto* rawNulls = decoded->nulls();
 
   if (rawNulls) {
+    // Cast NULL to NULL, deselect them.
     remainingRows->deselectNulls(
         rawNulls, remainingRows->begin(), remainingRows->end());
   }
@@ -764,6 +769,8 @@ void CastExpr::apply(
     localResult =
         BaseVector::createNullConstant(toType, rows.end(), context.pool());
   } else if (decoded->isIdentityMapping()) {
+    // 如果已经是 identity mapping, 直接做 applyPeeled(执行内层)/
+    // 否则, 进行 peel 操作, 然后再 applyPeeled(执行内层).
     applyPeeled(
         *remainingRows,
         *decoded->base(),

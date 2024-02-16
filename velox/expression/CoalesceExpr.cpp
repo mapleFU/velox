@@ -58,6 +58,7 @@ void CoalesceExpr::evalSpecialForm(
   ScopedFinalSelectionSetter scopedFinalSelectionSetter(context, &rows);
 
   exec::LocalDecodedVector decodedVector(context);
+  // 按照 NULL 状况 Eval 子表达式.
   for (int i = 0; i < inputs_.size(); i++) {
     inputs_[i]->eval(*activeRows, context, result);
 

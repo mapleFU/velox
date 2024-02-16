@@ -64,6 +64,9 @@ BooleanMix getFlatBool(
             size, context.pool(), tempValues, &mergedValues);
 
         // NOTE: false bit in 'nulls' indicate null.
+        //
+        // MergedValues: `activeRows` 范围内的 nonNull + values.
+        // (`mergeNullsToValues` 即 null 的部分取消 value.)
         bits::andBits(
             mergedValues, values, nulls, activeRows.begin(), activeRows.end());
 

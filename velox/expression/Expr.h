@@ -673,6 +673,8 @@ class Expr {
   // Pointers to the last base vector of cachable dictionary input. Used to
   // check if the current input's base vector is the same as the last. If it's
   // the same, then results can be cached.
+  //
+  // evalWithMemo 用到的, 处理 Dictionary 的缓存.
   std::weak_ptr<BaseVector> baseOfDictionaryWeakPtr_;
   BaseVector* baseOfDictionaryRawPtr_ = nullptr;
 
@@ -686,14 +688,12 @@ class Expr {
   // Number of times currently held cacheable vector is seen for a non-first
   // time. Is reset everytime 'baseOfDictionaryRawPtr_' is different from the
   // current input's base.
-  //
-  // 这部分的逻辑应该是 Dictionary Reuse?
   int baseOfDictionaryRepeats_ = 0;
 
   // Values computed for the base dictionary, 1:1 to the positions in
   // 'baseOfDictionaryRawPtr_'.
   //
-  // 这个是 dict 的父亲? 比如 Filter 的 Dictionary? 还是
+  // evalWithMemo 的结果. 
   VectorPtr dictionaryCache_;
 
   // The indices that are valid in 'dictionaryCache_'.

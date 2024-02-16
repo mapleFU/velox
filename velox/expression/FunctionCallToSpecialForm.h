@@ -20,6 +20,13 @@
 #include "velox/type/Type.h"
 
 namespace facebook::velox::exec {
+
+/// 这里 SpecialForm 代表 if/else/and/or/try 等特殊的表达式, 可以根据输入输出构造 SpecialForm.
+/// 在 compile 表达式的时候, 需要用到这里的 Factory.
+///
+/// 1. resolveType: 根据输入的参数类型, 返回输出的类型. 可能比较重要的还是中间再做一次类型检查.
+/// 2. constructSpecialForm: 根据输出的类型, 子表达式, 是否追踪 CPU 使用情况, 返回一个 SpecialForm.
+///    不过看有的奇怪的东西比如 make_decimal 也放到这里了.
 class FunctionCallToSpecialForm {
  public:
   virtual ~FunctionCallToSpecialForm() {}

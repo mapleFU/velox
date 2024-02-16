@@ -24,6 +24,8 @@ namespace facebook::velox::exec {
 /// This class provides cast hooks to allow different behaviors of CastExpr and
 /// SparkCastExpr. The main purpose is crate customized cast implementation by
 /// taking full usage of existing cast expression.
+///
+/// 这里用动态的 Hook 来 Hook Spark/Presto 之类的引擎 specific 行为, 给对应的地方开洞.
 class CastHooks {
  public:
   virtual ~CastHooks() = default;

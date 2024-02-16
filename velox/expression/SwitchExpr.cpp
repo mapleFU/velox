@@ -56,21 +56,31 @@ SwitchExpr::SwitchExpr(
       this->type()->toString());
 }
 
+/// SWITCH 表达式的执行过程.
+/// 这里准备了 localResult, 然后把 finalSelection 设置成 false, 每次 eval
+/// 的时候都会把结果放到 localResult 中, 最后再统一处理.
 void SwitchExpr::evalSpecialForm(
     const SelectivityVector& rows,
     EvalCtx& context,
     VectorPtr& finalResult) {
+  // 每次执行放到 localResult 中.
   VectorPtr localResult;
+  // switch case 也是渐进式的, 按照 if 之类的条件渐进执行, 剩下的就是 remaining.
   LocalSelectivityVector remainingRows(context, rows);
 
+  // thenRows 是每次 `case T: ...` 的时候单次执行的结果.
   LocalSelectivityVector thenRows(context);
 
   // SWITCH: fix finalSelection at "rows" unless already fixed
+  // 只有 Else 内的结果才能是 finalResult, 不过这里都没当成是, 在 `SwitchExpr::evalSpecialForm`
+  // 统一处理了.
   ScopedFinalSelectionSetter scopedFinalSelectionSetter(context, &rows);
   if (propagatesNulls_) {
     // If propagates nulls, we load lazies before conditions so that we can
     // avoid errors for null rows. Null propagation is on only if all thens and
     // else load access the same vectors, so there is no extra loading.
+    //
+    // de-select 所有 Nulls.
     auto& remaining = *remainingRows.get();
     for (auto* field : distinctFields_) {
       context.ensureFieldLoaded(field->index(context), remaining);
@@ -98,6 +108,7 @@ void SwitchExpr::evalSpecialForm(
     inputs_[2 * i]->eval(*remainingRows.get(), context, condition);
 
     if (context.errors()) {
+      // 处理每次执行的错误.
       context.deselectErrors(*remainingRows);
       if (!remainingRows->hasSelections()) {
         break;
@@ -218,6 +229,7 @@ void SwitchExpr::computePropagatesNulls() {
 }
 
 // static
+// 检查 input 和 output 对应的类型.
 TypePtr SwitchExpr::resolveType(const std::vector<TypePtr>& argTypes) {
   VELOX_CHECK_GT(
       argTypes.size(),

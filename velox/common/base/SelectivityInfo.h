@@ -22,12 +22,15 @@
 namespace facebook {
 namespace velox {
 
+/// Statistics about (Input value count, output value count, filter time).
 class SelectivityInfo {
  public:
   void addOutput(uint64_t numOut) {
     numOut_ += numOut;
   }
 
+  // Drop 单个值的时间.
+  // 如果啥都没 drop (selectivity 高), 返回一个贼高的总时间.
   float timeToDropValue() const {
     if (numIn_ == numOut_) {
       return timeClocks_;

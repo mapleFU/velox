@@ -404,6 +404,8 @@ ExprPtr compileRewrittenExpression(
           trackCpuUsage);
     }
   } else if (auto call = dynamic_cast<const core::CallTypedExpr*>(expr.get())) {
+    // 不同类型的表达式有不同的 Function Resolvation 的顺序.
+    // 在这 Call 中, 会有 specialForm > vectorFunction > simpleFunction 的优先级.
     if (auto specialForm = getSpecialForm(
             config,
             call->name(),

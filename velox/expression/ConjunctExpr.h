@@ -37,6 +37,7 @@ class ConjunctExpr : public SpecialForm {
         isAnd_(isAnd) {
     selectivity_.resize(inputs_.size());
     inputOrder_.resize(inputs_.size());
+    // 最早按顺序生成 inputOrder_.
     std::iota(inputOrder_.begin(), inputOrder_.end(), 0);
 
     std::vector<TypePtr> inputTypes;
@@ -71,7 +72,7 @@ class ConjunctExpr : public SpecialForm {
   static TypePtr resolveType(const std::vector<TypePtr>& argTypes);
 
   void computePropagatesNulls() override {
-    // TODO(mwish): 这个地方为什么不是 `isAnd_`?
+    // 这里逻辑会有 False/True > NULL 的情况, 所以不能 propagate nulls.
     propagatesNulls_ = false;
   }
 
@@ -97,6 +98,11 @@ class ConjunctExpr : public SpecialForm {
   BufferPtr tempNulls_;
   bool reorderEnabledChecked_ = false;
   bool reorderEnabled_;
+  // 本地 ConjunctExpr 的 selectivity_ 和 inputOrder_, 用于 filter reorder.
+  // 
+  // - selectivity_ 用于存储每个 input 的 SelectivityInfo:
+  //   包含 (Input value count, output value count, filter time).
+  // - inputOrder_ 用于存储每个 input 的顺序.
   std::vector<SelectivityInfo> selectivity_;
   std::vector<int32_t> inputOrder_;
 
