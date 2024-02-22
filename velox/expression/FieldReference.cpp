@@ -69,11 +69,11 @@ void FieldReference::apply(
     if (decoded.mayHaveNulls()) {
       nonNullRowsHolder.get(rows);
       nonNullRowsHolder->deselectNulls(
-          decoded.nulls(), rows.begin(), rows.end());
+          decoded.nulls(&rows), rows.begin(), rows.end());
       nonNullRows = nonNullRowsHolder.get();
       if (!nonNullRows->hasSelections()) {
         // 一个都没选中就跑路咯.
-        addNulls(rows, decoded.nulls(), context, result);
+        addNulls(rows, decoded.nulls(&rows), context, result);
         return;
       }
     }
@@ -133,7 +133,7 @@ void FieldReference::apply(
 
   // Check for nulls in the input struct. Propagate these nulls to 'result'.
   if (!inputs_.empty() && decoded.mayHaveNulls()) {
-    addNulls(rows, decoded.nulls(), context, result);
+    addNulls(rows, decoded.nulls(&rows), context, result);
   }
 }
 

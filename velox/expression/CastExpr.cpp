@@ -756,7 +756,7 @@ void CastExpr::apply(
   context.deselectErrors(*remainingRows);
 
   LocalDecodedVector decoded(context, *input, *remainingRows);
-  auto* rawNulls = decoded->nulls();
+  auto* rawNulls = decoded->nulls(remainingRows.get());
 
   if (rawNulls) {
     // Cast NULL to NULL, deselect them.

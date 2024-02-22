@@ -433,7 +433,7 @@ bool Expr::evalArgsDefaultNulls(
         //
         // 这个地方通过 DecodedVector 只是为了拿到 Null, 和 Peel 其实关系不大.
         decoded.get()->decode(*arg, rows.rows());
-        flatNulls = decoded.get()->nulls();
+        flatNulls = decoded.get()->nulls(&rows.rows());
       }
       // A null with no error deselects the row.
       // An error adds itself to argument errors.
@@ -576,7 +576,7 @@ void Expr::evalSimplifiedImpl(
   try {
     vectorFunction_->apply(
         remainingRows.rows(), inputValues_, type(), context, result);
-  } catch (const VeloxException& ve) {
+  } catch (const VeloxException&) {
     throw;
   } catch (const std::exception& e) {
     VELOX_USER_FAIL(e.what());
@@ -1226,7 +1226,7 @@ bool Expr::removeSureNulls(
 
     if (values->mayHaveNulls()) {
       LocalDecodedVector decoded(context, *values, rows);
-      if (auto* rawNulls = decoded->nulls()) {
+      if (auto* rawNulls = decoded->nulls(&rows)) {
         if (!result) {
           result = nullHolder.get(rows);
         }
@@ -1655,7 +1655,7 @@ void Expr::applyFunction(
   try {
     // 从 inputValues_ 里头拿到对应的 result.
     vectorFunction_->apply(rows, inputValues_, type(), context, result);
-  } catch (const VeloxException& ve) {
+  } catch (const VeloxException&) {
     throw;
   } catch (const std::exception& e) {
     VELOX_USER_FAIL(e.what());
@@ -1675,7 +1675,7 @@ void Expr::applyFunction(
         // should only apply when the UDF is buggy (hopefully rarely).
         VELOX_USER_FAIL(
             "Function neither returned results nor threw exception.");
-      } catch (const std::exception& e) {
+      } catch (const std::exception&) {
         context.setErrors(remainingRows.rows(), std::current_exception());
       }
     }
