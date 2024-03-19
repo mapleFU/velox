@@ -18,10 +18,10 @@
 #include <boost/uuid/uuid_io.hpp>
 #include <string>
 
-#include "velox/codegen/Codegen.h"
 #include "velox/common/base/Counters.h"
 #include "velox/common/base/StatsReporter.h"
 #include "velox/common/file/FileSystems.h"
+#include "velox/common/testutil/TestValue.h"
 #include "velox/common/time/Timer.h"
 #include "velox/exec/Exchange.h"
 #include "velox/exec/HashBuild.h"
@@ -32,10 +32,6 @@
 #include "velox/exec/OperatorUtils.h"
 #include "velox/exec/OutputBufferManager.h"
 #include "velox/exec/Task.h"
-#if CODEGEN_ENABLED == 1
-#include "velox/experimental/codegen/CodegenLogger.h"
-#endif
-#include "velox/common/testutil/TestValue.h"
 
 using facebook::velox::common::testutil::TestValue;
 
@@ -47,7 +43,7 @@ namespace {
 // Inactive on creation. Must be activated explicitly by calling 'activate'.
 class EventCompletionNotifier {
  public:
-  /// Calls notify() if it hasn't been called yet.
+  // Calls notify() if it hasn't been called yet.
   ~EventCompletionNotifier() {
     notify();
   }
@@ -164,6 +160,22 @@ std::string makeUuid() {
 bool isHashJoinOperator(const std::string& operatorType) {
   return (operatorType == "HashBuild") || (operatorType == "HashProbe");
 }
+
+// Moves split promises from one vector to another.
+void movePromisesOut(
+    std::vector<ContinuePromise>& from,
+    std::vector<ContinuePromise>& to) {
+  if (to.empty()) {
+    to.swap(from);
+    return;
+  }
+
+  for (auto& promise : from) {
+    to.emplace_back(std::move(promise));
+  }
+  from.clear();
+}
+
 } // namespace
 
 std::string taskStateString(TaskState state) {
@@ -1027,10 +1039,6 @@ std::vector<std::shared_ptr<Driver>> Task::createDriversLocked(
     bridgeEntry.second->start();
   }
 
-  // Start all the spill groups before we start the driver execution.
-  for (auto& coordinatorEntry : splitGroupState.spillOperatorGroups) {
-    coordinatorEntry.second->start();
-  }
   return drivers;
 }
 
@@ -1295,22 +1303,39 @@ void Task::noMoreSplits(const core::PlanNodeId& planNodeId) {
   {
     std::lock_guard<std::timed_mutex> l(mutex_);
 
-    // Global 'no more splits' for a plan node comes in case of ungrouped
-    // execution when no more splits will arrive. For grouped execution it
-    // comes when no more split groups will arrive for that plan node.
+    // Global 'no more splits' message for a plan node comes in two cases:
+    // 1. For an ungrouped execution plan node when no more splits will
+    // arrive for that plan node.
+    // 2. For a grouped execution plan node when no more split groups will
+    // arrive for that plan node.
     auto& splitsState = getPlanNodeSplitsStateLocked(planNodeId);
     splitsState.noMoreSplits = true;
-    if (not splitsState.groupSplitsStores.empty()) {
+    if (!planFragment_.leafNodeRunsGroupedExecution(planNodeId)) {
+      // Ungrouped execution branch.
+      if (!splitsState.groupSplitsStores.empty()) {
+        // Mark the only split store as 'no more splits'.
+        VELOX_CHECK_EQ(
+            splitsState.groupSplitsStores.size(),
+            1,
+            "Expect 1 split store in a plan node in ungrouped execution mode, has {}",
+            splitsState.groupSplitsStores.size());
+        auto it = splitsState.groupSplitsStores.begin();
+        it->second.noMoreSplits = true;
+        splitPromises.swap(it->second.splitPromises);
+      } else {
+        // For an ungrouped execution plan node, in the unlikely case when there
+        // are no split stores created (this means there were no splits at all),
+        // we create one.
+        splitsState.groupSplitsStores.emplace(
+            kUngroupedGroupId, SplitsStore{{}, true, {}});
+      }
+    } else {
+      // Grouped execution branch.
       // Mark all split stores as 'no more splits'.
       for (auto& it : splitsState.groupSplitsStores) {
         it.second.noMoreSplits = true;
-        splitPromises = std::move(it.second.splitPromises);
+        movePromisesOut(it.second.splitPromises, splitPromises);
       }
-    } else if (!planFragment_.leafNodeRunsGroupedExecution(planNodeId)) {
-      // During ungrouped execution, in the unlikely case there are no split
-      // stores (this means there were no splits at all), we create one.
-      splitsState.groupSplitsStores.emplace(
-          kUngroupedGroupId, SplitsStore{{}, true, {}});
     }
 
     allFinished = checkNoMoreSplitGroupsLocked();
@@ -1342,7 +1367,12 @@ bool Task::checkNoMoreSplitGroupsLocked() {
   // we should review the total number of drivers, which initially is set to
   // process all split groups, but in reality workers share split groups and
   // each worker processes only a part of them, meaning much less than all.
-  if (allNodesReceivedNoMoreSplitsMessageLocked()) {
+  //
+  // NOTE: we shall only do task finish check after the task has been started
+  // which initializes 'numDriversPerSplitGroup_', otherwise the task will
+  // finish early.
+  if ((numDriversPerSplitGroup_ != 0) &&
+      allNodesReceivedNoMoreSplitsMessageLocked()) {
     numTotalDrivers_ = seenSplitGroups_.size() * numDriversPerSplitGroup_ +
         numDriversUngrouped_;
     if (groupedPartitionedOutput_) {
@@ -1482,6 +1512,13 @@ bool Task::isUngroupedExecution() const {
   return not isGroupedExecution();
 }
 
+bool Task::hasMixedExecutionGroup() const {
+  if (!isGroupedExecution()) {
+    return false;
+  }
+  return numDriversUngrouped_ > 0;
+}
+
 bool Task::isRunning() const {
   std::lock_guard<std::timed_mutex> l(mutex_);
   return isRunningLocked();
@@ -1557,7 +1594,7 @@ bool Task::checkIfFinishedLocked() {
   // TODO Add support for terminating processing early in grouped execution.
   bool allFinished = numFinishedDrivers_ == numTotalDrivers_;
   if (!allFinished && isUngroupedExecution()) {
-    auto outputPipelineId = getOutputPipelineId();
+    const auto outputPipelineId = getOutputPipelineId();
     if (splitGroupStates_[kUngroupedGroupId].numFinishedOutputDrivers ==
         numDrivers(outputPipelineId)) {
       allFinished = true;
@@ -1652,10 +1689,6 @@ void Task::addHashJoinBridgesLocked(
   for (const auto& planNodeId : planNodeIds) {
     splitGroupState.bridges.emplace(
         planNodeId, std::make_shared<HashJoinBridge>());
-    splitGroupState.spillOperatorGroups.emplace(
-        planNodeId,
-        std::make_unique<SpillOperatorGroup>(
-            taskId_, splitGroupId, planNodeId));
   }
 }
 
@@ -1755,16 +1788,6 @@ std::string Task::shortId(const std::string& id) {
   }
   auto hash = std::hash<std::string_view>()(std::string_view(str, dot - str));
   return fmt::format("tk:{}", hash & 0xffff);
-}
-
-/// Moves split promises from one vector to another.
-static void movePromisesOut(
-    std::vector<ContinuePromise>& from,
-    std::vector<ContinuePromise>& to) {
-  for (auto& promise : from) {
-    to.push_back(std::move(promise));
-  }
-  from.clear();
 }
 
 ContinueFuture Task::terminate(TaskState terminalState) {
@@ -2600,21 +2623,6 @@ std::shared_ptr<ExchangeClient> Task::getExchangeClientLocked(
     int32_t pipelineId) const {
   VELOX_CHECK_LT(pipelineId, exchangeClients_.size());
   return exchangeClients_[pipelineId];
-}
-
-std::shared_ptr<SpillOperatorGroup> Task::getSpillOperatorGroupLocked(
-    uint32_t splitGroupId,
-    const core::PlanNodeId& planNodeId) {
-  auto& groups = splitGroupStates_[splitGroupId].spillOperatorGroups;
-  auto it = groups.find(planNodeId);
-  VELOX_CHECK(it != groups.end(), "Split group is not set {}", splitGroupId);
-  auto group = it->second;
-  VELOX_CHECK_NOT_NULL(
-      group,
-      "Spill group for plan node ID {} is not set in split group {}",
-      planNodeId,
-      splitGroupId);
-  return group;
 }
 
 void Task::testingVisitDrivers(const std::function<void(Driver*)>& callback) {

@@ -56,13 +56,7 @@ class ChecksumAggregateTest : public AggregationTestBase {
         fmt::format("VALUES (CAST(\'{}\' AS VARCHAR))", expectedChecksum);
 
     testAggregations(
-        rowVectors,
-        {},
-        {"checksum(c0)"},
-        {"to_base64(a0)"},
-        expectedDuckDbSql,
-        /*config*/ {},
-        testWithTableScan);
+        rowVectors, {}, {"checksum(c0)"}, {"to_base64(a0)"}, expectedDuckDbSql);
   }
 
   template <typename G, typename T>
@@ -383,4 +377,10 @@ TEST_F(ChecksumAggregateTest, timestampWithTimezone) {
 
   assertChecksum(timestampWithTimezone, "jwqENA0VLZY=");
 }
+
+TEST_F(ChecksumAggregateTest, unknown) {
+  auto data = makeAllNullFlatVector<UnknownValue>(100);
+  assertChecksum(data, "vBwbUFiJq80=");
+}
+
 } // namespace facebook::velox::aggregate::test

@@ -66,6 +66,8 @@ add_executable(
   MapEntriesTest.cpp
   MapFilterTest.cpp
   MapFromEntriesTest.cpp
+  MapNormalizeTest.cpp
+  MapTopNTest.cpp
   MultimapFromEntriesTest.cpp
   MapKeysAndValuesTest.cpp
   MapMatchTest.cpp
@@ -90,6 +92,7 @@ add_executable(
   TransformKeysTest.cpp
   TransformValuesTest.cpp
   TrimFunctionsTest.cpp
+  TypeOfTest.cpp
   URLFunctionsTest.cpp
   Utf8Test.cpp
   WidthBucketArrayTest.cpp

@@ -238,9 +238,7 @@ class SkipNullsIterator {
   using reference = value_type;
 
  public:
-  SkipNullsIterator<BaseIterator>(
-      const BaseIterator& begin,
-      const BaseIterator& end)
+  SkipNullsIterator(const BaseIterator& begin, const BaseIterator& end)
       : iter_(begin), end_(end) {}
 
   // Given an element, return an iterator to the first not-null element starting
@@ -1115,6 +1113,10 @@ class GenericView {
 
   const TypePtr& type() const {
     return decoded_.base()->type();
+  }
+
+  std::string toString() const {
+    return decoded_.toString(index_);
   }
 
   // If conversion is invalid, behavior is undefined. However, debug time

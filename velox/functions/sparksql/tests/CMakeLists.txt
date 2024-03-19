@@ -26,21 +26,25 @@ add_executable(
   DecimalRoundTest.cpp
   DecimalUtilTest.cpp
   MakeDecimalTest.cpp
+  MakeTimestampTest.cpp
   ElementAtTest.cpp
   HashTest.cpp
   InTest.cpp
   LeastGreatestTest.cpp
   MapTest.cpp
   MightContainTest.cpp
+  MonotonicallyIncreasingIdTest.cpp
   RandTest.cpp
   RegexFunctionsTest.cpp
   SizeTest.cpp
   SortArrayTest.cpp
   SparkCastExprTest.cpp
+  SparkPartitionIdTest.cpp
   SplitFunctionsTest.cpp
   StringTest.cpp
   StringToMapTest.cpp
   UnscaledValueFunctionTest.cpp
+  UuidTest.cpp
   XxHash64Test.cpp)
 
 add_test(velox_functions_spark_test velox_functions_spark_test)

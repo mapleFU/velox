@@ -282,7 +282,7 @@ char* RowContainer::initializeRow(char* row, bool reuse) {
     auto rows = folly::Range<char**>(&row, 1);
     freeVariableWidthFields(rows);
     freeAggregates(rows);
-  } else if (rowSizeOffset_ != 0 && checkFree_) {
+  } else if (rowSizeOffset_ != 0) {
     // zero out string views so that clear() will not hit uninited data. The
     // fastest way is to set the whole row to 0.
     ::memset(row, 0, fixedRowSize_);
@@ -517,9 +517,11 @@ int32_t RowContainer::storeVariableSizeAt(
   const auto size = *reinterpret_cast<const int32_t*>(data);
 
   if (typeKind == TypeKind::VARCHAR || typeKind == TypeKind::VARBINARY) {
-    valueAt<StringView>(row, rowColumn.offset()) = StringView(data + 4, size);
     if (size > 0) {
-      stringAllocator_->copyMultipart(row, rowColumn.offset());
+      stringAllocator_->copyMultipart(
+          StringView(data + 4, size), row, rowColumn.offset());
+    } else {
+      valueAt<StringView>(row, rowColumn.offset()) = StringView();
     }
   } else {
     if (size > 0) {
@@ -837,7 +839,7 @@ void RowContainer::setProbedFlag(char** rows, int32_t numRows) {
 }
 
 void RowContainer::extractProbedFlags(
-    const char* FOLLY_NONNULL const* FOLLY_NONNULL rows,
+    const char* const* rows,
     int32_t numRows,
     bool setNullForNullKeysRow,
     bool setNullForNonProbedRow,
@@ -861,7 +863,7 @@ void RowContainer::extractProbedFlags(
     if (nullResult) {
       flatResult->setNull(i, true);
     } else {
-      bool probed = bits::isBitSet(rows[i], probedFlagOffset_);
+      const bool probed = bits::isBitSet(rows[i], probedFlagOffset_);
       if (setNullForNonProbedRow && !probed) {
         flatResult->setNull(i, true);
       } else {

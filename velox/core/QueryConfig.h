@@ -230,8 +230,6 @@ class QueryConfig {
   /// value is set to 100 GB.
   static constexpr const char* kMaxSpillBytes = "max_spill_bytes";
 
-  static constexpr const char* kTestingSpillPct = "testing.spill_pct";
-
   /// The max allowed spilling level with zero being the initial spilling level.
   /// This only applies for hash build spilling which might trigger recursive
   /// spilling when the build table is too big. If it is set to -1, then there
@@ -269,9 +267,15 @@ class QueryConfig {
   static constexpr const char* kSpillFileCreateConfig =
       "spill_file_create_config";
 
+  /// Default offset spill start partition bit.
   static constexpr const char* kSpillStartPartitionBit =
       "spiller_start_partition_bit";
 
+  /// Default number of spill partition bits.
+  static constexpr const char* kSpillNumPartitionBits =
+      "spiller_num_partition_bits";
+
+  /// !!! DEPRECATED: do not use.
   static constexpr const char* kJoinSpillPartitionBits =
       "join_spiller_partition_bits";
 
@@ -305,6 +309,9 @@ class QueryConfig {
   /// The max number of bits to use for the bloom filter.
   static constexpr const char* kSparkBloomFilterMaxNumBits =
       "spark.bloom_filter.max_num_bits";
+
+  /// The current spark partition id.
+  static constexpr const char* kSparkPartitionId = "spark.partition_id";
 
   /// The number of local parallel table writer operators per task.
   static constexpr const char* kTaskWriterCount = "task_writer_count";
@@ -563,12 +570,6 @@ class QueryConfig {
     return get<bool>(kTopNRowNumberSpillEnabled, true);
   }
 
-  /// Returns a percentage of aggregation or join input batches that will be
-  /// forced to spill for testing. 0 means no extra spilling.
-  int32_t testingSpillPct() const {
-    return get<int32_t>(kTestingSpillPct, 0);
-  }
-
   int32_t maxSpillLevel() const {
     return get<int32_t>(kMaxSpillLevel, 4);
   }
@@ -582,16 +583,28 @@ class QueryConfig {
     return get<uint8_t>(kSpillStartPartitionBit, kDefaultStartBit);
   }
 
-  /// Returns the number of bits used to calculate the spilling partition
-  /// number for hash join. The number of spilling partitions will be power of
-  /// two.
+  /// Returns the number of bits used to calculate the spill partition number
+  /// for hash join. The number of spill partitions will be power of two.
   ///
   /// NOTE: as for now, we only support up to 8-way spill partitioning.
+  ///
+  /// DEPRECATED.
   uint8_t joinSpillPartitionBits() const {
-    constexpr uint8_t kDefaultBits = 2;
+    constexpr uint8_t kDefaultBits = 3;
     constexpr uint8_t kMaxBits = 3;
     return std::min(
         kMaxBits, get<uint8_t>(kJoinSpillPartitionBits, kDefaultBits));
+  }
+
+  /// Returns the number of bits used to calculate the spill partition number
+  /// for hash join and RowNumber. The number of spill partitions will be power
+  /// of tow.
+  /// NOTE: as for now, we only support up to 8-way spill partitioning.
+  uint8_t spillNumPartitionBits() const {
+    constexpr uint8_t kDefaultBits = 3;
+    constexpr uint8_t kMaxBits = 3;
+    return std::min(
+        kMaxBits, get<uint8_t>(kSpillNumPartitionBits, kDefaultBits));
   }
 
   uint64_t writerFlushThresholdBytes() const {
@@ -671,6 +684,14 @@ class QueryConfig {
         kDefault,
         "{} cannot exceed the default value",
         kSparkBloomFilterMaxNumBits);
+    return value;
+  }
+
+  int32_t sparkPartitionId() const {
+    auto id = get<int32_t>(kSparkPartitionId);
+    VELOX_CHECK(id.has_value(), "Spark partition id is not set.");
+    auto value = id.value();
+    VELOX_CHECK_GE(value, 0, "Invalid Spark partition id.");
     return value;
   }
 

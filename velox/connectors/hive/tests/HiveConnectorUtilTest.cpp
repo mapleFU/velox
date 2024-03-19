@@ -101,6 +101,7 @@ TEST_F(HiveConnectorUtilTest, configureReaderOptions) {
   EXPECT_EQ(readerOptions.getFileFormat(), fileFormat);
   EXPECT_TRUE(
       compareSerDeOptions(readerOptions.getSerDeOptions(), expectedSerDe));
+  EXPECT_EQ(readerOptions.loadQuantum(), hiveConfig->loadQuantum());
   EXPECT_EQ(readerOptions.maxCoalesceBytes(), hiveConfig->maxCoalescedBytes());
   EXPECT_EQ(
       readerOptions.maxCoalesceDistance(),
@@ -174,6 +175,7 @@ TEST_F(HiveConnectorUtilTest, configureReaderOptions) {
   // Tests other custom reader options.
   clearDynamicParameters(FileFormat::TEXT);
   std::unordered_map<std::string, std::string> customHiveConfigProps;
+  customHiveConfigProps[hive::HiveConfig::kLoadQuantum] = "321";
   customHiveConfigProps[hive::HiveConfig::kMaxCoalescedBytes] = "129";
   customHiveConfigProps[hive::HiveConfig::kMaxCoalescedDistanceBytes] = "513";
   customHiveConfigProps[hive::HiveConfig::kFileColumnNamesReadAsLowerCase] =
@@ -184,6 +186,7 @@ TEST_F(HiveConnectorUtilTest, configureReaderOptions) {
   hiveConfig = std::make_shared<hive::HiveConfig>(
       std::make_shared<core::MemConfig>(customHiveConfigProps));
   performConfigure();
+  EXPECT_EQ(readerOptions.loadQuantum(), hiveConfig->loadQuantum());
   EXPECT_EQ(readerOptions.maxCoalesceBytes(), hiveConfig->maxCoalescedBytes());
   EXPECT_EQ(
       readerOptions.maxCoalesceDistance(),
@@ -202,4 +205,21 @@ TEST_F(HiveConnectorUtilTest, configureReaderOptions) {
       hiveConfig->filePreloadThreshold());
 }
 
-}; // namespace facebook::velox::connector
+TEST_F(HiveConnectorUtilTest, configureRowReaderOptions) {
+  auto split =
+      std::make_shared<hive::HiveConnectorSplit>("", "", FileFormat::UNKNOWN);
+  auto rowType = ROW({{"float_features", MAP(INTEGER(), REAL())}});
+  auto spec = std::make_shared<common::ScanSpec>("<root>");
+  spec->addAllChildFields(*rowType);
+  auto* float_features = spec->childByName("float_features");
+  float_features->childByName(common::ScanSpec::kMapKeysFieldName)
+      ->setFilter(common::createBigintValues({1, 3}, false));
+  float_features->setFlatMapFeatureSelection({"1", "3"});
+  RowReaderOptions options;
+  configureRowReaderOptions(options, {}, spec, nullptr, rowType, split);
+  auto& nodes = options.getSelector()->getProjection();
+  ASSERT_EQ(nodes.size(), 1);
+  ASSERT_EQ(nodes[0].expression, "[1,3]");
+}
+
+} // namespace facebook::velox::connector

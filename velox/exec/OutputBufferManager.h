@@ -21,6 +21,18 @@ namespace facebook::velox::exec {
 
 class OutputBufferManager {
  public:
+  /// Options for shuffle. This is initialized once and affects both
+  /// PartitionedOutput and Exchange. This can be used for controlling
+  /// compression, protocol version and other matters where shuffle sides should
+  /// agree.
+  struct Options {
+    common::CompressionKind compressionKind{
+        common::CompressionKind::CompressionKind_NONE};
+  };
+
+  OutputBufferManager(Options options)
+      : compressionKind_(options.compressionKind) {}
+
   void initializeTask(
       std::shared_ptr<Task> task,
       core::PartitionedOutputNode::Kind kind,
@@ -82,32 +94,11 @@ class OutputBufferManager {
       DataAvailableCallback notify,
       DataConsumerActiveCheckCallback activeCheck = nullptr);
 
-#ifdef VELOX_ENABLE_BACKWARD_COMPATIBILITY
-  bool getData(
-      const std::string& taskId,
-      int destination,
-      uint64_t maxBytes,
-      int64_t sequence,
-      std::function<void(
-          std::vector<std::unique_ptr<folly::IOBuf>> pages,
-          int64_t sequence)> notify,
-      DataConsumerActiveCheckCallback activeCheck = nullptr) {
-    return getData(
-        taskId,
-        destination,
-        maxBytes,
-        sequence,
-        [notify = std::move(notify)](
-            std::vector<std::unique_ptr<folly::IOBuf>> pages,
-            int64_t sequence,
-            std::vector<int64_t> /*remainingBytes*/) mutable {
-          notify(std::move(pages), sequence);
-        },
-        std::move(activeCheck));
-  }
-#endif
-
   void removeTask(const std::string& taskId);
+
+  /// Initializes singleton with 'options'. May be called once before
+  /// getInstance().
+  static void initialize(const Options& options);
 
   static std::weak_ptr<OutputBufferManager> getInstance();
 
@@ -142,10 +133,20 @@ class OutputBufferManager {
   // Returns NULL if task not found.
   std::shared_ptr<OutputBuffer> getBufferIfExists(const std::string& taskId);
 
+  void testingSetCompression(common::CompressionKind kind) {
+    *const_cast<common::CompressionKind*>(&compressionKind_) = kind;
+  }
+
+  common::CompressionKind compressionKind() const {
+    return compressionKind_;
+  }
+
  private:
   // Retrieves the set of buffers for a query.
   // Throws an exception if buffer doesn't exist.
   std::shared_ptr<OutputBuffer> getBuffer(const std::string& taskId);
+
+  const common::CompressionKind compressionKind_;
 
   folly::Synchronized<
       std::unordered_map<std::string, std::shared_ptr<OutputBuffer>>,
@@ -154,5 +155,8 @@ class OutputBufferManager {
 
   std::function<std::unique_ptr<OutputStreamListener>()> listenerFactory_{
       nullptr};
+
+  inline static std::shared_ptr<OutputBufferManager> instance_;
+  inline static std::mutex initMutex_;
 };
 } // namespace facebook::velox::exec

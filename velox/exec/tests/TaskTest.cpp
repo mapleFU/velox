@@ -18,13 +18,12 @@
 #include "folly/experimental/EventCount.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/future/VeloxPromise.h"
+#include "velox/common/memory/SharedArbitrator.h"
 #include "velox/common/testutil/TestValue.h"
-#include "velox/connectors/hive/HiveConnector.h"
 #include "velox/connectors/hive/HiveConnectorSplit.h"
 #include "velox/exec/OutputBufferManager.h"
 #include "velox/exec/PlanNodeStats.h"
 #include "velox/exec/Values.h"
-#include "velox/exec/tests/utils/AssertQueryBuilder.h"
 #include "velox/exec/tests/utils/Cursor.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
@@ -458,6 +457,16 @@ class TestBadMemoryTranslator : public exec::Operator::PlanNodeTranslator {
 } // namespace
 class TaskTest : public HiveConnectorTestBase {
  protected:
+  static void SetUpTestCase() {
+    FLAGS_velox_testing_enable_arbitration = true;
+    OperatorTestBase::SetUpTestCase();
+  }
+
+  static void TearDownTestCase() {
+    FLAGS_velox_testing_enable_arbitration = false;
+    OperatorTestBase::TearDownTestCase();
+  }
+
   static std::pair<std::shared_ptr<exec::Task>, std::vector<RowVectorPtr>>
   executeSingleThreaded(
       core::PlanFragment plan,
@@ -1372,7 +1381,6 @@ TEST_F(TaskTest, spillDirectoryLifecycleManagement) {
       makeFlatVector<int64_t>(1'000, [](auto row) { return row % 300; }),
       makeFlatVector<int64_t>(1'000, [](auto row) { return row; }),
   });
-
   core::PlanNodeId aggrNodeId;
   const auto plan = PlanBuilder()
                         .values({data})
@@ -1384,8 +1392,7 @@ TEST_F(TaskTest, spillDirectoryLifecycleManagement) {
   params.queryCtx = std::make_shared<core::QueryCtx>(driverExecutor_.get());
   params.queryCtx->testingOverrideConfigUnsafe(
       {{core::QueryConfig::kSpillEnabled, "true"},
-       {core::QueryConfig::kAggregationSpillEnabled, "true"},
-       {core::QueryConfig::kTestingSpillPct, "100"}});
+       {core::QueryConfig::kAggregationSpillEnabled, "true"}});
   params.maxDrivers = 1;
 
   auto cursor = TaskCursor::create(params);
@@ -1395,6 +1402,7 @@ TEST_F(TaskTest, spillDirectoryLifecycleManagement) {
       rootTempDir->path + "/spillDirectoryLifecycleManagement";
   task->setSpillDirectory(tmpDirectoryPath, false);
 
+  TestScopedSpillInjection scopedSpillInjection(100);
   while (cursor->moveNext()) {
   }
   ASSERT_TRUE(waitForTaskCompletion(task.get(), 5'000'000));
@@ -1441,9 +1449,9 @@ TEST_F(TaskTest, spillDirNotCreated) {
   params.queryCtx = std::make_shared<core::QueryCtx>(driverExecutor_.get());
   params.queryCtx->testingOverrideConfigUnsafe(
       {{core::QueryConfig::kSpillEnabled, "true"},
-       {core::QueryConfig::kJoinSpillEnabled, "true"},
-       {core::QueryConfig::kTestingSpillPct, "0"}});
+       {core::QueryConfig::kJoinSpillEnabled, "true"}});
   params.maxDrivers = 1;
+  TestScopedSpillInjection scopedSpillInjection(100);
 
   auto cursor = TaskCursor::create(params);
   auto* task = cursor->task().get();
@@ -1544,10 +1552,20 @@ DEBUG_ONLY_TEST_F(TaskTest, taskReclaimStats) {
   task->start(4, 1);
 
   const int numReclaims{10};
+  const uint64_t queryCapacity = task->pool()->parent()->capacity();
   for (int i = 0; i < numReclaims; ++i) {
     MemoryReclaimer::Stats stats;
     task->pool()->reclaim(1000, 1UL << 30, stats);
   }
+  const int64_t reclaimedQueryCapacity =
+      queryCapacity - task->pool()->parent()->capacity();
+  ASSERT_GE(reclaimedQueryCapacity, 0);
+  auto* arbitrator = dynamic_cast<memory::SharedArbitrator*>(
+      memory::memoryManager()->arbitrator());
+  if (arbitrator != nullptr) {
+    arbitrator->testingFreeCapacity(reclaimedQueryCapacity);
+  }
+
   const auto taskStats = task->taskStats();
   ASSERT_EQ(taskStats.memoryReclaimCount, numReclaims);
   ASSERT_GT(taskStats.memoryReclaimMs, 0);

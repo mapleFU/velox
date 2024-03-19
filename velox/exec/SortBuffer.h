@@ -36,8 +36,7 @@ class SortBuffer {
       const std::vector<CompareFlags>& sortCompareFlags,
       velox::memory::MemoryPool* pool,
       tsan_atomic<bool>* nonReclaimableSection,
-      const common::SpillConfig* spillConfig = nullptr,
-      uint64_t spillMemoryThreshold = 0);
+      const common::SpillConfig* spillConfig = nullptr);
 
   void addInput(const VectorPtr& input);
 
@@ -96,11 +95,6 @@ class SortBuffer {
   // execution section or not.
   tsan_atomic<bool>* const nonReclaimableSection_;
   const common::SpillConfig* const spillConfig_;
-  // The maximum size that an SortBuffer can hold in memory before spilling.
-  // Zero indicates no limit.
-  //
-  // NOTE: 'spillMemoryThreshold_' only applies if disk spilling is enabled.
-  const uint64_t spillMemoryThreshold_;
 
   // The column projection map between 'input_' and 'spillerStoreType_' as sort
   // buffer stores the sort columns first in 'data_'.
@@ -124,8 +118,6 @@ class SortBuffer {
   // Records the source rows to copy to 'output_' in order.
   std::vector<const RowVector*> spillSources_;
   std::vector<vector_size_t> spillSourceRows_;
-  // Counts input batches to trigger spilling for test.
-  uint64_t spillTestCounter_{0};
 
   // Reusable output vector.
   RowVectorPtr output_;

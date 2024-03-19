@@ -313,9 +313,9 @@ Spilling
      - integer
      - 29
      - The start partition bit which is used with `spiller_partition_bits` together to calculate the spilling partition number.
-   * - join_spiller_partition_bits
+   * - spiller_num_partition_bits
      - integer
-     - 2
+     - 3
      - The number of bits (N) used to calculate the spilling partition number for hash join and RowNumber: 2 ^ N. At the moment the maximum
        value is 3, meaning we only support up to 8-way spill partitioning.ing.
    * - testing.spill_pct
@@ -620,3 +620,6 @@ Spark-specific Configuration
      - 4194304
      - The maximum number of bits to use for the bloom filter in :spark:func:`bloom_filter_agg` function,
        the value of this config can not exceed the default value.
+   * - spark.partition_id
+     - integer
+     - The current task's Spark partition ID. It's set by the query engine (Spark) prior to task execution.

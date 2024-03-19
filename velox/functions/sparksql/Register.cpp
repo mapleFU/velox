@@ -33,13 +33,16 @@
 #include "velox/functions/sparksql/In.h"
 #include "velox/functions/sparksql/LeastGreatest.h"
 #include "velox/functions/sparksql/MightContain.h"
+#include "velox/functions/sparksql/MonotonicallyIncreasingId.h"
 #include "velox/functions/sparksql/RegexFunctions.h"
 #include "velox/functions/sparksql/RegisterArithmetic.h"
 #include "velox/functions/sparksql/RegisterCompare.h"
 #include "velox/functions/sparksql/Size.h"
+#include "velox/functions/sparksql/SparkPartitionId.h"
 #include "velox/functions/sparksql/String.h"
 #include "velox/functions/sparksql/StringToMap.h"
 #include "velox/functions/sparksql/UnscaledValueFunction.h"
+#include "velox/functions/sparksql/Uuid.h"
 #include "velox/functions/sparksql/specialforms/DecimalRound.h"
 #include "velox/functions/sparksql/specialforms/MakeDecimal.h"
 #include "velox/functions/sparksql/specialforms/SparkCastExpr.h"
@@ -125,6 +128,8 @@ void registerFunctions(const std::string& prefix) {
   // Register size functions
   registerSize(prefix + "size");
 
+  registerRegexpReplace(prefix);
+
   registerFunction<JsonExtractScalarFunction, Varchar, Varchar, Varchar>(
       {prefix + "get_json_object"});
 
@@ -171,6 +176,11 @@ void registerFunctions(const std::string& prefix) {
 
   registerFunction<sparksql::LeftFunction, Varchar, Varchar, int32_t>(
       {prefix + "left"});
+
+  registerFunction<sparksql::BitLengthFunction, int32_t, Varchar>(
+      {prefix + "bit_length"});
+  registerFunction<sparksql::BitLengthFunction, int32_t, Varbinary>(
+      {prefix + "bit_length"});
 
   exec::registerStatefulVectorFunction(
       prefix + "instr", instrSignatures(), makeInstr);
@@ -269,6 +279,13 @@ void registerFunctions(const std::string& prefix) {
   registerFunction<WeekFunction, int32_t, Timestamp>({prefix + "week_of_year"});
   registerFunction<WeekFunction, int32_t, Date>({prefix + "week_of_year"});
 
+  registerFunction<ToUtcTimestampFunction, Timestamp, Timestamp, Varchar>(
+      {prefix + "to_utc_timestamp"});
+  registerFunction<FromUtcTimestampFunction, Timestamp, Timestamp, Varchar>(
+      {prefix + "from_utc_timestamp"});
+
+  registerFunction<UnixDateFunction, int32_t, Date>({prefix + "unix_date"});
+
   registerFunction<UnixTimestampFunction, int64_t>({prefix + "unix_timestamp"});
 
   registerFunction<UnixTimestampParseFunction, int64_t, Varchar>(
@@ -319,6 +336,12 @@ void registerFunctions(const std::string& prefix) {
 
   registerFunction<HourFunction, int32_t, Timestamp>({prefix + "hour"});
 
+  registerFunction<MinuteFunction, int32_t, Timestamp>({prefix + "minute"});
+
+  registerFunction<SecondFunction, int32_t, Timestamp>({prefix + "second"});
+
+  VELOX_REGISTER_VECTOR_FUNCTION(udf_make_timestamp, prefix + "make_timestamp");
+
   // Register bloom filter function
   registerFunction<BloomFilterMightContainFunction, bool, Varbinary, int64_t>(
       {prefix + "might_contain"});
@@ -330,6 +353,14 @@ void registerFunctions(const std::string& prefix) {
       prefix + "unscaled_value",
       unscaledValueSignatures(),
       makeUnscaledValue());
+
+  registerFunction<SparkPartitionIdFunction, int32_t>(
+      {prefix + "spark_partition_id"});
+
+  registerFunction<MonotonicallyIncreasingIdFunction, int64_t>(
+      {prefix + "monotonically_increasing_id"});
+
+  registerFunction<UuidFunction, Varchar, Constant<int64_t>>({prefix + "uuid"});
 }
 
 } // namespace sparksql
