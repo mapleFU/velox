@@ -53,17 +53,6 @@ void FieldReference::apply(
     // rows 作为完整的限定.
     inputs_[0]->eval(rows, context, input);
 
-    if (auto rowTry = input->as<RowVector>()) {
-      // Make sure output is not copied
-      if (rowTry->isCodegenOutput()) {
-        auto rowType = dynamic_cast<const RowType*>(rowTry->type().get());
-        index_ = rowType->getChildIdx(field_);
-        result = std::move(rowTry->childAt(index_));
-        VELOX_CHECK(result.unique());
-        return;
-      }
-    }
-
     // 按照 selectivityVector, 丢到 decoded 中.
     decoded.decode(*input, rows);
     if (decoded.mayHaveNulls()) {

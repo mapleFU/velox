@@ -170,6 +170,7 @@ class Expr {
       TypePtr type,
       std::vector<std::shared_ptr<Expr>>&& inputs,
       std::shared_ptr<VectorFunction> vectorFunction,
+      VectorFunctionMetadata metadata,
       std::string name,
       bool trackCpuUsage);
 
@@ -185,7 +186,7 @@ class Expr {
       const SelectivityVector& rows,
       EvalCtx& context,
       VectorPtr& result,
-      const ExprSet* FOLLY_NULLABLE parentExprSet = nullptr);
+      const ExprSet* parentExprSet = nullptr);
 
   /// Evaluates the expression using fast path that assumes all inputs and
   /// intermediate results are flat or constant and have no nulls.
@@ -204,13 +205,13 @@ class Expr {
       const SelectivityVector& rows,
       EvalCtx& context,
       VectorPtr& result,
-      const ExprSet* FOLLY_NULLABLE parentExprSet = nullptr);
+      const ExprSet* parentExprSet = nullptr);
 
   void evalFlatNoNullsImpl(
       const SelectivityVector& rows,
       EvalCtx& context,
       VectorPtr& result,
-      const ExprSet* FOLLY_NULLABLE parentExprSet);
+      const ExprSet* parentExprSet);
 
   // Simplified path for expression evaluation (flattens all vectors).
   void evalSimplified(
@@ -358,7 +359,7 @@ class Expr {
   /// expressable as sql. If not given, they will be converted to
   /// SQL-expressable simple constants.
   virtual std::string toSql(
-      std::vector<VectorPtr>* FOLLY_NULLABLE complexConstants = nullptr) const;
+      std::vector<VectorPtr>* complexConstants = nullptr) const;
 
   const ExprStats& stats() const {
     return stats_;
@@ -366,12 +367,16 @@ class Expr {
 
   void addNulls(
       const SelectivityVector& rows,
-      const uint64_t* FOLLY_NULLABLE rawNulls,
+      const uint64_t* rawNulls,
       EvalCtx& context,
       VectorPtr& result) const;
 
-  auto& vectorFunction() const {
+  const std::shared_ptr<VectorFunction>& vectorFunction() const {
     return vectorFunction_;
+  }
+
+  const VectorFunctionMetadata& vectorFunctionMetadata() const {
+    return vectorFunctionMetadata_;
   }
 
   auto& inputValues() {
@@ -409,8 +414,8 @@ class Expr {
 
  private:
   struct PeelEncodingsResult {
-    SelectivityVector* FOLLY_NULLABLE newRows;
-    SelectivityVector* FOLLY_NULLABLE newFinalSelection;
+    SelectivityVector* newRows;
+    SelectivityVector* newFinalSelection;
     // True if the peeled encodings can be cached.
     // 这个应该是 cacheDictionary 的先决条件.
     bool mayCache;
@@ -524,7 +529,7 @@ class Expr {
 
   void appendInputsSql(
       std::stringstream& stream,
-      std::vector<VectorPtr>* FOLLY_NULLABLE complexConstants) const;
+      std::vector<VectorPtr>* complexConstants) const;
 
   /// Release 'inputValues_' back to vector pool in 'evalCtx' so they can be
   /// reused.
@@ -599,7 +604,11 @@ class Expr {
   // 在 Arrow Expression 系统中, Expr 直接分为 Call, Parameter, Literal.
   // 这里 Velox 的 Call 就是直接 Expr 的 vectorFunction.
   const std::shared_ptr<VectorFunction> vectorFunction_;
+<<<<<<< HEAD
   // 子类做的标记.
+=======
+  const VectorFunctionMetadata vectorFunctionMetadata_;
+>>>>>>> main
   const bool specialForm_;
   const bool supportsFlatNoNullsFastPath_;
   const bool trackCpuUsage_;
@@ -742,7 +751,7 @@ class ExprSet {
  public:
   explicit ExprSet(
       const std::vector<core::TypedExprPtr>& source,
-      core::ExecCtx* FOLLY_NONNULL execCtx,
+      core::ExecCtx* execCtx,
       bool enableConstantFolding = true);
 
   virtual ~ExprSet();
@@ -766,7 +775,7 @@ class ExprSet {
 
   void clear();
 
-  core::ExecCtx* FOLLY_NULLABLE execCtx() const {
+  core::ExecCtx* execCtx() const {
     return execCtx_;
   }
 
@@ -793,7 +802,7 @@ class ExprSet {
   }
 
   // Flags an expression that remembers the results for a dictionary.
-  void addToMemo(Expr* FOLLY_NONNULL expr) {
+  void addToMemo(Expr* expr) {
     memoizingExprs_.insert(expr);
   }
 
@@ -828,14 +837,14 @@ class ExprSet {
 
   // Exprs which retain memoized state, e.g. from running over dictionaries.
   std::unordered_set<Expr*> memoizingExprs_;
-  core::ExecCtx* FOLLY_NONNULL const execCtx_;
+  core::ExecCtx* const execCtx_;
 };
 
 class ExprSetSimplified : public ExprSet {
  public:
   ExprSetSimplified(
       const std::vector<core::TypedExprPtr>& source,
-      core::ExecCtx* FOLLY_NONNULL execCtx)
+      core::ExecCtx* execCtx)
       : ExprSet(source, execCtx, /*enableConstantFolding*/ false) {}
 
   virtual ~ExprSetSimplified() override {}
@@ -861,7 +870,7 @@ class ExprSetSimplified : public ExprSet {
 // account and instantiates the correct ExprSet class.
 std::unique_ptr<ExprSet> makeExprSetFromFlag(
     std::vector<core::TypedExprPtr>&& source,
-    core::ExecCtx* FOLLY_NONNULL execCtx);
+    core::ExecCtx* execCtx);
 
 /// Returns a string representation of the expression trees annotated with
 /// runtime statistics. Expected to be called after calling ExprSet::eval one or

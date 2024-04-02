@@ -128,12 +128,14 @@ Expr::Expr(
     TypePtr type,
     std::vector<std::shared_ptr<Expr>>&& inputs,
     std::shared_ptr<VectorFunction> vectorFunction,
+    VectorFunctionMetadata metadata,
     std::string name,
     bool trackCpuUsage)
     : type_(std::move(type)),
       inputs_(std::move(inputs)),
       name_(std::move(name)),
       vectorFunction_(std::move(vectorFunction)),
+      vectorFunctionMetadata_{std::move(metadata)},
       specialForm_{false},
       supportsFlatNoNullsFastPath_{
           vectorFunction_->supportsFlatNoNullsFastPath() &&
@@ -244,7 +246,7 @@ void Expr::computeMetadata() {
   // 跟子表达式去处理 & desterminstic.
   if (vectorFunction_) {
     // 利用 vectorFunction_ 的 isDeterministic() 方法
-    deterministic_ = vectorFunction_->isDeterministic();
+    deterministic_ = vectorFunctionMetadata_.deterministic;
   } else {
     VELOX_CHECK(isSpecialForm());
     deterministic_ = true;
@@ -272,7 +274,7 @@ void Expr::computeMetadata() {
       !is<CastExpr>()) {
     as<SpecialForm>()->computePropagatesNulls();
   } else {
-    if (vectorFunction_ && !vectorFunction_->isDefaultNullBehavior()) {
+    if (vectorFunction_ && !vectorFunctionMetadata_.defaultNullBehavior) {
       propagatesNulls_ = false;
     } else {
       // vectorFunction 已经是 defaultNull. 或者是 Const, fieldRef, Cast 这样的.
@@ -549,7 +551,7 @@ void Expr::evalSimplifiedImpl(
   }
 
   MutableRemainingRows remainingRows(rows, context);
-  const bool defaultNulls = vectorFunction_->isDefaultNullBehavior();
+  const bool defaultNulls = vectorFunctionMetadata_.defaultNullBehavior;
   auto evalArg = [&](int32_t i) {
     auto& inputValue = inputValues_[i];
     inputs_[i]->evalSimplified(remainingRows.rows(), context, inputValue);
@@ -598,14 +600,14 @@ namespace {
 class ExprExceptionContext {
  public:
   ExprExceptionContext(
-      const Expr* FOLLY_NONNULL expr,
-      const RowVector* FOLLY_NONNULL vector,
-      const ExprSet* FOLLY_NULLABLE parentExprSet)
+      const Expr* expr,
+      const RowVector* vector,
+      const ExprSet* parentExprSet)
       : expr_(expr), vector_(vector), parentExprSet_(parentExprSet) {}
 
   /// Persist data and sql on disk. Data will be persisted in $basePath/vector
   /// and sql will be persisted in $basePath/sql
-  void persistDataAndSql(const char* FOLLY_NONNULL basePath) {
+  void persistDataAndSql(const char* basePath) {
     // Exception already persisted or failed to persist. We don't persist again
     // in this situation.
     if (!dataPath_.empty()) {
@@ -666,11 +668,11 @@ class ExprExceptionContext {
     }
   }
 
-  const Expr* FOLLY_NONNULL expr() const {
+  const Expr* expr() const {
     return expr_;
   }
 
-  const RowVector* FOLLY_NONNULL vector() const {
+  const RowVector* vector() const {
     return vector_;
   }
 
@@ -688,15 +690,15 @@ class ExprExceptionContext {
 
  private:
   /// The expression.
-  const Expr* FOLLY_NONNULL expr_;
+  const Expr* expr_;
 
   /// The input vector, i.e. EvalCtx::row(). In some cases, input columns are
   /// re-used for results. Hence, 'vector' may no longer contain input data at
   /// the time of exception.
-  const RowVector* FOLLY_NONNULL vector_;
+  const RowVector* vector_;
 
   // The parent ExprSet that is executing this expression.
-  const ExprSet* FOLLY_NULLABLE parentExprSet_;
+  const ExprSet* parentExprSet_;
 
   /// Path of the file storing the serialized 'vector'. Used to avoid
   /// serializing vector repeatedly in cases when multiple rows generate
@@ -1244,7 +1246,7 @@ bool Expr::removeSureNulls(
 
 void Expr::addNulls(
     const SelectivityVector& rows,
-    const uint64_t* FOLLY_NULLABLE rawNulls,
+    const uint64_t* rawNulls,
     EvalCtx& context,
     VectorPtr& result) const {
   EvalCtx::addNulls(rows, rawNulls, context, type(), result);
@@ -1512,7 +1514,7 @@ void Expr::evalAll(
 }
 
 bool Expr::throwArgumentErrors(const EvalCtx& context) const {
-  bool defaultNulls = vectorFunction_->isDefaultNullBehavior();
+  bool defaultNulls = vectorFunctionMetadata_.defaultNullBehavior;
   return context.throwOnError() &&
       (!defaultNulls ||
        (supportsFlatNoNullsFastPath() && context.inputFlatNoNulls()));
@@ -1533,7 +1535,7 @@ void Expr::evalAllImpl(
   // 这里需要 deterministic_ 为 true, 且所有的 input 都是 Peelable 的, 然后才可以抽取公共
   // 字典.
   bool tryPeelArgs = deterministic_ ? true : false;
-  bool defaultNulls = vectorFunction_->isDefaultNullBehavior();
+  bool defaultNulls = vectorFunctionMetadata_.defaultNullBehavior;
 
   // Tracks what subset of rows shall un-evaluated inputs and current expression
   // evaluates. Initially points to rows.
@@ -1601,7 +1603,7 @@ bool Expr::applyFunctionWithPeeling(
       inputValues_,
       applyRows,
       localDecoded,
-      vectorFunction_->isDefaultNullBehavior(),
+      vectorFunctionMetadata_.defaultNullBehavior,
       peeledVectors);
   if (!peeledEncoding) {
     return false;

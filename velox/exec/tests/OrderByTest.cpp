@@ -58,7 +58,7 @@ common::SpillStats spilledStats(const exec::Task& task) {
 void abortPool(memory::MemoryPool* pool) {
   try {
     VELOX_FAIL("Manual MemoryPool Abortion");
-  } catch (const VeloxException& error) {
+  } catch (const VeloxException&) {
     pool->abort(std::current_exception());
   }
 }
@@ -507,19 +507,19 @@ TEST_F(OrderByTest, spill) {
   ASSERT_GT(planStats.spilledInputBytes, 0);
   ASSERT_EQ(planStats.spilledPartitions, 1);
   ASSERT_GT(planStats.spilledFiles, 0);
-  ASSERT_GT(planStats.customStats["spillRuns"].count, 0);
-  ASSERT_GT(planStats.customStats["spillFillTime"].sum, 0);
-  ASSERT_GT(planStats.customStats["spillSortTime"].sum, 0);
-  ASSERT_GT(planStats.customStats["spillSerializationTime"].sum, 0);
-  ASSERT_GT(planStats.customStats["spillFlushTime"].sum, 0);
+  ASSERT_GT(planStats.customStats[Operator::kSpillRuns].count, 0);
+  ASSERT_GT(planStats.customStats[Operator::kSpillFillTime].sum, 0);
+  ASSERT_GT(planStats.customStats[Operator::kSpillSortTime].sum, 0);
+  ASSERT_GT(planStats.customStats[Operator::kSpillSerializationTime].sum, 0);
+  ASSERT_GT(planStats.customStats[Operator::kSpillFlushTime].sum, 0);
   ASSERT_EQ(
-      planStats.customStats["spillSerializationTime"].count,
-      planStats.customStats["spillFlushTime"].count);
-  ASSERT_GT(planStats.customStats["spillWrites"].sum, 0);
-  ASSERT_GT(planStats.customStats["spillWriteTime"].sum, 0);
+      planStats.customStats[Operator::kSpillSerializationTime].count,
+      planStats.customStats[Operator::kSpillFlushTime].count);
+  ASSERT_GT(planStats.customStats[Operator::kSpillWrites].sum, 0);
+  ASSERT_GT(planStats.customStats[Operator::kSpillWriteTime].sum, 0);
   ASSERT_EQ(
-      planStats.customStats["spillWrites"].count,
-      planStats.customStats["spillWriteTime"].count);
+      planStats.customStats[Operator::kSpillWrites].count,
+      planStats.customStats[Operator::kSpillWriteTime].count);
   OperatorTestBase::deleteTaskAndCheckSpillDirectory(task);
 }
 
@@ -1034,8 +1034,9 @@ DEBUG_ONLY_TEST_F(OrderByTest, reclaimDuringOutputProcessing) {
     taskThread.join();
 
     auto stats = task->taskStats().pipelineStats;
-    ASSERT_EQ(stats[0].operatorStats[1].spilledBytes, 0);
-    ASSERT_EQ(stats[0].operatorStats[1].spilledPartitions, 0);
+    ASSERT_TRUE(!enableSpilling || stats[0].operatorStats[1].spilledBytes > 0);
+    ASSERT_TRUE(
+        !enableSpilling || stats[0].operatorStats[1].spilledPartitions > 0);
     OperatorTestBase::deleteTaskAndCheckSpillDirectory(task);
   }
   ASSERT_EQ(reclaimerStats_.numNonReclaimableAttempts, 0);

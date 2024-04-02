@@ -406,15 +406,11 @@ ExprPtr compileRewrittenExpression(
   } else if (auto call = dynamic_cast<const core::CallTypedExpr*>(expr.get())) {
     // 不同类型的表达式有不同的 Function Resolvation 的顺序.
     // 在这 Call 中, 会有 specialForm > vectorFunction > simpleFunction 的优先级.
-    if (auto specialForm = getSpecialForm(
-            config,
-            call->name(),
-            resultType,
-            std::move(compiledInputs),
-            trackCpuUsage)) {
-      result = specialForm;
+    if (auto specialForm = specialFormRegistry().getSpecialForm(call->name())) {
+      result = specialForm->constructSpecialForm(
+          resultType, std::move(compiledInputs), trackCpuUsage, config);
     } else if (
-        auto func = getVectorFunction(
+        auto functionWithMetadata = getVectorFunctionWithMetadata(
             call->name(),
             inputTypes,
             getConstantInputs(compiledInputs),
@@ -422,7 +418,8 @@ ExprPtr compileRewrittenExpression(
       result = std::make_shared<Expr>(
           resultType,
           std::move(compiledInputs),
-          func,
+          functionWithMetadata->first,
+          functionWithMetadata->second,
           call->name(),
           trackCpuUsage);
     } else if (
@@ -436,12 +433,14 @@ ExprPtr compileRewrittenExpression(
           simpleFunctionEntry->type(),
           resultType,
           folly::join(", ", inputTypes));
+
       auto func = simpleFunctionEntry->createFunction()->createVectorFunction(
           inputTypes, getConstantInputs(compiledInputs), config);
       result = std::make_shared<Expr>(
           resultType,
           std::move(compiledInputs),
           std::move(func),
+          simpleFunctionEntry->metadata(),
           call->name(),
           trackCpuUsage);
     } else {

@@ -220,11 +220,12 @@ class SimpleFunctionAdapter : public VectorFunction {
 
   template <int32_t POSITION, typename... Values>
   void unpackInitialize(
+      const std::vector<TypePtr>& inputTypes,
       const core::QueryConfig& config,
       const std::vector<VectorPtr>& packed,
       const Values*... values) const {
     if constexpr (POSITION == FUNC::num_args) {
-      return (*fn_).initialize(config, values...);
+      return (*fn_).initialize(inputTypes, config, values...);
     } else {
       if (packed.at(POSITION) != nullptr) {
         SelectivityVector rows(1);
@@ -232,24 +233,25 @@ class SimpleFunctionAdapter : public VectorFunction {
         auto oneReader = VectorReader<arg_at<POSITION>>(&decodedVector);
         auto oneValue = oneReader[0];
 
-        unpackInitialize<POSITION + 1>(config, packed, values..., &oneValue);
+        unpackInitialize<POSITION + 1>(
+            inputTypes, config, packed, values..., &oneValue);
       } else {
         using temp_type = exec_arg_at<POSITION>;
         unpackInitialize<POSITION + 1>(
-            config, packed, values..., (const temp_type*)nullptr);
+            inputTypes, config, packed, values..., (const temp_type*)nullptr);
       }
     }
   }
 
  public:
   SimpleFunctionAdapter(
-      const std::vector<TypePtr>& /*inputTypes*/,
+      const std::vector<TypePtr>& inputTypes,
       const core::QueryConfig& config,
       const std::vector<VectorPtr>& constantInputs)
       : fn_{std::make_unique<FUNC>()} {
     if constexpr (FUNC::udf_has_initialize) {
       try {
-        unpackInitialize<0>(config, constantInputs);
+        unpackInitialize<0>(inputTypes, config, constantInputs);
       } catch (const VeloxRuntimeError&) {
         throw;
       } catch (const std::exception&) {
@@ -339,8 +341,10 @@ class SimpleFunctionAdapter : public VectorFunction {
       // 输入是 NULL 的时候才能使用.
       if (!reusableResult->get())
         if (auto* arg = findReusableArg<0>(args)) {
-          reusableResult = arg;
-          isResultReused = true;
+          if ((*arg)->type()->equivalent(*outputType)) {
+            reusableResult = arg;
+            isResultReused = true;
+          }
         }
       }
     }
@@ -457,14 +461,6 @@ class SimpleFunctionAdapter : public VectorFunction {
 
   FunctionCanonicalName getCanonicalName() const final {
     return fn_->getCanonicalName();
-  }
-
-  bool isDeterministic() const override {
-    return fn_->isDeterministic();
-  }
-
-  bool isDefaultNullBehavior() const override {
-    return fn_->is_default_null_behavior;
   }
 
   bool supportsFlatNoNullsFastPath() const override {
@@ -970,6 +966,9 @@ class SimpleFunctionAdapterFactoryImpl : public SimpleFunctionAdapterFactory {
   using Metadata = typename UDFHolder::Metadata;
 
   explicit SimpleFunctionAdapterFactoryImpl() {}
+
+  static constexpr bool is_default_null_behavior =
+      UDFHolder::is_default_null_behavior;
 
   std::unique_ptr<VectorFunction> createVectorFunction(
       const std::vector<TypePtr>& inputTypes,

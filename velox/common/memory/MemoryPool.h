@@ -414,7 +414,7 @@ class MemoryPool : public std::enable_shared_from_this<MemoryPool> {
   virtual void abort(const std::exception_ptr& error) = 0;
 
   /// Returns true if this memory pool has been aborted.
-  virtual bool aborted() const = 0;
+  virtual bool aborted() const;
 
   /// The memory pool's execution stats.
   struct Stats {
@@ -506,6 +506,8 @@ class MemoryPool : public std::enable_shared_from_this<MemoryPool> {
       Kind kind,
       bool threadSafe,
       std::unique_ptr<MemoryReclaimer> reclaimer) = 0;
+
+  virtual std::exception_ptr abortError() const;
 
   /// Invoked only on destruction to remove this memory pool from its parent's
   /// child memory pool tracking.
@@ -643,8 +645,6 @@ class MemoryPoolImpl : public MemoryPool {
 
   void abort(const std::exception_ptr& error) override;
 
-  bool aborted() const override;
-
   std::string toString() const override {
     std::lock_guard<std::mutex> l(mutex_);
     return toStringLocked();
@@ -685,6 +685,10 @@ class MemoryPoolImpl : public MemoryPool {
 
   MemoryAllocator* testingAllocator() const {
     return allocator_;
+  }
+
+  void testingCheckIfAborted() const {
+    checkIfAborted();
   }
 
   uint64_t testingMinReservationBytes() const {
