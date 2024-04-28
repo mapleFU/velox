@@ -53,6 +53,11 @@ General Aggregate Functions
 
     ``hash`` cannot be null.
 
+.. spark:function:: collect_list(x) -> array<[same as x]>
+
+    Returns an array created from the input ``x`` elements. Ignores null
+    inputs, and returns an empty array when all inputs are null.
+
 .. spark:function:: first(x) -> x
 
     Returns the first value of `x`.
@@ -108,6 +113,10 @@ General Aggregate Functions
         ) AS t(x, y);
 
     Returns b
+
+.. spark:function:: regr_replacement(x) -> double
+
+    Returns the `m2` (the sum of the second central moment) of input values.
 
 .. spark:function:: skewness(x) -> double
 

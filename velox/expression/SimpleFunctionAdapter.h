@@ -90,8 +90,8 @@ class SimpleFunctionAdapter : public VectorFunction {
   // Kth 参数是不是非 Boolean 的 Primitive
   template <int32_t POSITION>
   static constexpr bool isArgFlatConstantFastPathEligible =
-      SimpleTypeTrait<arg_at<POSITION>>::isPrimitiveType&&
-          SimpleTypeTrait<arg_at<POSITION>>::typeKind != TypeKind::BOOLEAN;
+      SimpleTypeTrait<arg_at<POSITION>>::isPrimitiveType &&
+      SimpleTypeTrait<arg_at<POSITION>>::typeKind != TypeKind::BOOLEAN;
 
   constexpr int32_t reuseStringsFromArgValue() const {
     return udf_reuse_strings_from_arg<typename FUNC::udf_struct_t>();
@@ -264,8 +264,9 @@ class SimpleFunctionAdapter : public VectorFunction {
 
   template <
       int32_t POSITION,
-      typename std::enable_if_t<POSITION<FUNC::num_args, int32_t> = 0>
-          VectorPtr* findReusableArg(std::vector<VectorPtr>& args) const {
+      typename std::enable_if_t<
+          POSITION<FUNC::num_args, int32_t> = 0> VectorPtr*
+          findReusableArg(std::vector<VectorPtr>& args) const {
     if constexpr (isVariadicType<arg_at<POSITION>>::value) {
       // 对 variadic, 在整个后面找, 因为后面都是这个 s.b. 类型了.
       if constexpr (

@@ -55,24 +55,7 @@ class MinMaxAggregate : public SimpleNumericAggregate<T, T, T> {
       const SelectivityVector& rows,
       std::vector<VectorPtr>& args,
       VectorPtr& result) const override {
-    const auto& input = args[0];
-    if (rows.isAllSelected()) {
-      result = input;
-      return;
-    }
-
-    auto* pool = BaseAggregate::allocator_->pool();
-
-    result = BaseVector::create(input->type(), rows.size(), pool);
-
-    // Set result to NULL for rows that are masked out.
-    {
-      BufferPtr nulls = allocateNulls(rows.size(), pool, bits::kNull);
-      rows.clearNulls(nulls);
-      result->setNulls(nulls);
-    }
-
-    result->copy(input.get(), rows, nullptr);
+    this->singleInputAsIntermediate(rows, args, result);
   }
 
   void extractValues(char** groups, int32_t numGroups, VectorPtr* result)
@@ -119,15 +102,6 @@ class MaxAggregate : public MinMaxAggregate<T> {
 
  public:
   explicit MaxAggregate(TypePtr resultType) : MinMaxAggregate<T>(resultType) {}
-
-  void initializeNewGroups(
-      char** groups,
-      folly::Range<const vector_size_t*> indices) override {
-    exec::Aggregate::setAllNulls(groups, indices);
-    for (auto i : indices) {
-      *exec::Aggregate::value<T>(groups[i]) = kInitialValue_;
-    }
-  }
 
   void addRawInput(
       char** groups,
@@ -191,6 +165,16 @@ class MaxAggregate : public MinMaxAggregate<T> {
     addSingleGroupRawInput(group, rows, args, mayPushdown);
   }
 
+ protected:
+  void initializeNewGroupsInternal(
+      char** groups,
+      folly::Range<const vector_size_t*> indices) override {
+    exec::Aggregate::setAllNulls(groups, indices);
+    for (auto i : indices) {
+      *exec::Aggregate::value<T>(groups[i]) = kInitialValue_;
+    }
+  }
+
  private:
   static const T kInitialValue_;
 };
@@ -204,15 +188,6 @@ class MinAggregate : public MinMaxAggregate<T> {
 
  public:
   explicit MinAggregate(TypePtr resultType) : MinMaxAggregate<T>(resultType) {}
-
-  void initializeNewGroups(
-      char** groups,
-      folly::Range<const vector_size_t*> indices) override {
-    exec::Aggregate::setAllNulls(groups, indices);
-    for (auto i : indices) {
-      *exec::Aggregate::value<T>(groups[i]) = kInitialValue_;
-    }
-  }
 
   void addRawInput(
       char** groups,
@@ -272,6 +247,16 @@ class MinAggregate : public MinMaxAggregate<T> {
     addSingleGroupRawInput(group, rows, args, mayPushdown);
   }
 
+ protected:
+  void initializeNewGroupsInternal(
+      char** groups,
+      folly::Range<const vector_size_t*> indices) override {
+    exec::Aggregate::setAllNulls(groups, indices);
+    for (auto i : indices) {
+      *exec::Aggregate::value<T>(groups[i]) = kInitialValue_;
+    }
+  }
+
  private:
   static const T kInitialValue_;
 };
@@ -288,15 +273,6 @@ class NonNumericMinMaxAggregateBase : public exec::Aggregate {
 
   int32_t accumulatorFixedWidthSize() const override {
     return sizeof(SingleValueAccumulator);
-  }
-
-  void initializeNewGroups(
-      char** groups,
-      folly::Range<const vector_size_t*> indices) override {
-    exec::Aggregate::setAllNulls(groups, indices);
-    for (auto i : indices) {
-      new (groups[i] + offset_) SingleValueAccumulator();
-    }
   }
 
   bool supportsToIntermediate() const override {
@@ -367,12 +343,6 @@ class NonNumericMinMaxAggregateBase : public exec::Aggregate {
     extractValues(groups, numGroups, result);
   }
 
-  void destroy(folly::Range<char**> groups) override {
-    for (auto group : groups) {
-      value<SingleValueAccumulator>(group)->destroy(allocator_);
-    }
-  }
-
  protected:
   template <typename TCompareTest>
   void doUpdate(
@@ -439,6 +409,23 @@ class NonNumericMinMaxAggregateBase : public exec::Aggregate {
         accumulator->write(baseVector, indices[i], allocator_);
       }
     });
+  }
+
+  void initializeNewGroupsInternal(
+      char** groups,
+      folly::Range<const vector_size_t*> indices) override {
+    exec::Aggregate::setAllNulls(groups, indices);
+    for (auto i : indices) {
+      new (groups[i] + offset_) SingleValueAccumulator();
+    }
+  }
+
+  void destroyInternal(folly::Range<char**> groups) override {
+    for (auto group : groups) {
+      if (isInitialized(group)) {
+        value<SingleValueAccumulator>(group)->destroy(allocator_);
+      }
+    }
   }
 
  private:
@@ -545,10 +532,14 @@ std::pair<vector_size_t*, vector_size_t*> rawOffsetAndSizes(
 template <typename T, typename Compare>
 struct MinMaxNAccumulator {
   int64_t n{0};
-  std::vector<T, StlAllocator<T>> heapValues;
+  using Allocator = std::conditional_t<
+      std::is_same_v<int128_t, T>,
+      AlignedStlAllocator<T, sizeof(int128_t)>,
+      StlAllocator<T>>;
+  std::vector<T, Allocator> heapValues;
 
   explicit MinMaxNAccumulator(HashStringAllocator* allocator)
-      : heapValues{StlAllocator<T>(allocator)} {}
+      : heapValues{Allocator(allocator)} {}
 
   int64_t getN() const {
     return n;
@@ -624,7 +615,7 @@ class MinMaxNAggregateBase : public exec::Aggregate {
     return sizeof(AccumulatorType);
   }
 
-  void initializeNewGroups(
+  void initializeNewGroupsInternal(
       char** groups,
       folly::Range<const vector_size_t*> indices) override {
     exec::Aggregate::setAllNulls(groups, indices);
@@ -747,7 +738,7 @@ class MinMaxNAggregateBase : public exec::Aggregate {
     extractValues(groups, numGroups, rawOffsets, rawSizes, rawValues, rawNs);
   }
 
-  void destroy(folly::Range<char**> groups) override {
+  void destroyInternal(folly::Range<char**> groups) override {
     destroyAccumulators<AccumulatorType>(groups);
   }
 
@@ -929,6 +920,18 @@ exec::AggregateRegistrationResult registerMinMax(
             .build());
   }
 
+  // decimal(p,s), bigint -> row(array(decimal(p,s)), bigint) ->
+  // array(decimal(p,s))
+  signatures.push_back(
+      exec::AggregateFunctionSignatureBuilder()
+          .integerVariable("a_precision")
+          .integerVariable("a_scale")
+          .argumentType("DECIMAL(a_precision, a_scale)")
+          .argumentType("bigint")
+          .intermediateType("row(bigint, array(DECIMAL(a_precision, a_scale)))")
+          .returnType("array(DECIMAL(a_precision, a_scale))")
+          .build());
+
   return exec::registerAggregateFunction(
       name,
       std::move(signatures),
@@ -965,7 +968,10 @@ exec::AggregateRegistrationResult registerMinMax(
             case TypeKind::TIMESTAMP:
               return std::make_unique<TNumericN<Timestamp>>(resultType);
             case TypeKind::HUGEINT:
-              return std::make_unique<TNumericN<int128_t>>(resultType);
+              if (inputType->isLongDecimal()) {
+                return std::make_unique<TNumericN<int128_t>>(resultType);
+              }
+              VELOX_UNREACHABLE();
             default:
               VELOX_CHECK(
                   false,

@@ -25,6 +25,8 @@
 
 namespace facebook::velox::exec {
 
+using NextRowVector = std::vector<char*, StlAllocator<char*>>;
+
 class Aggregate;
 
 class Accumulator {
@@ -147,6 +149,20 @@ class RowColumn {
     return packedOffsets_ & 0xff;
   }
 
+  // The null bits and the initialized bits for accumulators start at the
+  // beginning of the first byte following the null bits for the keys.  This
+  // guarantees that they always appear on the same byte for any given
+  // accumulator (since 2 evenly divides 8).
+  int32_t initializedByte() const {
+    return nullByte();
+  }
+
+  // The initialized bit for an accumulator is guaranteed to appear on the same
+  // byte immediately following the null bit for that accumulator.
+  int32_t initializedMask() const {
+    return nullMask() << 1;
+  }
+
  private:
   static uint64_t PackOffsets(int32_t offset, int32_t nullOffset) {
     if (nullOffset == kNotNullOffset) {
@@ -166,6 +182,9 @@ class RowColumn {
 class RowContainer {
  public:
   static constexpr uint64_t kUnlimited = std::numeric_limits<uint64_t>::max();
+  // The number of flags (bits) per accumulator, one for null and one for
+  // initialized.
+  static constexpr size_t kNumAccumulatorFlags = 2;
   using Eraser = std::function<void(folly::Range<char**> rows)>;
 
   /// 'keyTypes' gives the type of row and use 'allocator' for bulk
@@ -427,6 +446,22 @@ class RowContainer {
     return 1 << (nullOffset & 7);
   }
 
+  // Only accumulators have initialized flags. accumulatorFlagsOffset is the
+  // offset at which the flags for an accumulator begin. Currently this is the
+  // null flag, followed by the initialized flag.  So it's equivalent to the
+  // nullOffset.
+
+  // It's guaranteed that the flags for an accumulator appear in the same byte.
+  static inline int32_t initializedByte(int32_t accumulatorFlagsOffset) {
+    return nullByte(accumulatorFlagsOffset);
+  }
+
+  // accumulatorFlagsOffset is the offset at which the flags for an accumulator
+  // begin.
+  static inline int32_t initializedMask(int32_t accumulatorFlagsOffset) {
+    return nullMask(accumulatorFlagsOffset) << 1;
+  }
+
   /// No tsan because probed flags may have been set by a different thread.
   /// There is a barrier but tsan does not know this.
   enum class ProbeType { kAll, kProbed, kNotProbed };
@@ -604,6 +639,15 @@ class RowContainer {
     return nextOffset_;
   }
 
+  // Create a next-row-vector if it doesn't exist. Append the row address to
+  // the next-row-vector, and store the address of the next-row-vector in the
+  // nextOffset_ slot for all duplicate rows.
+  void appendNextRow(char* current, char* nextRow);
+
+  NextRowVector*& getNextRowVector(char* row) const {
+    return *reinterpret_cast<NextRowVector**>(row + nextOffset_);
+  }
+
   /// Hashes the values of 'columnIndex' for 'rows'.  If 'mix' is true, mixes
   /// the hash with the existing value in 'result'.
   void hash(
@@ -635,6 +679,9 @@ class RowContainer {
 
   /// Resets the state to be as after construction. Frees memory for payload.
   void clear();
+
+  /// Frees memory for next row vectors.
+  void clearNextRowVectors();
 
   int32_t compareRows(
       const char* left,
@@ -1182,6 +1229,11 @@ class RowContainer {
   // Free any aggregates associated with the 'rows'.
   void freeAggregates(folly::Range<char**> rows);
 
+  // Free next row vectors associated with the 'rows'.
+  void freeNextRowVectors(folly::Range<char**> rows, bool clear);
+
+  void freeRowsExtraMemory(folly::Range<char**> rows, bool clear);
+
   const bool checkFree_ = false;
 
   const std::vector<TypePtr> keyTypes_;
@@ -1201,6 +1253,7 @@ class RowContainer {
   std::vector<TypePtr> types_;
   std::vector<TypeKind> typeKinds_;
   int32_t nextOffset_ = 0;
+  bool hasDuplicateRows_{false};
   // Bit position of null bit  in the row. 0 if no null flag. Order is keys,
   // accumulators, dependent.
   std::vector<int32_t> nullOffsets_;
@@ -1218,6 +1271,8 @@ class RowContainer {
   int32_t rowSizeOffset_ = 0;
 
   int32_t fixedRowSize_;
+  // How many bytes do the flags (null, probed, free) occupy.
+  int32_t flagBytes_;
   // True if normalized keys are enabled in initial state.
   const bool hasNormalizedKeys_;
   // The count of entries that have an extra normalized_key_t before the

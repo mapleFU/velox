@@ -18,10 +18,12 @@ add_executable(
   BitwiseXorAggregationTest.cpp
   BloomFilterAggAggregateTest.cpp
   CentralMomentsAggregationTest.cpp
+  CollectListAggregateTest.cpp
   FirstAggregateTest.cpp
   LastAggregateTest.cpp
   Main.cpp
   MinMaxByAggregationTest.cpp
+  RegrReplacementAggregationTest.cpp
   SumAggregationTest.cpp)
 
 add_test(velox_functions_spark_aggregates_test

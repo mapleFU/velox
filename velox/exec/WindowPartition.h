@@ -30,13 +30,15 @@ class WindowPartition {
   /// The WindowPartition is constructed by WindowBuild from the input data.
   /// 'data' : Underlying RowContainer of the WindowBuild.
   /// 'rows' : Pointers to rows in the RowContainer belonging to this partition.
-  /// 'columns' : Input rows of 'data' used for accessing column data from it.
+  /// 'inputMapping' : Mapping from Window input column to the column position
+  /// in 'data' for it. This is required because the WindowBuild re-orders
+  /// the columns in 'data' for use with the spiller.
   /// 'sortKeyInfo' : Order by columns used by the the Window operator. Used to
   /// get peer rows from the input partition.
   WindowPartition(
       RowContainer* data,
       const folly::Range<char**>& rows,
-      const std::vector<exec::RowColumn>& columns,
+      const std::vector<column_index_t>& inputMapping,
       const std::vector<std::pair<column_index_t, core::SortOrder>>&
           sortKeyInfo);
 
@@ -131,29 +133,29 @@ class WindowPartition {
   // Searches for 'currentRow[frameColumn]' in 'orderByColumn' of rows between
   // 'start' and 'end' in the partition. 'firstMatch' specifies if first or last
   // row is matched.
-  template <bool isAscending>
   vector_size_t searchFrameValue(
       bool firstMatch,
       vector_size_t start,
       vector_size_t end,
       vector_size_t currentRow,
       column_index_t orderByColumn,
-      column_index_t frameColumn) const;
+      column_index_t frameColumn,
+      const CompareFlags& flags) const;
 
-  template <bool isAscending>
   vector_size_t linearSearchFrameValue(
       bool firstMatch,
       vector_size_t start,
       vector_size_t end,
       vector_size_t currentRow,
       column_index_t orderByColumn,
-      column_index_t frameColumn) const;
+      column_index_t frameColumn,
+      const CompareFlags& flags) const;
 
   // Iterates over 'numBlockRows' and searches frame value for each row.
-  template <bool isAscending>
   void updateKRangeFrameBounds(
       bool firstMatch,
       bool isPreceding,
+      const CompareFlags& flags,
       vector_size_t startRow,
       vector_size_t numRows,
       column_index_t frameColumn,
@@ -170,6 +172,15 @@ class WindowPartition {
   // of WindowPartition.
   folly::Range<char**> partition_;
 
+  // Mapping from window input column -> index in data_. This is required
+  // because the WindowBuild reorders data_ to place partition and sort keys
+  // before other columns in data_. But the Window Operator and Function code
+  // accesses WindowPartition using the indexes of Window input type.
+  const std::vector<column_index_t> inputMapping_;
+
+  // ORDER BY column info for this partition.
+  const std::vector<std::pair<column_index_t, core::SortOrder>> sortKeyInfo_;
+
   // Copy of the input RowColumn objects that are used for
   // accessing the partition row columns. These RowColumn objects
   // index into RowContainer data_ above and can retrieve the column values.
@@ -178,8 +189,5 @@ class WindowPartition {
   // corresponding indexes of their input arguments into this vector.
   // They will request for column vector values at the respective index.
   std::vector<exec::RowColumn> columns_;
-
-  // ORDER BY column info for this partition.
-  const std::vector<std::pair<column_index_t, core::SortOrder>> sortKeyInfo_;
 };
 } // namespace facebook::velox::exec

@@ -15,12 +15,10 @@
  */
 #pragma once
 
-#include <fmt/core.h>
-#include <fmt/format.h>
-#include <folly/Format.h>
+#include <folly/CPortability.h>
 #include <folly/Range.h>
-#include <folly/String.h>
-#include <folly/json.h>
+#include <folly/dynamic.h>
+
 #include <cstdint>
 #include <cstring>
 #include <ctime>
@@ -33,7 +31,6 @@
 #include <typeindex>
 #include <vector>
 
-#include "folly/CPortability.h"
 #include "velox/common/base/ClassName.h"
 #include "velox/common/serialization/Serializable.h"
 #include "velox/type/HugeInt.h"
@@ -668,7 +665,7 @@ class DecimalType : public ScalarType<KIND> {
  public:
   static_assert(KIND == TypeKind::BIGINT || KIND == TypeKind::HUGEINT);
   static constexpr uint8_t kMaxPrecision = KIND == TypeKind::BIGINT ? 18 : 38;
-  static constexpr uint8_t kMinPrecision = KIND == TypeKind::BIGINT ? 0 : 19;
+  static constexpr uint8_t kMinPrecision = KIND == TypeKind::BIGINT ? 1 : 19;
 
   inline bool equivalent(const Type& other) const override {
     if (!Type::hasSameTypeId(other)) {
@@ -1275,6 +1272,10 @@ class DateType : public IntegerType {
   }
 
   std::string toString(int32_t days) const;
+
+  /// Returns a date, represented as days since epoch,
+  /// as an ISO 8601-formatted string.
+  static std::string toIso8601(int32_t days);
 
   int32_t toDays(folly::StringPiece in) const;
 
@@ -1920,14 +1921,11 @@ class FormatValue<
 } // namespace folly
 
 template <>
-struct fmt::formatter<facebook::velox::TypeKind> {
-  constexpr auto parse(format_parse_context& ctx) {
-    return ctx.begin();
-  }
-
+struct fmt::formatter<facebook::velox::TypeKind> : fmt::formatter<string_view> {
   template <typename FormatContext>
-  auto format(const facebook::velox::TypeKind& k, FormatContext& ctx) const {
-    return format_to(ctx.out(), "{}", facebook::velox::mapTypeKindToName(k));
+  auto format(facebook::velox::TypeKind k, FormatContext& ctx) const {
+    return formatter<string_view>::format(
+        facebook::velox::mapTypeKindToName(k), ctx);
   }
 };
 
@@ -1935,13 +1933,10 @@ template <typename T>
 struct fmt::formatter<
     std::shared_ptr<T>,
     typename std::
-        enable_if_t<std::is_base_of_v<facebook::velox::Type, T>, char>> {
-  constexpr auto parse(format_parse_context& ctx) {
-    return ctx.begin();
-  }
-
+        enable_if_t<std::is_base_of_v<facebook::velox::Type, T>, char>>
+    : fmt::formatter<string_view> {
   template <typename FormatContext>
   auto format(const std::shared_ptr<T>& k, FormatContext& ctx) const {
-    return format_to(ctx.out(), "{}", k->toString());
+    return formatter<string_view>::format(k->toString(), ctx);
   }
 };

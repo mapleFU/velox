@@ -325,15 +325,39 @@ void Aggregate::setOffsetsInternal(
     int32_t offset,
     int32_t nullByte,
     uint8_t nullMask,
+    int32_t initializedByte,
+    uint8_t initializedMask,
     int32_t rowSizeOffset) {
   nullByte_ = nullByte;
   nullMask_ = nullMask;
+  initializedByte_ = initializedByte;
+  initializedMask_ = initializedMask;
   offset_ = offset;
   rowSizeOffset_ = rowSizeOffset;
 }
 
 void Aggregate::clearInternal() {
   numNulls_ = 0;
+}
+
+void Aggregate::singleInputAsIntermediate(
+    const SelectivityVector& rows,
+    std::vector<VectorPtr>& args,
+    VectorPtr& result) const {
+  VELOX_CHECK_EQ(args.size(), 1);
+  const auto& input = args[0];
+  if (rows.isAllSelected()) {
+    result = input;
+    return;
+  }
+  VELOX_CHECK_NOT_NULL(result);
+  // Set result to NULL for rows that are masked out.
+  {
+    auto nulls = allocateNulls(rows.size(), allocator_->pool(), bits::kNull);
+    rows.clearNulls(nulls);
+    result->setNulls(nulls);
+  }
+  result->copy(input.get(), rows, nullptr);
 }
 
 } // namespace facebook::velox::exec
