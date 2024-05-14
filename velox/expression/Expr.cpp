@@ -742,14 +742,15 @@ std::string onTopLevelException(VeloxException::Type exceptionType, void* arg) {
     basePath = FLAGS_velox_save_input_on_expression_system_failure_path.c_str();
   }
   if (strlen(basePath) == 0) {
-    return context->expr()->toString();
+    return fmt::format("Top-level Expression: {}", context->expr()->toString());
   }
 
   // Save input vector to a file.
   context->persistDataAndSql(basePath);
 
   return fmt::format(
-      "{}. Input data: {}. SQL expression: {}. All SQL expressions: {}.",
+      "Top-level Expression: {}. Input data: {}. SQL expression: {}."
+      " All SQL expressions: {}. ",
       context->expr()->toString(),
       context->dataPath(),
       context->sqlPath(),
@@ -793,8 +794,9 @@ void Expr::evalFlatNoNullsImpl(
   // 内部用 ExceptionContextSetter 来包装 `ExprExceptionContext`, 
   // 添加异常的时候打印这个表达式的逻辑.
   ExceptionContextSetter exceptionContext(
-      {parentExprSet ? onTopLevelException : onException,
-       parentExprSet ? (void*)&exprExceptionContext : this});
+      {.messageFunc = parentExprSet ? onTopLevelException : onException,
+       .arg = parentExprSet ? (void*)&exprExceptionContext : this,
+       .isEssential = parentExprSet != nullptr});
 
   if (!rows.hasSelections()) {
     checkOrSetEmptyResult(type(), context.pool(), result);
@@ -868,8 +870,9 @@ void Expr::eval(
   // exception.
   ExprExceptionContext exprExceptionContext{this, context.row(), parentExprSet};
   ExceptionContextSetter exceptionContext(
-      {parentExprSet ? onTopLevelException : onException,
-       parentExprSet ? (void*)&exprExceptionContext : this});
+      {.messageFunc = parentExprSet ? onTopLevelException : onException,
+       .arg = parentExprSet ? (void*)&exprExceptionContext : this,
+       .isEssential = parentExprSet != nullptr});
 
   // FastPath for nothing selected.
   if (!rows.hasSelections()) {

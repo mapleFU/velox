@@ -82,9 +82,13 @@ PlanBuilder& PlanBuilder::tableScan(
     const RowTypePtr& outputType,
     const std::vector<std::string>& subfieldFilters,
     const std::string& remainingFilter,
-    const RowTypePtr& dataColumns) {
+    const RowTypePtr& dataColumns,
+    const std::unordered_map<
+        std::string,
+        std::shared_ptr<connector::ColumnHandle>>& assignments) {
   return TableScanBuilder(*this)
       .outputType(outputType)
+      .assignments(assignments)
       .subfieldFilters(subfieldFilters)
       .remainingFilter(remainingFilter)
       .dataColumns(dataColumns)
@@ -135,6 +139,7 @@ PlanBuilder& PlanBuilder::tpchTableScan(
 }
 
 core::PlanNodePtr PlanBuilder::TableScanBuilder::build(core::PlanNodeId id) {
+  VELOX_CHECK_NOT_NULL(outputType_, "outputType must be specified");
   std::unordered_map<std::string, core::TypedExprPtr> typedMapping;
   bool hasAssignments = !(assignments_.empty());
   for (uint32_t i = 0; i < outputType_->size(); ++i) {

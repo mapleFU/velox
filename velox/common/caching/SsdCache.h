@@ -32,13 +32,9 @@ class SsdCache {
   /// next multiple of kRegionSize * 'numShards'. This means that all the shards
   /// have an equal number of regions. For 2 shards and 200MB size, the size
   /// rounds up to 256M with 2 shards each of 128M (2 regions).
-  /// If 'checkpointIntervalBytes' is non-0, the cache makes a durable
+  /// If 'checkpointIntervalBytes' is non-zero, the cache makes a durable
   /// checkpointed state that survives restart after each
   /// 'checkpointIntervalBytes' written.
-  /// If 'setNoCowFlagForSsdFiles' is true, the cache sets 'no copy on write'
-  /// flag to each file. This prevents the cache to go over the 'maxBytes',
-  /// eventually use up all disk space and stop working. Should be set to true
-  /// for file systems supporting COW (like brtfs).
   /// If 'disableFileCow' is true, the cache disables the file COW (copy on
   /// write) feature if the underlying filesystem (such as brtfs) supports it.
   /// This prevents the actual cache space usage on disk from exceeding the
@@ -76,7 +72,7 @@ class SsdCache {
   /// have returned true.
   void write(std::vector<CachePin> pins);
 
-  /// Remove cached    entries from all SsdFiles for files in the fileNum set
+  /// Removes cached entries from all SsdFiles for files in the fileNum set
   /// 'filesToRemove'. If successful, return true, and 'filesRetained' contains
   /// entries that should not be removed, ex., from pinned regions. Otherwise,
   /// return false and 'filesRetained' could be ignored.
@@ -94,7 +90,7 @@ class SsdCache {
   /// Drops all entries. Outstanding pins become invalid but reading them will
   /// mostly succeed since the files will not be rewritten until new content is
   /// stored.
-  void clear();
+  void testingClear();
 
   /// Deletes backing files. Used in testing.
   void testingDeleteFiles();
@@ -105,18 +101,22 @@ class SsdCache {
 
   std::string toString() const;
 
+  const std::string& filePrefix() const {
+    return filePrefix_;
+  }
+
  private:
   const std::string filePrefix_;
   const int32_t numShards_;
+  // Stats for selecting entries to save from AsyncDataCache.
+  const std::unique_ptr<FileGroupStats> groupStats_;
+  folly::Executor* const executor_;
+
   std::vector<std::unique_ptr<SsdFile>> files_;
 
   // Count of shards with unfinished writes.
-  std::atomic<int32_t> writesInProgress_{0};
-
-  // Stats for selecting entries to save from AsyncDataCache.
-  std::unique_ptr<FileGroupStats> groupStats_;
-  folly::Executor* executor_;
-  std::atomic<bool> isShutdown_{false};
+  std::atomic_int32_t writesInProgress_{0};
+  std::atomic_bool isShutdown_{false};
 };
 
 } // namespace facebook::velox::cache

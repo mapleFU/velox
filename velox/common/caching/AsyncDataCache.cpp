@@ -17,6 +17,7 @@
 #include "velox/common/caching/AsyncDataCache.h"
 #include "velox/common/caching/FileIds.h"
 #include "velox/common/caching/SsdCache.h"
+#include "velox/common/caching/SsdFile.h"
 
 #include "velox/common/base/Counters.h"
 #include "velox/common/base/Exceptions.h"
@@ -519,9 +520,9 @@ void CacheShard::updateStats(CacheStats& stats) {
 
 void CacheShard::appendSsdSaveable(std::vector<CachePin>& pins) {
   std::lock_guard<std::mutex> l(mutex_);
-  // Do not add more than 70% of entries to a write batch.If SSD save
-  // is slower than storage read, we must not have a situation where
-  // SSD save pins everything and stops reading.
+  // Do not add more than 70% of entries to a write batch. If SSD save is slower
+  // than storage read, we must not have a situation where SSD save pins
+  // everything and stops reading.
   const int32_t limit = (entries_.size() * 100) / 70;
   VELOX_CHECK(cache_->ssdCache()->writeInProgress());
   for (auto& entry : entries_) {
@@ -586,6 +587,24 @@ bool CacheShard::removeFileEntries(
   cache_->incrementCachedPages(-pagesRemoved);
 
   return true;
+}
+
+CacheStats CacheStats::operator-(CacheStats& other) const {
+  CacheStats result;
+  result.numHit = numHit - other.numHit;
+  result.hitBytes = hitBytes - other.hitBytes;
+  result.numNew = numNew - other.numNew;
+  result.numEvict = numEvict - other.numEvict;
+  result.numEvictChecks = numEvictChecks - other.numEvictChecks;
+  result.numWaitExclusive = numWaitExclusive - other.numWaitExclusive;
+  result.numAgedOut = numAgedOut - other.numAgedOut;
+  result.allocClocks = allocClocks - other.allocClocks;
+  result.sumEvictScore = sumEvictScore - other.sumEvictScore;
+  if (ssdStats != nullptr && other.ssdStats != nullptr) {
+    result.ssdStats =
+        std::make_shared<SsdCacheStats>(*ssdStats - *other.ssdStats);
+  }
+  return result;
 }
 
 AsyncDataCache::AsyncDataCache(
@@ -875,7 +894,7 @@ CacheStats AsyncDataCache::refreshStats() const {
   return stats;
 }
 
-void AsyncDataCache::clear() {
+void AsyncDataCache::testingClear() {
   for (auto& shard : shards_) {
     memory::Allocation unused;
     shard->evict(std::numeric_limits<uint64_t>::max(), true, 0, unused);

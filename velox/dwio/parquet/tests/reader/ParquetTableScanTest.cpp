@@ -56,6 +56,18 @@ class ParquetTableScanTest : public HiveConnectorTestBase {
     assertQuery(plan, splits_, sql);
   }
 
+  void assertSelectWithAssignments(
+      std::vector<std::string>&& outputColumnNames,
+      std::unordered_map<std::string, std::shared_ptr<connector::ColumnHandle>>&
+          assignments,
+      const std::string& sql) {
+    auto rowType = getRowType(std::move(outputColumnNames));
+    auto plan = PlanBuilder()
+                    .tableScan(rowType, {}, "", nullptr, assignments)
+                    .planNode();
+    assertQuery(plan, splits_, sql);
+  }
+
   void assertSelectWithFilter(
       std::vector<std::string>&& outputColumnNames,
       const std::vector<std::string>& subfieldFilters,
@@ -111,6 +123,19 @@ class ParquetTableScanTest : public HiveConnectorTestBase {
     createDuckDbTable({data});
   }
 
+  void loadDataWithRowType(const std::string& filePath, RowVectorPtr data) {
+    splits_ = {makeSplit(filePath)};
+    auto pool = facebook::velox::memory::memoryManager()->addLeafPool();
+    dwio::common::ReaderOptions readerOpts{pool.get()};
+    auto reader = std::make_unique<ParquetReader>(
+        std::make_unique<facebook::velox::dwio::common::BufferedInput>(
+            std::make_shared<LocalReadFile>(filePath),
+            readerOpts.getMemoryPool()),
+        readerOpts);
+    rowType_ = reader->rowType();
+    createDuckDbTable({data});
+  }
+
   std::string getExampleFilePath(const std::string& fileName) {
     return facebook::velox::test::getDataFilePath(
         "velox/dwio/parquet/tests/reader", "../examples/" + fileName);
@@ -118,8 +143,10 @@ class ParquetTableScanTest : public HiveConnectorTestBase {
 
   std::shared_ptr<connector::hive::HiveConnectorSplit> makeSplit(
       const std::string& filePath) {
-    return makeHiveConnectorSplits(
+    auto split = makeHiveConnectorSplits(
         filePath, 1, dwio::common::FileFormat::PARQUET)[0];
+
+    return split;
   }
 
  private:
@@ -303,9 +330,8 @@ TEST_F(ParquetTableScanTest, singleRowStruct) {
 }
 
 // Core dump and incorrect result are fixed.
-TEST_F(ParquetTableScanTest, DISABLED_array) {
-  auto vector = makeArrayVector<int32_t>({{1, 2, 3}});
-
+TEST_F(ParquetTableScanTest, array) {
+  auto vector = makeArrayVector<int32_t>({});
   loadData(
       getExampleFilePath("old_repeated_int.parquet"),
       ROW({"repeatedInt"}, {ARRAY(INTEGER())}),
@@ -316,12 +342,11 @@ TEST_F(ParquetTableScanTest, DISABLED_array) {
           }));
 
   assertSelectWithFilter(
-      {"repeatedInt"}, {}, "", "SELECT repeatedInt FROM tmp");
+      {"repeatedInt"}, {}, "", "SELECT UNNEST(array[array[1,2,3]])");
 }
 
 // Optional array with required elements.
-// Incorrect result.
-TEST_F(ParquetTableScanTest, DISABLED_optArrayReqEle) {
+TEST_F(ParquetTableScanTest, optArrayReqEle) {
   auto vector = makeArrayVector<StringView>({});
 
   loadData(
@@ -341,8 +366,7 @@ TEST_F(ParquetTableScanTest, DISABLED_optArrayReqEle) {
 }
 
 // Required array with required elements.
-// Core dump is fixed, but the result is incorrect.
-TEST_F(ParquetTableScanTest, DISABLED_reqArrayReqEle) {
+TEST_F(ParquetTableScanTest, reqArrayReqEle) {
   auto vector = makeArrayVector<StringView>({});
 
   loadData(
@@ -362,8 +386,7 @@ TEST_F(ParquetTableScanTest, DISABLED_reqArrayReqEle) {
 }
 
 // Required array with optional elements.
-// Incorrect result.
-TEST_F(ParquetTableScanTest, DISABLED_reqArrayOptEle) {
+TEST_F(ParquetTableScanTest, reqArrayOptEle) {
   auto vector = makeArrayVector<StringView>({});
 
   loadData(
@@ -382,14 +405,11 @@ TEST_F(ParquetTableScanTest, DISABLED_reqArrayOptEle) {
       "SELECT UNNEST(array[array['a', null], array[], array[null, 'b']])");
 }
 
-// Required array with legacy format.
-// Incorrect result.
-TEST_F(ParquetTableScanTest, DISABLED_reqArrayLegacy) {
+TEST_F(ParquetTableScanTest, arrayOfArrayTest) {
   auto vector = makeArrayVector<StringView>({});
 
-  loadData(
-      getExampleFilePath("array_3.parquet"),
-      ROW({"_1"}, {ARRAY(VARCHAR())}),
+  loadDataWithRowType(
+      getExampleFilePath("array_of_array1.parquet"),
       makeRowVector(
           {"_1"},
           {
@@ -398,6 +418,26 @@ TEST_F(ParquetTableScanTest, DISABLED_reqArrayLegacy) {
 
   assertSelectWithFilter(
       {"_1"},
+      {},
+      "",
+      "SELECT UNNEST(array[null, array[array['g', 'h'], null]])");
+}
+
+// Required array with legacy format.
+TEST_F(ParquetTableScanTest, reqArrayLegacy) {
+  auto vector = makeArrayVector<StringView>({});
+
+  loadData(
+      getExampleFilePath("array_3.parquet"),
+      ROW({"element"}, {ARRAY(VARCHAR())}),
+      makeRowVector(
+          {"element"},
+          {
+              vector,
+          }));
+
+  assertSelectWithFilter(
+      {"element"},
       {},
       "",
       "SELECT UNNEST(array[array['a', 'b'], array[], array['c', 'd']])");
@@ -441,6 +481,63 @@ TEST_F(ParquetTableScanTest, readAsLowerCase) {
   ASSERT_TRUE(waitForTaskCompletion(result.first->task().get()));
   assertEqualResults(
       result.second, {makeRowVector({"a"}, {makeFlatVector<int64_t>({0, 1})})});
+}
+
+TEST_F(ParquetTableScanTest, rowIndex) {
+  // case 1: file not have `_tmp_metadata_row_index`, scan generate it for user.
+  loadData(
+      getExampleFilePath("sample.parquet"),
+      ROW({"a", "b", "_tmp_metadata_row_index"},
+          {BIGINT(), DOUBLE(), BIGINT()}),
+      makeRowVector(
+          {"a", "b", "_tmp_metadata_row_index"},
+          {
+              makeFlatVector<int64_t>(20, [](auto row) { return row + 1; }),
+              makeFlatVector<double>(20, [](auto row) { return row + 1; }),
+              makeFlatVector<int64_t>(20, [](auto row) { return row; }),
+          }));
+  std::unordered_map<std::string, std::shared_ptr<connector::ColumnHandle>>
+      assignments;
+  assignments["a"] = std::make_shared<connector::hive::HiveColumnHandle>(
+      "a",
+      connector::hive::HiveColumnHandle::ColumnType::kRegular,
+      BIGINT(),
+      BIGINT());
+  assignments["b"] = std::make_shared<connector::hive::HiveColumnHandle>(
+      "b",
+      connector::hive::HiveColumnHandle::ColumnType::kRegular,
+      DOUBLE(),
+      DOUBLE());
+  assignments["_tmp_metadata_row_index"] =
+      std::make_shared<connector::hive::HiveColumnHandle>(
+          "_tmp_metadata_row_index",
+          connector::hive::HiveColumnHandle::ColumnType::kRowIndex,
+          BIGINT(),
+          BIGINT());
+
+  assertSelect({"a"}, "SELECT a FROM tmp");
+  assertSelectWithAssignments(
+      {"a", "_tmp_metadata_row_index"},
+      assignments,
+      "SELECT a, _tmp_metadata_row_index FROM tmp");
+  // case 2: file has `_tmp_metadata_row_index` column, then use user data
+  // insteads of generating it.
+  loadData(
+      getExampleFilePath("sample_with_rowindex.parquet"),
+      ROW({"a", "b", "_tmp_metadata_row_index"},
+          {BIGINT(), DOUBLE(), BIGINT()}),
+      makeRowVector(
+          {"a", "b", "_tmp_metadata_row_index"},
+          {
+              makeFlatVector<int64_t>(20, [](auto row) { return row + 1; }),
+              makeFlatVector<double>(20, [](auto row) { return row + 1; }),
+              makeFlatVector<int64_t>(20, [](auto row) { return row + 1; }),
+          }));
+
+  assertSelect({"a"}, "SELECT a FROM tmp");
+  assertSelect(
+      {"a", "_tmp_metadata_row_index"},
+      "SELECT a, _tmp_metadata_row_index FROM tmp");
 }
 
 int main(int argc, char** argv) {

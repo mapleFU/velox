@@ -83,7 +83,7 @@ void OperatorTestBase::setupMemory(
     int64_t memoryPoolInitCapacity,
     int64_t memoryPoolReservedCapacity) {
   if (asyncDataCache_ != nullptr) {
-    asyncDataCache_->clear();
+    asyncDataCache_->testingClear();
     asyncDataCache_.reset();
   }
   MemoryManagerOptions options;
@@ -94,6 +94,7 @@ void OperatorTestBase::setupMemory(
   options.memoryPoolReservedCapacity = memoryPoolReservedCapacity;
   options.arbitratorKind = "SHARED";
   options.checkUsageLeak = true;
+  options.globalArbitrationEnabled = true;
   options.arbitrationStateCheckCb = memoryArbitrationStateCheck;
   memory::MemoryManager::testingSetInstance(options);
   asyncDataCache_ =

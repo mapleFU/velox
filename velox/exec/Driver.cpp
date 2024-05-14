@@ -110,6 +110,19 @@ inline void checkIsBlockFutureValid(
       op->operatorType());
 }
 
+// Used to generate context for exceptions that are thrown while executing an
+// operator. Eg output: 'Operator: FilterProject(1) PlanNodeId: 1 TaskId:
+// test_cursor 1 PipelineId: 0 DriverId: 0 OperatorAddress: 0x61a000003c80'
+std::string addContextOnException(
+    VeloxException::Type exceptionType,
+    void* arg) {
+  if (exceptionType != VeloxException::Type::kSystem) {
+    return "";
+  }
+  auto* op = static_cast<Operator*>(arg);
+  return fmt::format("Operator: {}", op->toString());
+}
+
 } // namespace
 
 DriverCtx::DriverCtx(
@@ -275,7 +288,7 @@ void Driver::init(
     std::vector<std::unique_ptr<Operator>> operators) {
   VELOX_CHECK_NULL(ctx_);
   ctx_ = std::move(ctx);
-  cpuSliceMs_ = ctx_->queryConfig().driverCpuTimeSliceLimitMs();
+  cpuSliceMs_ = task()->driverCpuTimeSliceLimitMs();
   VELOX_CHECK(operators_.empty());
   operators_ = std::move(operators);
   curOperatorId_ = operators_.size() - 1;
@@ -293,11 +306,12 @@ void Driver::initializeOperators() {
 }
 
 void Driver::pushdownFilters(int operatorIndex) {
-  auto op = operators_[operatorIndex].get();
+  auto* op = operators_[operatorIndex].get();
   const auto& filters = op->getDynamicFilters();
   if (filters.empty()) {
     return;
   }
+  const auto& planNodeId = op->planNodeId();
 
   op->addRuntimeStat("dynamicFiltersProduced", RuntimeCounter(filters.size()));
 
@@ -313,7 +327,7 @@ void Driver::pushdownFilters(int operatorIndex) {
             prevOp->canAddDynamicFilter(),
             "Cannot push down dynamic filters produced by {}",
             op->toString());
-        prevOp->addDynamicFilter(channel, entry.second);
+        prevOp->addDynamicFilter(planNodeId, channel, entry.second);
         prevOp->addRuntimeStat("dynamicFiltersAccepted", RuntimeCounter(1));
         break;
       }
@@ -327,7 +341,7 @@ void Driver::pushdownFilters(int operatorIndex) {
             prevOp->canAddDynamicFilter(),
             "Cannot push down dynamic filters produced by {}",
             op->toString());
-        prevOp->addDynamicFilter(channel, entry.second);
+        prevOp->addDynamicFilter(planNodeId, channel, entry.second);
         prevOp->addRuntimeStat("dynamicFiltersAccepted", RuntimeCounter(1));
         break;
       }
@@ -374,10 +388,12 @@ void Driver::enqueueInternal() {
     RuntimeStatWriterScopeGuard statsWriterGuard(operatorPtr);             \
     threadNumVeloxThrow() = 0;                                             \
     opCallStatus_.start(operatorId, operatorMethod);                       \
+    ExceptionContextSetter exceptionContext(                               \
+        {addContextOnException, operatorPtr, true});                       \
     auto stopGuard = folly::makeGuard([&]() { opCallStatus_.stop(); });    \
     call;                                                                  \
     recordSilentThrows(*operatorPtr);                                      \
-  } catch (const VeloxException& e) {                                      \
+  } catch (const VeloxException&) {                                        \
     throw;                                                                 \
   } catch (const std::exception& e) {                                      \
     VELOX_FAIL(                                                            \
@@ -550,6 +566,7 @@ StopReason Driver::runInternal(
             curOperatorId_,
             kOpMethodIsBlocked);
         if (blockingReason_ != BlockingReason::kNotBlocked) {
+          blockedOperatorId_ = curOperatorId_;
           checkIsBlockFutureValid(op, future);
           blockingState = std::make_shared<BlockingState>(
               self, std::move(future), op, blockingReason_);
@@ -566,6 +583,7 @@ StopReason Driver::runInternal(
               curOperatorId_ + 1,
               kOpMethodIsBlocked);
           if (blockingReason_ != BlockingReason::kNotBlocked) {
+            blockedOperatorId_ = curOperatorId_ + 1;
             checkIsBlockFutureValid(nextOp, future);
             blockingState = std::make_shared<BlockingState>(
                 self, std::move(future), nextOp, blockingReason_);
@@ -656,6 +674,7 @@ StopReason Driver::runInternal(
                   curOperatorId_,
                   kOpMethodIsBlocked);
               if (blockingReason_ != BlockingReason::kNotBlocked) {
+                blockedOperatorId_ = curOperatorId_;
                 checkIsBlockFutureValid(op, future);
                 blockingState = std::make_shared<BlockingState>(
                     self, std::move(future), op, blockingReason_);
@@ -971,15 +990,30 @@ std::vector<Operator*> Driver::operators() const {
 
 std::string Driver::toString() const {
   std::stringstream out;
-  out << "{Driver: ";
-  if (state_.isOnThread()) {
+  out << "{Driver." << driverCtx()->pipelineId << "." << driverCtx()->driverId
+      << ": ";
+  if (state_.isTerminated) {
+    out << "terminated, ";
+  }
+  if (state_.hasBlockingFuture) {
+    std::string blockedOp = (blockedOperatorId_ < operators_.size())
+        ? operators_[blockedOperatorId_]->toString()
+        : "<unknown op>";
+    out << "blocked (" << blockingReasonToString(blockingReason_) << " "
+        << blockedOp << "), ";
+  } else if (state_.isEnqueued) {
+    out << "enqueued ";
+  } else if (state_.isOnThread()) {
     out << "running ";
   } else {
-    out << "blocked " << blockingReasonToString(blockingReason_) << " ";
+    out << "unknown state";
   }
+
+  out << "{Operators: ";
   for (auto& op : operators_) {
-    out << op->toString() << " ";
+    out << op->toString() << ", ";
   }
+  out << "}";
   const auto ocs = opCallStatus();
   if (!ocs.empty()) {
     out << "{OpCallStatus: executing "

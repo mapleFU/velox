@@ -377,30 +377,27 @@ void Operator::recordSpillStats() {
 
   if (lockedSpillStats->spillReadTimeUs != 0) {
     lockedStats->addRuntimeStat(
-        kSpillReadTimeUs,
+        kSpillReadTime,
         RuntimeCounter{
-            static_cast<int64_t>(lockedSpillStats->spillReadTimeUs)});
+            static_cast<int64_t>(lockedSpillStats->spillReadTimeUs) *
+                Timestamp::kNanosecondsInMicrosecond,
+            RuntimeCounter::Unit::kNanos});
   }
 
   if (lockedSpillStats->spillDeserializationTimeUs != 0) {
     lockedStats->addRuntimeStat(
-        kSpillDeserializationTimeUs,
-        RuntimeCounter{static_cast<int64_t>(
-            lockedSpillStats->spillDeserializationTimeUs)});
+        kSpillDeserializationTime,
+        RuntimeCounter{
+            static_cast<int64_t>(lockedSpillStats->spillDeserializationTimeUs) *
+                Timestamp::kNanosecondsInMicrosecond,
+            RuntimeCounter::Unit::kNanos});
   }
   lockedSpillStats->reset();
 }
 
 std::string Operator::toString() const {
   std::stringstream out;
-  if (auto task = operatorCtx_->task()) {
-    auto driverCtx = operatorCtx_->driverCtx();
-    out << operatorType() << "(" << operatorId() << ")<" << task->taskId()
-        << ":" << driverCtx->pipelineId << "." << driverCtx->driverId << " "
-        << this;
-  } else {
-    out << "<Terminated, no task>";
-  }
+  out << operatorType() << "[" << planNodeId() << "] " << operatorId();
   return out.str();
 }
 
@@ -504,6 +501,8 @@ void OperatorStats::add(const OperatorStats& other) {
   spilledFiles += other.spilledFiles;
 
   numNullKeys += other.numNullKeys;
+
+  dynamicFilterStats.add(other.dynamicFilterStats);
 }
 
 void OperatorStats::clear() {
@@ -537,6 +536,8 @@ void OperatorStats::clear() {
   spilledRows = 0;
   spilledPartitions = 0;
   spilledFiles = 0;
+
+  dynamicFilterStats.clear();
 }
 
 std::unique_ptr<memory::MemoryReclaimer> Operator::MemoryReclaimer::create(

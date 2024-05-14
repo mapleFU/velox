@@ -523,10 +523,15 @@ TEST_F(TaskTest, toJson) {
       Task::ExecutionMode::kParallel);
 
   ASSERT_EQ(
-      task->toString(), "{Task task-1 (task-1)Plan: -- Project\n\n drivers:\n");
+      task->toString(),
+      "{Task task-1 (task-1)\n"
+      "Plan:\n"
+      "-- Project[1][expressions: (p0:INTEGER, multiply(ROW[\"a\"],ROW[\"a\"])), (p1:DOUBLE, plus(ROW[\"b\"],ROW[\"b\"]))] -> p0:INTEGER, p1:DOUBLE\n"
+      "  -- TableScan[0][table: hive_table] -> a:INTEGER, b:DOUBLE\n"
+      "\n}");
   ASSERT_EQ(
       folly::toPrettyJson(task->toJson()),
-      "{\n  \"concurrentSplitGroups\": 1,\n  \"drivers\": {},\n  \"exchangeClientByPlanNode\": {},\n  \"groupedPartitionedOutput\": false,\n  \"id\": \"task-1\",\n  \"noMoreOutputBuffers\": false,\n  \"numDriversPerSplitGroup\": 0,\n  \"numDriversUngrouped\": 0,\n  \"numFinishedDrivers\": 0,\n  \"numRunningDrivers\": 0,\n  \"numRunningSplitGroups\": 0,\n  \"numThreads\": 0,\n  \"numTotalDrivers\": 0,\n  \"onThreadSince\": \"0\",\n  \"partitionedOutputConsumed\": false,\n  \"pauseRequested\": false,\n  \"plan\": \"-- Project[expressions: (p0:INTEGER, multiply(ROW[\\\"a\\\"],ROW[\\\"a\\\"])), (p1:DOUBLE, plus(ROW[\\\"b\\\"],ROW[\\\"b\\\"]))] -> p0:INTEGER, p1:DOUBLE\\n  -- TableScan[table: hive_table] -> a:INTEGER, b:DOUBLE\\n\",\n  \"shortId\": \"task-1\",\n  \"state\": \"Running\",\n  \"terminateRequested\": false\n}");
+      "{\n  \"concurrentSplitGroups\": 1,\n  \"drivers\": {},\n  \"exchangeClientByPlanNode\": {},\n  \"groupedPartitionedOutput\": false,\n  \"id\": \"task-1\",\n  \"noMoreOutputBuffers\": false,\n  \"numDriversPerSplitGroup\": 0,\n  \"numDriversUngrouped\": 0,\n  \"numFinishedDrivers\": 0,\n  \"numRunningDrivers\": 0,\n  \"numRunningSplitGroups\": 0,\n  \"numThreads\": 0,\n  \"numTotalDrivers\": 0,\n  \"onThreadSince\": \"0\",\n  \"partitionedOutputConsumed\": false,\n  \"pauseRequested\": false,\n  \"plan\": \"-- Project[1][expressions: (p0:INTEGER, multiply(ROW[\\\"a\\\"],ROW[\\\"a\\\"])), (p1:DOUBLE, plus(ROW[\\\"b\\\"],ROW[\\\"b\\\"]))] -> p0:INTEGER, p1:DOUBLE\\n  -- TableScan[0][table: hive_table] -> a:INTEGER, b:DOUBLE\\n\",\n  \"shortId\": \"task-1\",\n  \"state\": \"Running\",\n  \"terminateRequested\": false\n}");
   ASSERT_EQ(
       folly::toPrettyJson(task->toShortJson()),
       "{\n  \"id\": \"task-1\",\n  \"numFinishedDrivers\": 0,\n  \"numRunningDrivers\": 0,\n  \"numThreads\": 0,\n  \"numTotalDrivers\": 0,\n  \"pauseRequested\": false,\n  \"shortId\": \"task-1\",\n  \"state\": \"Running\",\n  \"terminateRequested\": false\n}");
@@ -709,6 +714,17 @@ TEST_F(TaskTest, testTerminateDeadlock) {
   });
 
   VELOX_ASSERT_THROW(cursor->moveNext(), "Aborted for external error");
+
+  // There should be some Drivers closed by the Task due to termination.
+  // They also should all be empty, otherwise we have zombie Drivers.
+  const auto& driversClosedByTask =
+      cursor->task()->testingDriversClosedByTask();
+  EXPECT_GT(driversClosedByTask.size(), 0);
+  for (const auto& driverWeak : driversClosedByTask) {
+    EXPECT_EQ(driverWeak.lock(), nullptr);
+  }
+  EXPECT_EQ(
+      cursor->task()->toString().find("zombie drivers:"), std::string::npos);
 }
 
 TEST_F(TaskTest, singleThreadedExecution) {
