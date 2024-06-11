@@ -19,6 +19,7 @@
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/exec/Aggregate.h"
 #include "velox/exec/Split.h"
+#include "velox/exec/fuzzer/FuzzerUtil.h"
 #include "velox/exec/fuzzer/InputGenerator.h"
 #include "velox/exec/fuzzer/ReferenceQueryRunner.h"
 #include "velox/exec/fuzzer/ResultVerifier.h"
@@ -108,8 +109,6 @@ class AggregationFuzzerBase {
   };
 
  protected:
-  static inline const std::string kHiveConnectorId = "test-hive";
-
   struct Stats {
     // Names of functions that were tested.
     std::unordered_set<std::string> functionNames;
@@ -152,12 +151,6 @@ class AggregationFuzzerBase {
 
   std::shared_ptr<InputGenerator> findInputGenerator(
       const CallableSignature& signature);
-
-  static exec::Split makeSplit(const std::string& filePath);
-
-  std::vector<exec::Split> makeSplits(
-      const std::vector<RowVectorPtr>& inputs,
-      const std::string& path);
 
   PlanWithSplits deserialize(const folly::dynamic& obj);
 
@@ -288,6 +281,8 @@ class AggregationFuzzerBase {
   std::shared_ptr<memory::MemoryPool> rootPool_{
       memory::memoryManager()->addRootPool()};
   std::shared_ptr<memory::MemoryPool> pool_{rootPool_->addLeafChild("leaf")};
+  std::shared_ptr<memory::MemoryPool> writerPool_{
+      rootPool_->addAggregateChild("aggregationFuzzerWriter")};
   VectorFuzzer vectorFuzzer_;
 };
 
@@ -303,10 +298,6 @@ bool isDone(size_t i, T startTime) {
   }
   return i >= FLAGS_steps;
 }
-
-// Returns whether type is supported in TableScan. Empty Row type and Unknown
-// type are not supported.
-bool isTableScanSupported(const TypePtr& type);
 
 // Prints statistics about supported and unsupported function signatures.
 void printStats(const AggregationFuzzerBase::FunctionsStats& stats);

@@ -25,6 +25,16 @@ void registerVeloxMetrics() {
   // limit if enforced.
   DEFINE_METRIC(kMetricDriverYieldCount, facebook::velox::StatType::COUNT);
 
+  // Tracks driver queue latency in range of [0, 10s] with 20 buckets and
+  // reports P50, P90, P99, and P100.
+  DEFINE_HISTOGRAM_METRIC(
+      kMetricDriverQueueTimeMs, 500, 0, 10'000, 50, 90, 99, 100);
+
+  // Tracks driver execution latency in range of [0, 30s] with 30 buckets and
+  // reports P50, P90, P99, and P100.
+  DEFINE_HISTOGRAM_METRIC(
+      kMetricDriverExecTimeMs, 1'000, 0, 30'000, 50, 90, 99, 100);
+
   /// ================== Cache Counters =================
 
   // Tracks hive handle generation latency in range of [0, 100s] and reports
@@ -213,8 +223,14 @@ void registerVeloxMetrics() {
   DEFINE_METRIC(
       kMetricSsdCacheWriteCheckpointErrors, facebook::velox::StatType::SUM);
 
+  // Total number of writes dropped due to no cache space.
+  DEFINE_METRIC(kMetricSsdCacheWriteSsdDropped, facebook::velox::StatType::SUM);
+
   // Total number of errors while reading from SSD cache files.
   DEFINE_METRIC(kMetricSsdCacheReadSsdErrors, facebook::velox::StatType::SUM);
+
+  // Total number of corrupted SSD data read detected by checksum.
+  DEFINE_METRIC(kMetricSsdCacheReadCorruptions, facebook::velox::StatType::SUM);
 
   // Total number of errors while reading from SSD checkpoint files.
   DEFINE_METRIC(
@@ -258,17 +274,31 @@ void registerVeloxMetrics() {
   DEFINE_HISTOGRAM_METRIC(
       kMetricMemoryReclaimExecTimeMs, 30'000, 0, 600'000, 50, 90, 99, 100);
 
-  // Tracks op memory reclaim bytes.
-  DEFINE_METRIC(kMetricMemoryReclaimedBytes, facebook::velox::StatType::SUM);
+  // Tracks op memory reclaim bytes distribution in range of [0, 4GB] with 64
+  // buckets and reports P50, P90, P99, and P100
+  DEFINE_HISTOGRAM_METRIC(
+      kMetricMemoryReclaimedBytes,
+      67'108'864,
+      0,
+      4'294'967'296,
+      50,
+      90,
+      99,
+      100);
 
   // Tracks the memory reclaim count on an operator.
   DEFINE_METRIC(
       kMetricTaskMemoryReclaimCount, facebook::velox::StatType::COUNT);
 
-  // Tracks memory reclaim task wait time in range of [0, 60s] with 10 buckets
+  // Tracks memory reclaim task wait time in range of [0, 60s] with 60 buckets
   // and reports P50, P90, P99, and P100.
   DEFINE_HISTOGRAM_METRIC(
-      kMetricTaskMemoryReclaimWaitTimeMs, 6'000, 0, 60'000, 50, 90, 99, 100);
+      kMetricTaskMemoryReclaimWaitTimeMs, 1'000, 0, 60'000, 50, 90, 99, 100);
+
+  // Tracks memory reclaim task wait time in range of [0, 240s] with 60 buckets
+  // and reports P50, P90, P99, and P100.
+  DEFINE_HISTOGRAM_METRIC(
+      kMetricTaskMemoryReclaimExecTimeMs, 4'000, 0, 240'000, 50, 90, 99, 100);
 
   // Tracks the number of times that the task memory reclaim wait timeouts.
   DEFINE_METRIC(
@@ -314,7 +344,7 @@ void registerVeloxMetrics() {
   DEFINE_HISTOGRAM_METRIC(
       kMetricArbitratorWaitTimeMs, 30'000, 0, 600'000, 50, 90, 99, 100);
 
-  // The distribution of the amount of time it take to complete a single
+  // The distribution of the amount of time it takes to complete a single
   // arbitration request stays queued in range of [0, 600s] with 20
   // buckets. It is configured to report the latency at P50, P90, P99,
   // and P100 percentiles.
@@ -421,5 +451,11 @@ void registerVeloxMetrics() {
   // flushed due to memory reclaiming.
   DEFINE_METRIC(
       kMetricFileWriterEarlyFlushedRawBytes, facebook::velox::StatType::SUM);
+
+  // The current spilling memory usage in bytes.
+  DEFINE_METRIC(kMetricSpillMemoryBytes, facebook::velox::StatType::AVG);
+
+  // The peak spilling memory usage in bytes.
+  DEFINE_METRIC(kMetricSpillPeakMemoryBytes, facebook::velox::StatType::AVG);
 }
 } // namespace facebook::velox

@@ -333,3 +333,4 @@ fmt/
 cmake-build-*
 re2/
 double-conversion/
+scripts/bm-report/report.html

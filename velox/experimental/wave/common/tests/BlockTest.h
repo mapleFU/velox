@@ -148,7 +148,8 @@ class BlockTestStream : public Stream {
   void updateSum1Atomic(TestingRow* rows, HashRun& run);
   void updateSum1Exch(TestingRow* rows, HashRun& run);
   void updateSum1NoSync(TestingRow* rows, HashRun& run);
-  void updateSum1AtomicCoalesce(TestingRow* rows, HashRun& run);
+  void updateSum1AtomicCoalesceShfl(TestingRow* rows, HashRun& run);
+  void updateSum1AtomicCoalesceShmem(TestingRow* rows, HashRun& run);
   void updateSum1Part(TestingRow* rows, HashRun& run);
   void updateSum1Mtx(TestingRow* rows, HashRun& run);
   void updateSum1MtxCoalesce(TestingRow* rows, HashRun& run);
@@ -162,6 +163,17 @@ class BlockTestStream : public Stream {
       const char* source,
       const uint64_t* targetMask,
       char* target,
+      int32_t* temp);
+
+  /// Tests nonNullIndex256 if 'rows' are all consecutive integers and
+  /// nonNullIndex256Sparse otherwise. If the row hits a null in 'nulls' the
+  /// result in indices is -1, therwise it is the index in non null values, i.e.
+  /// the original minus the count of null positions below it.
+  void nonNullIndex(
+      char* nulls,
+      int32_t* rows,
+      int32_t numRows,
+      int32_t* indices,
       int32_t* temp);
 };
 

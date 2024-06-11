@@ -157,9 +157,13 @@ void RowReader::readWithRowNumber(
     VectorPtr& result) {
   auto* rowVector = result->asUnchecked<RowVector>();
   column_index_t numChildren = 0;
+  column_index_t numConstChildren = 0;
   for (auto& column : options.getScanSpec()->children()) {
     if (column->projectOut()) {
       ++numChildren;
+      if (column->isConstant()) {
+        ++numConstChildren;
+      }
     }
   }
   VectorPtr rowNumVector;
@@ -204,11 +208,16 @@ void RowReader::readWithRowNumber(
         std::vector<BufferPtr>());
     flatRowNum = rowNumVector->asUnchecked<FlatVector<int64_t>>();
   }
-  auto rowOffsets = columnReader->outputRows();
-  VELOX_DCHECK_EQ(rowOffsets.size(), result->size());
   auto* rawRowNum = flatRowNum->mutableRawValues();
-  for (int i = 0; i < rowOffsets.size(); ++i) {
-    rawRowNum[i] = previousRow + rowOffsets[i];
+  if (numChildren == numConstChildren && !hasDeletion(mutation)) {
+    VELOX_DCHECK_EQ(rowsToRead, result->size());
+    std::iota(rawRowNum, rawRowNum + rowsToRead, previousRow);
+  } else {
+    auto rowOffsets = columnReader->outputRows();
+    VELOX_DCHECK_EQ(rowOffsets.size(), result->size());
+    for (int i = 0; i < rowOffsets.size(); ++i) {
+      rawRowNum[i] = previousRow + rowOffsets[i];
+    }
   }
   rowVector = result->asUnchecked<RowVector>();
   auto& rowType = rowVector->type()->asRow();

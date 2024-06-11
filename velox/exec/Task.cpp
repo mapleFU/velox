@@ -459,8 +459,9 @@ std::unique_ptr<memory::MemoryReclaimer> Task::createNodeReclaimer(
   }
   // Sets memory reclaimer for the parent node memory pool on the first child
   // operator construction which has set memory reclaimer.
-  return isHashJoinNode ? HashJoinMemoryReclaimer::create()
-                        : exec::MemoryReclaimer::create();
+  return isHashJoinNode
+      ? HashJoinMemoryReclaimer::create()
+      : exec::ParallelMemoryReclaimer::create(queryCtx_->spillExecutor());
 }
 
 std::unique_ptr<memory::MemoryReclaimer> Task::createExchangeClientReclaimer()
@@ -606,7 +607,7 @@ RowVectorPtr Task::next(ContinueFuture* future) {
     createSplitGroupStateLocked(kUngroupedGroupId);
     std::vector<std::shared_ptr<Driver>> drivers =
         createDriversLocked(kUngroupedGroupId);
-    if (pool_->stats().currentBytes != 0) {
+    if (pool_->reservedBytes() != 0) {
       VELOX_FAIL(
           "Unexpected memory pool allocations during task[{}] driver initialization: {}",
           taskId_,
@@ -779,7 +780,7 @@ void Task::createAndStartDrivers(uint32_t concurrentSplitGroups) {
     // Create drivers.
     std::vector<std::shared_ptr<Driver>> drivers =
         createDriversLocked(kUngroupedGroupId);
-    if (pool_->stats().currentBytes != 0) {
+    if (pool_->reservedBytes() != 0) {
       VELOX_FAIL(
           "Unexpected memory pool allocations during task[{}] driver initialization: {}",
           taskId_,
@@ -2822,7 +2823,7 @@ uint64_t Task::MemoryReclaimer::reclaimTask(
   }
 
   stats.reclaimWaitTimeUs += reclaimWaitTimeUs;
-  RECORD_METRIC_VALUE(kMetricTaskMemoryReclaimCount, 1);
+  RECORD_METRIC_VALUE(kMetricTaskMemoryReclaimCount);
   RECORD_HISTOGRAM_METRIC_VALUE(
       kMetricTaskMemoryReclaimWaitTimeMs, reclaimWaitTimeUs / 1'000);
 
@@ -2830,16 +2831,17 @@ uint64_t Task::MemoryReclaimer::reclaimTask(
   if (task->isCancelled()) {
     return 0;
   }
-  // Before reclaiming from its operators, first to check if there is any free
-  // capacity in the root after stopping this task.
-  const uint64_t shrunkBytes = task->pool()->shrink(targetBytes);
-  if (shrunkBytes >= targetBytes) {
-    return shrunkBytes;
-  }
+
   uint64_t reclaimedBytes{0};
   try {
-    reclaimedBytes = memory::MemoryReclaimer::reclaim(
-        task->pool(), targetBytes - shrunkBytes, maxWaitMs, stats);
+    uint64_t reclaimExecTimeUs{0};
+    {
+      MicrosecondTimer timer{&reclaimExecTimeUs};
+      reclaimedBytes = memory::MemoryReclaimer::reclaim(
+          task->pool(), targetBytes, maxWaitMs, stats);
+    }
+    RECORD_HISTOGRAM_METRIC_VALUE(
+        kMetricTaskMemoryReclaimExecTimeMs, reclaimExecTimeUs / 1'000);
   } catch (...) {
     // Set task error before resumes the task execution as the task operator
     // might not be in consistent state anymore. This prevents any off thread
@@ -2847,7 +2849,7 @@ uint64_t Task::MemoryReclaimer::reclaimTask(
     task->setError(std::current_exception());
     std::rethrow_exception(std::current_exception());
   }
-  return shrunkBytes + reclaimedBytes;
+  return reclaimedBytes;
 }
 
 void Task::MemoryReclaimer::abort(
@@ -2874,5 +2876,4 @@ void Task::MemoryReclaimer::abort(
         << "Timeout waiting for task to complete during query memory aborting.";
   }
 }
-
 } // namespace facebook::velox::exec

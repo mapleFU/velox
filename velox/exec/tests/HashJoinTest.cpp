@@ -604,7 +604,7 @@ class HashJoinBuilder {
         builder.splits(splitEntry.first, splitEntry.second);
       }
     }
-    auto queryCtx = std::make_shared<core::QueryCtx>(
+    auto queryCtx = core::QueryCtx::create(
         executor_,
         core::QueryConfig{{}},
         std::unordered_map<std::string, std::shared_ptr<Config>>{},
@@ -654,7 +654,7 @@ class HashJoinBuilder {
     SCOPED_TRACE(
         injectSpill ? fmt::format("With Max Spill Level: {}", maxSpillLevel)
                     : "Without Spill");
-    ASSERT_EQ(memory::spillMemoryPool()->stats().currentBytes, 0);
+    ASSERT_EQ(memory::spillMemoryPool()->stats().usedBytes, 0);
     const uint64_t peakSpillMemoryUsage =
         memory::spillMemoryPool()->stats().peakBytes;
     TestScopedSpillInjection scopedSpillInjection(spillPct);
@@ -720,7 +720,7 @@ class HashJoinBuilder {
       testVerifier_(task, injectSpill);
     }
     OperatorTestBase::deleteTaskAndCheckSpillDirectory(task);
-    ASSERT_EQ(memory::spillMemoryPool()->stats().currentBytes, 0);
+    ASSERT_EQ(memory::spillMemoryPool()->stats().usedBytes, 0);
   }
 
   VectorFuzzer::Options fuzzerOpts_;
@@ -809,6 +809,68 @@ class HashJoinTest : public HiveConnectorTestBase {
     return splitInput;
   }
 
+  void testLazyVectorsWithFilter(
+      const core::JoinType joinType,
+      const std::string& filter,
+      const std::vector<std::string>& outputLayout,
+      const std::string& referenceQuery) {
+    const vector_size_t vectorSize = 1'000;
+    auto probeVectors = makeBatches(1, [&](int32_t /*unused*/) {
+      return makeRowVector(
+          {makeFlatVector<int32_t>(vectorSize, folly::identity),
+           makeFlatVector<int64_t>(
+               vectorSize, [](auto row) { return row % 23; }),
+           makeFlatVector<int32_t>(
+               vectorSize, [](auto row) { return row % 31; })});
+    });
+
+    std::vector<RowVectorPtr> buildVectors =
+        makeBatches(1, [&](int32_t /*unused*/) {
+          return makeRowVector({makeFlatVector<int32_t>(
+              vectorSize, [](auto row) { return row * 3; })});
+        });
+
+    std::shared_ptr<TempFilePath> probeFile = TempFilePath::create();
+    writeToFile(probeFile->getPath(), probeVectors);
+
+    std::shared_ptr<TempFilePath> buildFile = TempFilePath::create();
+    writeToFile(buildFile->getPath(), buildVectors);
+
+    createDuckDbTable("t", probeVectors);
+    createDuckDbTable("u", buildVectors);
+
+    // Lazy vector is part of the filter but never gets loaded.
+    auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+    core::PlanNodeId probeScanId;
+    core::PlanNodeId buildScanId;
+    auto op = PlanBuilder(planNodeIdGenerator)
+                  .tableScan(asRowType(probeVectors[0]->type()))
+                  .capturePlanNodeId(probeScanId)
+                  .hashJoin(
+                      {"c0"},
+                      {"c0"},
+                      PlanBuilder(planNodeIdGenerator)
+                          .tableScan(asRowType(buildVectors[0]->type()))
+                          .capturePlanNodeId(buildScanId)
+                          .planNode(),
+                      filter,
+                      outputLayout,
+                      joinType)
+                  .planNode();
+    SplitInput splitInput = {
+        {probeScanId,
+         {exec::Split(makeHiveConnectorSplit(probeFile->getPath()))}},
+        {buildScanId,
+         {exec::Split(makeHiveConnectorSplit(buildFile->getPath()))}},
+    };
+    HashJoinBuilder(*pool_, duckDbQueryRunner_, driverExecutor_.get())
+        .planNode(std::move(op))
+        .inputSplits(splitInput)
+        .checkSpillStats(false)
+        .referenceQuery(referenceQuery)
+        .run();
+  }
+
   static uint64_t getInputPositions(
       const std::shared_ptr<Task>& task,
       int operatorIndex) {
@@ -895,17 +957,6 @@ class HashJoinTest : public HiveConnectorTestBase {
         joinNode->sources()[1],
         joinNode->sources()[0],
         joinNode->outputType());
-  }
-
-  static void reclaimAndRestoreCapacity(
-      const Operator* op,
-      uint64_t targetBytes,
-      memory::MemoryReclaimer::Stats& reclaimerStats) {
-    memory::ScopedMemoryArbitrationContext ctx(op->pool());
-    const auto oldCapacity = op->pool()->capacity();
-    op->pool()->reclaim(targetBytes, 0, reclaimerStats);
-    dynamic_cast<memory::MemoryPoolImpl*>(op->pool())
-        ->testingSetCapacity(oldCapacity);
   }
 
   const int32_t numDrivers_;
@@ -3922,7 +3973,7 @@ TEST_F(HashJoinTest, memory) {
                         .project({"t_k1 % 1000 AS k1", "u_k1 % 1000 AS k2"})
                         .singleAggregation({}, {"sum(k1)", "sum(k2)"})
                         .planNode();
-  params.queryCtx = std::make_shared<core::QueryCtx>(driverExecutor_.get());
+  params.queryCtx = core::QueryCtx::create(driverExecutor_.get());
   auto [taskCursor, rows] = readCursor(params, [](Task*) {});
   EXPECT_GT(3'500, params.queryCtx->pool()->stats().numAllocs);
   EXPECT_GT(40'000'000, params.queryCtx->pool()->stats().cumulativeBytes);
@@ -4052,59 +4103,78 @@ TEST_F(HashJoinTest, lazyVectorNotLoadedInFilter) {
   // vector to remain unloaded, as it doesn't need to be split between batches.
   // Then we use a filter that skips the execution of the expression containing
   // the lazy vector, thereby avoiding its loading.
-  const vector_size_t vectorSize = 1'000;
-  auto probeVectors = makeBatches(1, [&](int32_t /*unused*/) {
-    return makeRowVector(
-        {makeFlatVector<int32_t>(vectorSize, folly::identity),
-         makeFlatVector<int64_t>(vectorSize, [](auto row) { return row % 23; }),
-         makeFlatVector<int32_t>(
-             vectorSize, [](auto row) { return row % 31; })});
-  });
 
-  std::vector<RowVectorPtr> buildVectors =
-      makeBatches(1, [&](int32_t /*unused*/) {
-        return makeRowVector({makeFlatVector<int32_t>(
-            vectorSize, [](auto row) { return row * 3; })});
-      });
+  testLazyVectorsWithFilter(
+      core::JoinType::kInner,
+      "c1 >= 0 OR c2 > 0",
+      {"c1", "c2"},
+      "SELECT t.c1, t.c2 FROM t, u WHERE t.c0 = u.c0");
+}
 
-  std::shared_ptr<TempFilePath> probeFile = TempFilePath::create();
-  writeToFile(probeFile->getPath(), probeVectors);
+TEST_F(HashJoinTest, lazyVectorPartiallyLoadedInFilterLeftJoin) {
+  // Test the case where a filter loads a subset of the rows that will be output
+  // from a column on the probe side.
 
-  std::shared_ptr<TempFilePath> buildFile = TempFilePath::create();
-  writeToFile(buildFile->getPath(), buildVectors);
+  testLazyVectorsWithFilter(
+      core::JoinType::kLeft,
+      "c1 > 0 AND c2 > 0",
+      {"c1", "c2"},
+      "SELECT t.c1, t.c2 FROM t LEFT JOIN u ON t.c0 = u.c0 AND (c1 > 0 AND c2 > 0)");
+}
 
-  createDuckDbTable("t", probeVectors);
-  createDuckDbTable("u", buildVectors);
+TEST_F(HashJoinTest, lazyVectorPartiallyLoadedInFilterFullJoin) {
+  // Test the case where a filter loads a subset of the rows that will be output
+  // from a column on the probe side.
 
-  // Lazy vector is part of the filter but never gets loaded.
-  auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
-  core::PlanNodeId probeScanId;
-  core::PlanNodeId buildScanId;
-  auto op = PlanBuilder(planNodeIdGenerator)
-                .tableScan(asRowType(probeVectors[0]->type()))
-                .capturePlanNodeId(probeScanId)
-                .hashJoin(
-                    {"c0"},
-                    {"c0"},
-                    PlanBuilder(planNodeIdGenerator)
-                        .tableScan(asRowType(buildVectors[0]->type()))
-                        .capturePlanNodeId(buildScanId)
-                        .planNode(),
-                    "c1 >= 0 OR c2 > 0",
-                    {"c1", "c2"})
-                .planNode();
-  SplitInput splitInput = {
-      {probeScanId,
-       {exec::Split(makeHiveConnectorSplit(probeFile->getPath()))}},
-      {buildScanId,
-       {exec::Split(makeHiveConnectorSplit(buildFile->getPath()))}},
-  };
-  HashJoinBuilder(*pool_, duckDbQueryRunner_, driverExecutor_.get())
-      .planNode(std::move(op))
-      .inputSplits(splitInput)
-      .checkSpillStats(false)
-      .referenceQuery("SELECT t.c1, t.c2 FROM t, u WHERE t.c0 = u.c0")
-      .run();
+  testLazyVectorsWithFilter(
+      core::JoinType::kFull,
+      "c1 > 0 AND c2 > 0",
+      {"c1", "c2"},
+      "SELECT t.c1, t.c2 FROM t FULL OUTER JOIN u ON t.c0 = u.c0 AND (c1 > 0 AND c2 > 0)");
+}
+
+TEST_F(HashJoinTest, lazyVectorPartiallyLoadedInFilterLeftSemiProject) {
+  // Test the case where a filter loads a subset of the rows that will be output
+  // from a column on the probe side.
+
+  testLazyVectorsWithFilter(
+      core::JoinType::kLeftSemiProject,
+      "c1 > 0 AND c2 > 0",
+      {"c1", "c2", "match"},
+      "SELECT t.c1, t.c2, EXISTS (SELECT * FROM u WHERE t.c0 = u.c0 AND (t.c1 > 0 AND t.c2 > 0)) FROM t");
+}
+
+TEST_F(HashJoinTest, lazyVectorPartiallyLoadedInFilterAntiJoin) {
+  // Test the case where a filter loads a subset of the rows that will be output
+  // from a column on the probe side.
+
+  testLazyVectorsWithFilter(
+      core::JoinType::kAnti,
+      "c1 > 0 AND c2 > 0",
+      {"c1", "c2"},
+      "SELECT t.c1, t.c2 FROM t WHERE NOT EXISTS (SELECT * FROM u WHERE t.c0 = u.c0 AND (t.c1 > 0 AND t.c2 > 0))");
+}
+
+TEST_F(HashJoinTest, lazyVectorPartiallyLoadedInFilterInnerJoin) {
+  // Test the case where a filter loads a subset of the rows that will be output
+  // from a column on the probe side.
+
+  testLazyVectorsWithFilter(
+      core::JoinType::kInner,
+      "not (c1 < 15 and c2 >= 0)",
+      {"c1", "c2"},
+      "SELECT t.c1, t.c2 FROM t, u WHERE t.c0 = u.c0 AND NOT (c1 < 15 AND c2 >= 0)");
+}
+
+TEST_F(HashJoinTest, lazyVectorPartiallyLoadedInFilterLeftSemiFilter) {
+  // Test the case where a filter loads a subset of the rows that will be output
+  // from a column on the probe side.
+
+  testLazyVectorsWithFilter(
+      core::JoinType::kLeftSemiFilter,
+      "not (c1 < 15 and c2 >= 0)",
+      {"c1", "c2"},
+      "SELECT t.c1, t.c2 FROM t WHERE c0 IN (SELECT u.c0 FROM u WHERE t.c0 = u.c0 AND NOT (t.c1 < 15 AND t.c2 >= 0))");
 }
 
 TEST_F(HashJoinTest, dynamicFilters) {
@@ -5288,7 +5358,7 @@ DEBUG_ONLY_TEST_F(HashJoinTest, buildReservationReleaseCheck) {
                             "",
                             concat(probeType_->names(), buildType_->names()))
                         .planNode();
-  params.queryCtx = std::make_shared<core::QueryCtx>(driverExecutor_.get());
+  params.queryCtx = core::QueryCtx::create(driverExecutor_.get());
   // NOTE: the spilling setup is to trigger memory reservation code path which
   // only gets executed when spilling is enabled. We don't care about if
   // spilling is really triggered in test or not.
@@ -5502,14 +5572,17 @@ DEBUG_ONLY_TEST_F(HashJoinTest, reclaimDuringInputProcessing) {
     }
 
     if (testData.expectedReclaimable) {
-      reclaimAndRestoreCapacity(
-          op,
-          folly::Random::oneIn(2) ? 0 : folly::Random::rand32(),
-          reclaimerStats_);
+      {
+        memory::ScopedMemoryArbitrationContext ctx(op->pool());
+        op->pool()->reclaim(
+            folly::Random::oneIn(2) ? 0 : folly::Random::rand32(),
+            0,
+            reclaimerStats_);
+      }
       ASSERT_GT(reclaimerStats_.reclaimExecTimeUs, 0);
       ASSERT_GT(reclaimerStats_.reclaimedBytes, 0);
       reclaimerStats_.reset();
-      ASSERT_EQ(op->pool()->currentBytes(), 0);
+      ASSERT_EQ(op->pool()->usedBytes(), 0);
     } else {
       VELOX_ASSERT_THROW(
           op->reclaim(
@@ -5588,7 +5661,7 @@ DEBUG_ONLY_TEST_F(HashJoinTest, reclaimDuringReserve) {
               return;
             }
             ASSERT_TRUE(op->canReclaim());
-            if (op->pool()->currentBytes() == 0) {
+            if (op->pool()->usedBytes() == 0) {
               // We skip trigger memory reclaim when the hash table is empty on
               // memory reservation.
               return;
@@ -5639,13 +5712,16 @@ DEBUG_ONLY_TEST_F(HashJoinTest, reclaimDuringReserve) {
   ASSERT_TRUE(reclaimable);
   ASSERT_GT(reclaimableBytes, 0);
 
-  reclaimAndRestoreCapacity(
-      op,
-      folly::Random::oneIn(2) ? 0 : folly::Random::rand32(),
-      reclaimerStats_);
+  {
+    memory::ScopedMemoryArbitrationContext ctx(op->pool());
+    op->pool()->reclaim(
+        folly::Random::oneIn(2) ? 0 : folly::Random::rand32(),
+        0,
+        reclaimerStats_);
+  }
   ASSERT_GT(reclaimerStats_.reclaimedBytes, 0);
   ASSERT_GT(reclaimerStats_.reclaimExecTimeUs, 0);
-  ASSERT_EQ(op->pool()->currentBytes(), 0);
+  ASSERT_EQ(op->pool()->usedBytes(), 0);
 
   driverWaitFlag = false;
   driverWait.notifyAll();
@@ -5890,15 +5966,18 @@ DEBUG_ONLY_TEST_F(HashJoinTest, reclaimDuringOutputProcessing) {
 
     if (enableSpilling) {
       ASSERT_GT(reclaimableBytes, 0);
-      const auto usedMemoryBytes = op->pool()->currentBytes();
-      reclaimAndRestoreCapacity(
-          op,
-          folly::Random::oneIn(2) ? 0 : folly::Random::rand32(),
-          reclaimerStats_);
-      ASSERT_GT(reclaimerStats_.reclaimedBytes, 0);
+      const auto usedMemoryBytes = op->pool()->usedBytes();
+      {
+        memory::ScopedMemoryArbitrationContext ctx(op->pool());
+        op->pool()->reclaim(
+            folly::Random::oneIn(2) ? 0 : folly::Random::rand32(),
+            0,
+            reclaimerStats_);
+      }
+      ASSERT_GE(reclaimerStats_.reclaimedBytes, 0);
       ASSERT_GT(reclaimerStats_.reclaimExecTimeUs, 0);
       // No reclaim as the operator has started output processing.
-      ASSERT_EQ(usedMemoryBytes, op->pool()->currentBytes());
+      ASSERT_EQ(usedMemoryBytes, op->pool()->usedBytes());
     } else {
       ASSERT_EQ(reclaimableBytes, 0);
       VELOX_ASSERT_THROW(
@@ -6034,16 +6113,19 @@ DEBUG_ONLY_TEST_F(HashJoinTest, reclaimDuringWaitForProbe) {
   ASSERT_TRUE(reclaimable);
   ASSERT_GT(reclaimableBytes, 0);
 
-  const auto usedMemoryBytes = op->pool()->currentBytes();
+  const auto usedMemoryBytes = op->pool()->usedBytes();
   reclaimerStats_.reset();
-  reclaimAndRestoreCapacity(
-      op,
-      folly::Random::oneIn(2) ? 0 : folly::Random::rand32(),
-      reclaimerStats_);
-  ASSERT_GT(reclaimerStats_.reclaimedBytes, 0);
+  {
+    memory::ScopedMemoryArbitrationContext ctx(op->pool());
+    op->pool()->reclaim(
+        folly::Random::oneIn(2) ? 0 : folly::Random::rand32(),
+        0,
+        reclaimerStats_);
+  }
+  ASSERT_GE(reclaimerStats_.reclaimedBytes, 0);
   ASSERT_GT(reclaimerStats_.reclaimExecTimeUs, 0);
   //  No reclaim as the build operator is not in building table state.
-  ASSERT_EQ(usedMemoryBytes, op->pool()->currentBytes());
+  ASSERT_EQ(usedMemoryBytes, op->pool()->usedBytes());
 
   driverWaitFlag = false;
   driverWait.notifyAll();
@@ -6099,7 +6181,7 @@ DEBUG_ONLY_TEST_F(HashJoinTest, hashBuildAbortDuringOutputProcessing) {
           if (!injectOnce.exchange(false)) {
             return;
           }
-          ASSERT_GT(op->pool()->currentBytes(), 0);
+          ASSERT_GT(op->pool()->usedBytes(), 0);
           auto* driver = op->testingOperatorCtx()->driver();
           ASSERT_EQ(
               driver->task()->enterSuspended(driver->state()),
@@ -6108,7 +6190,7 @@ DEBUG_ONLY_TEST_F(HashJoinTest, hashBuildAbortDuringOutputProcessing) {
                                            : abortPool(op->pool());
           // We can't directly reclaim memory from this hash build operator as
           // its driver thread is running and in suspension state.
-          ASSERT_GT(op->pool()->root()->currentBytes(), 0);
+          ASSERT_GT(op->pool()->root()->usedBytes(), 0);
           ASSERT_EQ(
               driver->task()->leaveSuspended(driver->state()),
               StopReason::kAlreadyTerminated);
@@ -6175,7 +6257,7 @@ DEBUG_ONLY_TEST_F(HashJoinTest, hashBuildAbortDuringInputProcessing) {
           if (++numInputs != 2) {
             return;
           }
-          ASSERT_GT(op->pool()->currentBytes(), 0);
+          ASSERT_GT(op->pool()->usedBytes(), 0);
           auto* driver = op->testingOperatorCtx()->driver();
           ASSERT_EQ(
               driver->task()->enterSuspended(driver->state()),
@@ -6184,7 +6266,7 @@ DEBUG_ONLY_TEST_F(HashJoinTest, hashBuildAbortDuringInputProcessing) {
                                            : abortPool(op->pool());
           // We can't directly reclaim memory from this hash build operator as
           // its driver thread is running and in suspension state.
-          ASSERT_GT(op->pool()->root()->currentBytes(), 0);
+          ASSERT_GT(op->pool()->root()->usedBytes(), 0);
           ASSERT_EQ(
               driver->task()->leaveSuspended(driver->state()),
               StopReason::kAlreadyTerminated);
@@ -6254,7 +6336,6 @@ DEBUG_ONLY_TEST_F(HashJoinTest, hashBuildAbortDuringAllocation) {
                 return;
               }
 
-              // ASSERT_GT(pool->currentBytes(), 0);
               auto& driverCtx = driverThreadContext()->driverCtx;
               ASSERT_EQ(
                   driverCtx.task->enterSuspended(driverCtx.driver->state()),
@@ -6263,7 +6344,7 @@ DEBUG_ONLY_TEST_F(HashJoinTest, hashBuildAbortDuringAllocation) {
                                                : abortPool(pool);
               // We can't directly reclaim memory from this hash build operator
               // as its driver thread is running and in suspegnsion state.
-              ASSERT_GE(pool->root()->currentBytes(), 0);
+              ASSERT_GE(pool->root()->usedBytes(), 0);
               ASSERT_EQ(
                   driverCtx.task->leaveSuspended(driverCtx.driver->state()),
                   StopReason::kAlreadyTerminated);
@@ -6498,7 +6579,7 @@ DEBUG_ONLY_TEST_F(HashJoinTest, minSpillableMemoryReservation) {
         std::function<void(exec::HashBuild*)>(([&](exec::HashBuild* hashBuild) {
           memory::MemoryPool* pool = hashBuild->pool();
           const auto availableReservationBytes = pool->availableReservation();
-          const auto currentUsedBytes = pool->currentBytes();
+          const auto currentUsedBytes = pool->usedBytes();
           // Verifies we always have min reservation after ensuring the input.
           ASSERT_GE(
               availableReservationBytes,
@@ -6618,7 +6699,7 @@ TEST_F(HashJoinTest, maxSpillBytes) {
                   .planNode();
 
   auto spillDirectory = exec::test::TempDirectoryPath::create();
-  auto queryCtx = std::make_shared<core::QueryCtx>(executor_.get());
+  auto queryCtx = core::QueryCtx::create(executor_.get());
 
   struct {
     int32_t maxSpilledBytes;
@@ -6674,7 +6755,7 @@ TEST_F(HashJoinTest, onlyHashBuildMaxSpillBytes) {
                   .planNode();
 
   auto spillDirectory = exec::test::TempDirectoryPath::create();
-  auto queryCtx = std::make_shared<core::QueryCtx>(executor_.get());
+  auto queryCtx = core::QueryCtx::create(executor_.get());
 
   struct {
     int32_t maxSpilledBytes;
@@ -6771,9 +6852,24 @@ DEBUG_ONLY_TEST_F(
       runHashJoinTask(vectors, queryCtx, numDrivers, pool(), false).data;
 
   std::atomic_bool nonReclaimableSectionWaitFlag{true};
+  std::atomic_bool reclaimerInitializationWaitFlag{true};
   folly::EventCount nonReclaimableSectionWait;
   std::atomic_bool memoryArbitrationWaitFlag{true};
   folly::EventCount memoryArbitrationWait;
+
+  std::atomic<uint32_t> numInitializedDrivers{0};
+  SCOPED_TESTVALUE_SET(
+      "facebook::velox::exec::Driver::runInternal",
+      std::function<void(exec::Driver*)>([&](exec::Driver* driver) {
+        numInitializedDrivers++;
+        // We need to make sure reclaimers on both build and probe side are set
+        // (in Operator::initialize) to avoid race conditions, producing
+        // consistent test results.
+        if (numInitializedDrivers.load() == 2) {
+          reclaimerInitializationWaitFlag = false;
+          nonReclaimableSectionWait.notifyAll();
+        }
+      }));
 
   std::atomic<bool> injectNonReclaimableSectionOnce{true};
   SCOPED_TESTVALUE_SET(
@@ -6809,8 +6905,11 @@ DEBUG_ONLY_TEST_F(
   });
 
   // Wait for the hash build operators to enter into non-reclaimable section.
-  nonReclaimableSectionWait.await(
-      [&]() { return !nonReclaimableSectionWaitFlag.load(); });
+  nonReclaimableSectionWait.await([&]() {
+    return (
+        !nonReclaimableSectionWaitFlag.load() &&
+        !reclaimerInitializationWaitFlag.load());
+  });
 
   // We expect capacity grow fails as we can't reclaim from hash join operators.
   memory::testingRunArbitration();
@@ -6830,93 +6929,64 @@ DEBUG_ONLY_TEST_F(
       2);
 }
 
-DEBUG_ONLY_TEST_F(HashJoinTest, reclaimFromHashJoinBuildInWaitForTableBuild) {
-  std::unique_ptr<memory::MemoryManager> memoryManager = createMemoryManager();
-  const auto& arbitrator = memoryManager->arbitrator();
-  auto rowType = ROW({
-      {"c0", INTEGER()},
-      {"c1", INTEGER()},
-      {"c2", VARCHAR()},
-  });
-  const auto vectors = createVectors(rowType, 32 << 20, fuzzerOpts_);
-  const int numDrivers = 4;
-  const auto expectedResult =
-      runHashJoinTask(vectors, nullptr, numDrivers, pool(), false).data;
-  std::shared_ptr<core::QueryCtx> queryCtx =
-      newQueryCtx(memoryManager.get(), executor_.get(), kMemoryCapacity);
+DEBUG_ONLY_TEST_F(HashJoinTest, reclaimDuringTableBuild) {
+  VectorFuzzer fuzzer({.vectorSize = 1000}, pool());
+  const int32_t numBuildVectors = 5;
+  std::vector<RowVectorPtr> buildVectors;
+  for (int32_t i = 0; i < numBuildVectors; ++i) {
+    buildVectors.push_back(fuzzer.fuzzRow(buildType_));
+  }
+  const int32_t numProbeVectors = 5;
+  std::vector<RowVectorPtr> probeVectors;
+  for (int32_t i = 0; i < numProbeVectors; ++i) {
+    probeVectors.push_back(fuzzer.fuzzRow(probeType_));
+  }
 
-  folly::EventCount arbitrationWait;
-  std::atomic_bool arbitrationWaitFlag{true};
-  folly::EventCount taskPauseWait;
-  std::atomic_bool taskPauseWaitFlag{true};
+  createDuckDbTable("t", probeVectors);
+  createDuckDbTable("u", buildVectors);
 
-  std::atomic_int blockedBuildOperators{0};
+  core::PlanNodeId probeScanId;
+  auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+  auto plan = PlanBuilder(planNodeIdGenerator)
+                  .values(probeVectors, false)
+                  .hashJoin(
+                      {"t_k1"},
+                      {"u_k1"},
+                      PlanBuilder(planNodeIdGenerator)
+                          .values(buildVectors, false)
+                          .planNode(),
+                      "",
+                      concat(probeType_->names(), buildType_->names()))
+                  .planNode();
+
+  std::atomic_bool injectSpillOnce{true};
   SCOPED_TESTVALUE_SET(
-      "facebook::velox::exec::Driver::runInternal",
-      std::function<void(Driver*)>(([&](Driver* driver) {
-        // Check if the driver is from hash join build.
-        if (driver->driverCtx()->pipelineId != 1) {
+      "facebook::velox::exec::HashBuild::finishHashBuild",
+      std::function<void(Operator*)>([&](Operator* op) {
+        if (!injectSpillOnce.exchange(false)) {
           return;
         }
-
-        if (++blockedBuildOperators > numDrivers - 1) {
-          return;
-        }
-
-        taskPauseWait.await([&]() { return !taskPauseWaitFlag.load(); });
-      })));
-
-  std::atomic_bool injectNoMoreInputOnce{true};
-  SCOPED_TESTVALUE_SET(
-      "facebook::velox::exec::Driver::runInternal::noMoreInput",
-      std::function<void(Operator*)>(([&](Operator* op) {
-        if (op->operatorType() != "HashBuild") {
-          return;
-        }
-
-        if (!injectNoMoreInputOnce.exchange(false)) {
-          return;
-        }
-
-        arbitrationWaitFlag = false;
-        arbitrationWait.notifyAll();
-        taskPauseWait.await([&]() { return !taskPauseWaitFlag.load(); });
-      })));
-
-  SCOPED_TESTVALUE_SET(
-      "facebook::velox::exec::Task::requestPauseLocked",
-      std::function<void(Task*)>([&](Task* /*unused*/) {
-        taskPauseWaitFlag = false;
-        taskPauseWait.notifyAll();
+        Operator::ReclaimableSectionGuard guard(op);
+        testingRunArbitration(op->pool());
       }));
 
-  std::thread joinThread([&]() {
-    VELOX_ASSERT_THROW(
-        runHashJoinTask(
-            vectors, queryCtx, numDrivers, pool(), true, expectedResult),
-        "Exceeded memory pool cap of");
-  });
-
-  arbitrationWait.await([&] { return !arbitrationWaitFlag.load(); });
-  auto fakePool = queryCtx->pool()->addLeafChild(
-      "fakePool", true, FakeMemoryReclaimer::create());
-  void* fakeBuffer{nullptr};
-  arbitrationWait.await([&]() { return !arbitrationWaitFlag.load(); });
-  // Let the first hash build operator reaches to wait for table build state.
-  std::this_thread::sleep_for(std::chrono::seconds(1));
-  fakeBuffer = fakePool->allocate(kMemoryCapacity);
-
-  joinThread.join();
-
-  // We expect the reclaimed bytes from hash build.
-  ASSERT_GT(arbitrator->stats().numReclaimedBytes, 0);
-
-  // This test uses on-demand created memory manager instead of the global
-  // one. We need to make sure any used memory got cleaned up before exiting
-  // the scope
-  waitForAllTasksToBeDeleted();
-  ASSERT_TRUE(fakeBuffer != nullptr);
-  fakePool->free(fakeBuffer, kMemoryCapacity);
+  auto tempDirectory = exec::test::TempDirectoryPath::create();
+  HashJoinBuilder(*pool_, duckDbQueryRunner_, driverExecutor_.get())
+      .numDrivers(4)
+      .planNode(plan)
+      .injectSpill(false)
+      .maxSpillLevel(0)
+      .spillDirectory(tempDirectory->getPath())
+      .referenceQuery(
+          "SELECT t_k1, t_k2, t_v1, u_k1, u_k2, u_v1 FROM t, u WHERE t.t_k1 = u.u_k1")
+      .config(core::QueryConfig::kSpillStartPartitionBit, "29")
+      .verifier([&](const std::shared_ptr<Task>& task, bool /*unused*/) {
+        auto opStats = toOperatorStats(task->taskStats());
+        ASSERT_GT(
+            opStats.at("HashBuild").runtimeStats[Operator::kSpillWrites].sum,
+            0);
+      })
+      .run();
 }
 
 DEBUG_ONLY_TEST_F(HashJoinTest, arbitrationTriggeredDuringParallelJoinBuild) {
@@ -7476,7 +7546,7 @@ DEBUG_ONLY_TEST_F(HashJoinTest, hashProbeSpillExceedLimit) {
         .buildKeys({"u_k1"})
         .buildVectors(std::move(buildVectors))
         .config(core::QueryConfig::kMaxSpillLevel, "1")
-        .config(core::QueryConfig::kJoinSpillPartitionBits, "1")
+        .config(core::QueryConfig::kSpillNumPartitionBits, "1")
         .config(core::QueryConfig::kJoinSpillEnabled, "true")
         // Set small write buffer size to have small vectors to read from
         // spilled data.

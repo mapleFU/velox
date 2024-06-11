@@ -396,7 +396,6 @@ void BlockTestStream::hashTest(
     GpuHashTableBase* table,
     HashRun& run,
     HashCase mode) {
-  constexpr int32_t kBlockSize = 256;
   int32_t shared = 0;
   if (mode == HashCase::kGroup) {
     shared = GpuHashTable::updatingProbeSharedSize();
@@ -503,7 +502,11 @@ UPDATE_CASE(updateSum1NoSync, testSumNoSync, 0);
 UPDATE_CASE(updateSum1Mtx, testSumMtx, 0);
 UPDATE_CASE(updateSum1MtxCoalesce, testSumMtxCoalesce, 0);
 UPDATE_CASE(updateSum1Atomic, testSumAtomic, 0);
-UPDATE_CASE(updateSum1AtomicCoalesce, testSumAtomicCoalesce, 0);
+UPDATE_CASE(updateSum1AtomicCoalesceShfl, testSumAtomicCoalesceShfl, 0);
+UPDATE_CASE(
+    updateSum1AtomicCoalesceShmem,
+    testSumAtomicCoalesceShmem,
+    run.blockSize * sizeof(int64_t));
 UPDATE_CASE(updateSum1Exch, testSumExch, sizeof(ProbeShared));
 UPDATE_CASE(updateSum1Order, testSumOrder, 0);
 
@@ -608,6 +611,53 @@ void BlockTestStream::scatterBits(
       numSource, numTarget, source, targetMask, target, temp);
 }
 
+void __global__ nonNullIndexKernel(
+    char* nulls,
+    int32_t* rows,
+    int32_t numRows,
+    int32_t* indices,
+    int32_t* temp) {
+  if (threadIdx.x == 0) {
+    temp[0] = countBits(reinterpret_cast<uint64_t*>(nulls), 0, rows[0]);
+    temp[1] = 0;
+  }
+  __syncthreads();
+  for (auto i = 0; i < numRows; i += blockDim.x) {
+    auto last = min(i + 256, numRows);
+    if (isDense(rows, i, last)) {
+      indices[i + threadIdx.x] =
+          nonNullIndex256(nulls, rows[i], last - i, temp, temp + 2);
+    } else {
+      // If a non-contiguous run is followed by a contiguous run, add the
+      // non-nulls after between the runs to the total.
+      if (threadIdx.x == 0) {
+        int32_t nextLast = min(last + 256, numRows);
+        // If the next 256 rows are dense, then add the non-nulls between the
+        // last of the sparse and the first of the dense.
+        if (isDense(rows, last, nextLast)) {
+          temp[1] = countBits(
+              reinterpret_cast<uint64_t*>(nulls),
+              rows[last - 1] + 1,
+              rows[last]);
+        }
+      }
+      indices[i + threadIdx.x] =
+          nonNullIndex256Sparse(nulls, rows, i, last, temp, temp + 1, temp + 2);
+    }
+  }
+  __syncthreads();
+}
+
+void BlockTestStream::nonNullIndex(
+    char* nulls,
+    int32_t* rows,
+    int32_t numRows,
+    int32_t* indices,
+    int32_t* temp) {
+  nonNullIndexKernel<<<1, 256, 0, stream_->stream>>>(
+      nulls, rows, numRows, indices, temp);
+}
+
 REGISTER_KERNEL("testSort", testSort);
 REGISTER_KERNEL("boolToIndices", boolToIndicesKernel);
 REGISTER_KERNEL("bool256ToIndices", bool256ToIndicesKernel);
@@ -616,7 +666,8 @@ REGISTER_KERNEL("partitionShorts", partitionShortsKernel);
 REGISTER_KERNEL("hashTest", hashTestKernel);
 REGISTER_KERNEL("allocatorTest", allocatorTestKernel);
 REGISTER_KERNEL("sum1atm", updateSum1AtomicKernel);
-REGISTER_KERNEL("sum1atmCoa", updateSum1AtomicCoalesceKernel);
+REGISTER_KERNEL("sum1atmCoaShfl", updateSum1AtomicCoalesceShflKernel);
+REGISTER_KERNEL("sum1atmCoaShmem", updateSum1AtomicCoalesceShmemKernel);
 REGISTER_KERNEL("sum1Exch", updateSum1ExchKernel);
 REGISTER_KERNEL("sum1Part", updateSum1PartKernel);
 REGISTER_KERNEL("partSum", update1PartitionKernel);

@@ -14,7 +14,7 @@ Mathematical Functions
 
     Returns inverse hyperbolic cosine of ``x``.
 
-.. spark::function:: asin(x) -> double
+.. spark:function:: asin(x) -> double
 
     Returns the arc sine of ``x``.
 
@@ -22,7 +22,7 @@ Mathematical Functions
 
     Returns inverse hyperbolic sine of ``x``.
 
-.. spark::function:: atan(x) -> double
+.. spark:function:: atan(x) -> double
 
     Returns the arc tangent of ``x``.
 
@@ -66,7 +66,7 @@ Mathematical Functions
     Returns ``x`` rounded up to the nearest integer.  
     Supported types are: BIGINT and DOUBLE.
 
-.. spark::function:: cos(x) -> double
+.. spark:function:: cos(x) -> double
 
     Returns the cosine of ``x``.
 
@@ -82,7 +82,7 @@ Mathematical Functions
 
     Returns the cosecant of ``x``.
 
-.. spark::function:: degrees(x) -> double
+.. spark:function:: degrees(x) -> double
 
     Converts angle x in radians to degrees.
 
@@ -112,6 +112,14 @@ Mathematical Functions
 
     Returns Euler's number raised to the power of ``x``.
 
+.. spark:function:: expm1(x) -> double
+
+    Returns Euler's number raised to the power of ``x``, minus 1, which is ``exp(x) - 1`` in math. This function expm1(x) is more accurate than ``exp(x) - 1``, when ``x`` is close to zero.
+    If the argument is NaN, the result is NaN.
+    If the argument is positive infinity, then the result is positive infinity.
+    If the argument is negative infinity, then the result is -1.0.
+    If the argument is zero, then the result is a zero with the same sign as the argument.
+
 .. spark:function:: floor(x) -> [same as x]
 
     Returns ``x`` rounded down to the nearest integer.
@@ -139,7 +147,7 @@ Mathematical Functions
     Returns true if x is Nan, or false otherwise. Returns false is x is NULL.
     Supported types are: REAL, DOUBLE.
 
-.. spark::function:: log1p(x) -> double
+.. spark:function:: log1p(x) -> double
 
     Returns the natural logarithm of the “given value ``x`` plus one”.
     Return NULL if x is less than or equal to -1.
@@ -214,6 +222,14 @@ Mathematical Functions
 
     Returns the modulus (remainder) of ``n`` divided by ``m``. Corresponds to Spark's operator ``%``.
 
+.. spark:function:: rint(x) -> double
+
+    Returns the double value that is closest in value to the argument and is 
+    equal to a mathematical integer.
+    Returns ``x`` if ``x`` is a positive or negative infinity or a NaN. ::
+
+        SELECT rint(12.3456); -- 12.0
+
 .. spark:function:: round(x, d) -> [same as x]
 
     Returns ``x`` rounded to ``d`` decimal places using HALF_UP rounding mode. 
@@ -262,3 +278,24 @@ Mathematical Functions
         SELECT unhex("b2323"); -- \x0B##
         SELECT unhex("G"); -- NULL
         SELECT unhex("G23"); -- NULL
+
+.. spark:function:: width_bucket(x, bound1, bound2, n) -> bigint
+
+    Returns the zero-based bucket number to which ``x`` would be assigned in an equiwidth histogram with ``n`` buckets,
+    in the range ``bound1`` to ``bound2``.
+    `bound1` can be greater than `bound2`.
+    If `bound1` less than `bound2`, if `x` less than `bound1` return 0, if `x` greater than or equal to `bound2` return n + 1.
+    If `bound1` greater than `bound2`, if `x` greater than `bound1` return 0, if `x` less than or equal to `bound2` return n + 1.
+    `n` must be a positive integral value. `x`, `bound1`, and `bound2` cannot be NaN. `bound1`, and `bound2` must be finite.
+    `bound1` cannot equal `bound2`;
+    Otherwise, the function will return NULL.
+
+    ::
+        
+        SELECT width_bucket(-1.0, 0.0, 10.0, 5); -- 0
+        SELECT width_bucket(0.1, 0.0, 10.0, 5); -- 1
+        SELECT width_bucket(10.1, 0.0, 10.0, 5); -- 6
+        SELECT width_bucket(-1.0, 10.0, 0.0, 5); -- 6
+        SELECT width_bucket(0.1, 10.0, 0.0, 5); -- 5
+        SELECT width_bucket(10.1, 10.0, 0.0, 5); -- 0
+        SELECT width_bucket(10.1, 10.0, 10.0, 5); -- NULL

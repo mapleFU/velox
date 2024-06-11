@@ -22,17 +22,27 @@
 namespace facebook::velox::exec {
 
 /// This class provides cast hooks to allow different behaviors of CastExpr and
-/// SparkCastExpr. The main purpose is crate customized cast implementation by
-/// taking full usage of existing cast expression.
+/// SparkCastExpr. The main purpose is to create customized cast implementation
+/// by taking full usage of existing cast expression.
 ///
 /// 这里用动态的 Hook 来 Hook Spark/Presto 之类的引擎 specific 行为, 给对应的地方开洞.
 class CastHooks {
  public:
   virtual ~CastHooks() = default;
 
-  virtual Timestamp castStringToTimestamp(const StringView& view) const = 0;
+  virtual Expected<Timestamp> castStringToTimestamp(
+      const StringView& view) const = 0;
 
-  virtual int32_t castStringToDate(const StringView& dateString) const = 0;
+  virtual Expected<int32_t> castStringToDate(
+      const StringView& dateString) const = 0;
+
+  // 'data' is guaranteed to be non-empty and has been processed by
+  // removeWhiteSpaces.
+  virtual Expected<float> castStringToReal(const StringView& data) const = 0;
+
+  // 'data' is guaranteed to be non-empty and has been processed by
+  // removeWhiteSpaces.
+  virtual Expected<double> castStringToDouble(const StringView& data) const = 0;
 
   // Returns whether legacy cast semantics are enabled.
   virtual bool legacy() const = 0;

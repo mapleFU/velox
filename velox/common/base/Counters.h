@@ -49,6 +49,9 @@ constexpr folly::StringPiece kMetricTaskMemoryReclaimCount{
 constexpr folly::StringPiece kMetricTaskMemoryReclaimWaitTimeMs{
     "velox.task_memory_reclaim_wait_ms"};
 
+constexpr folly::StringPiece kMetricTaskMemoryReclaimExecTimeMs{
+    "velox.task_memory_reclaim_exec_ms"};
+
 constexpr folly::StringPiece kMetricTaskMemoryReclaimWaitTimeoutCount{
     "velox.task_memory_reclaim_wait_timeout_count"};
 
@@ -100,6 +103,12 @@ constexpr folly::StringPiece kMetricArbitratorFreeReservedCapacityBytes{
 constexpr folly::StringPiece kMetricDriverYieldCount{
     "velox.driver_yield_count"};
 
+constexpr folly::StringPiece kMetricDriverQueueTimeMs{
+    "velox.driver_queue_time_ms"};
+
+constexpr folly::StringPiece kMetricDriverExecTimeMs{
+    "velox.driver_exec_time_ms"};
+
 constexpr folly::StringPiece kMetricSpilledInputBytes{
     "velox.spill_input_bytes"};
 
@@ -125,6 +134,12 @@ constexpr folly::StringPiece kMetricSpillFlushTimeMs{
 
 constexpr folly::StringPiece kMetricSpillWriteTimeMs{
     "velox.spill_write_time_ms"};
+
+constexpr folly::StringPiece kMetricSpillMemoryBytes{
+    "velox.spill_memory_bytes"};
+
+constexpr folly::StringPiece kMetricSpillPeakMemoryBytes{
+    "velox.spill_peak_memory_bytes"};
 
 constexpr folly::StringPiece kMetricFileWriterEarlyFlushedRawBytes{
     "velox.file_writer_early_flushed_raw_bytes"};
@@ -248,8 +263,14 @@ constexpr folly::StringPiece kMetricSsdCacheGrowFileErrors{
 constexpr folly::StringPiece kMetricSsdCacheWriteSsdErrors{
     "velox.ssd_cache_write_ssd_errors"};
 
+constexpr folly::StringPiece kMetricSsdCacheWriteSsdDropped{
+    "velox.ssd_cache_write_ssd_dropped"};
+
 constexpr folly::StringPiece kMetricSsdCacheWriteCheckpointErrors{
     "velox.ssd_cache_write_checkpoint_errors"};
+
+constexpr folly::StringPiece kMetricSsdCacheReadCorruptions{
+    "velox.ssd_cache_read_corruptions"};
 
 constexpr folly::StringPiece kMetricSsdCacheReadSsdErrors{
     "velox.ssd_cache_read_ssd_errors"};

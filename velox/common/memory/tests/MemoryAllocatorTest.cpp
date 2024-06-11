@@ -34,7 +34,6 @@
 #include <fstream>
 #endif // linux
 
-DECLARE_int32(velox_memory_pool_mb);
 DECLARE_bool(velox_memory_leak_check_enabled);
 
 using namespace facebook::velox::common::testutil;
@@ -121,7 +120,7 @@ class MemoryAllocatorTest : public testing::TestWithParam<int> {
         EXPECT_TRUE(result.empty());
         return false;
       }
-    } catch (const VeloxException& e) {
+    } catch (const VeloxException&) {
       EXPECT_TRUE(result.empty());
       return false;
     }

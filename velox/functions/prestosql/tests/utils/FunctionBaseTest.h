@@ -318,6 +318,30 @@ class FunctionBaseTest : public testing::Test,
     return result[0];
   }
 
+  /// Parses a timestamp string into Timestamp.
+  /// Accepts strings formatted as 'YYYY-MM-DD HH:mm:ss[.nnn]'.
+  static Timestamp parseTimestamp(const std::string& text) {
+    return util::fromTimestampString(
+               text.data(), text.size(), util::TimestampParseMode::kPrestoCast)
+        .thenOrThrow(folly::identity, [&](const Status& status) {
+          VELOX_USER_FAIL("{}", status.message());
+        });
+  }
+
+  /// Parses a date string into days since epoch.
+  /// Accepts strings formatted as 'YYYY-MM-DD'.
+  static int32_t parseDate(const std::string& text) {
+    return DATE()->toDays(text);
+  }
+
+  /// Returns a vector of signatures for the given function name and return
+  /// type.
+  /// @param returnType The name of expected return type defined in function
+  /// signature.
+  static std::vector<const exec::FunctionSignature*> getSignatures(
+      const std::string& functionName,
+      const std::string& returnType);
+
   /// Returns a set of signatures for a given function serialized to strings.
   static std::unordered_set<std::string> getSignatureStrings(
       const std::string& functionName);
@@ -331,7 +355,7 @@ class FunctionBaseTest : public testing::Test,
       const VectorPtr& expected);
 
   std::shared_ptr<core::QueryCtx> queryCtx_{
-      std::make_shared<core::QueryCtx>(executor_.get())};
+      core::QueryCtx::create(executor_.get())};
   core::ExecCtx execCtx_{pool_.get(), queryCtx_.get()};
   parse::ParseOptions options_;
 

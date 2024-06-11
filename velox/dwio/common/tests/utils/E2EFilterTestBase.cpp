@@ -94,8 +94,7 @@ void E2EFilterTestBase::readWithoutFilter(
   dwio::common::ReaderOptions readerOpts{leafPool_.get()};
   dwio::common::RowReaderOptions rowReaderOpts;
   auto input = std::make_unique<BufferedInput>(
-      std::make_shared<InMemoryReadFile>(sinkData_),
-      readerOpts.getMemoryPool());
+      std::make_shared<InMemoryReadFile>(sinkData_), readerOpts.memoryPool());
   auto reader = makeReader(readerOpts, std::move(input));
 
   // The spec must stay live over the lifetime of the reader.
@@ -148,13 +147,15 @@ void E2EFilterTestBase::readWithFilter(
   dwio::common::ReaderOptions readerOpts{leafPool_.get()};
   dwio::common::RowReaderOptions rowReaderOpts;
   auto input = std::make_unique<BufferedInput>(
-      std::make_shared<InMemoryReadFile>(sinkData_),
-      readerOpts.getMemoryPool());
+      std::make_shared<InMemoryReadFile>(sinkData_), readerOpts.memoryPool());
   auto reader = makeReader(readerOpts, std::move(input));
 
   // The spec must stay live over the lifetime of the reader.
   setUpRowReaderOptions(rowReaderOpts, spec);
   VLOG(1) << "spec: " << spec->toString();
+  if (!mutationSpec.deletedRows.empty()) {
+    VLOG(1) << "numDeletedRows=" << mutationSpec.deletedRows.size();
+  }
   OwnershipChecker ownershipChecker;
   auto rowReader = reader->createRowReader(rowReaderOpts);
   runtimeStats_ = dwio::common::RuntimeStatistics();
@@ -192,8 +193,8 @@ void E2EFilterTestBase::readWithFilter(
       if (haveDelete) {
         mutation.deletedRows = isDeleted.data();
       }
+      VLOG(1) << "readSize=" << readSize;
       auto rowsScanned = rowReader->next(readSize, resultBatch, &mutation);
-      VLOG(1) << "rowsScanned=" << rowsScanned;
       ASSERT_EQ(rowsScanned, readSize);
       if (resultBatch->size() == 0) {
         // No hits in the last resultBatch of rows.
@@ -453,8 +454,7 @@ void E2EFilterTestBase::testMetadataFilterImpl(
   ReaderOptions readerOpts{leafPool_.get()};
   RowReaderOptions rowReaderOpts;
   auto input = std::make_unique<BufferedInput>(
-      std::make_shared<InMemoryReadFile>(sinkData_),
-      readerOpts.getMemoryPool());
+      std::make_shared<InMemoryReadFile>(sinkData_), readerOpts.memoryPool());
   auto reader = makeReader(readerOpts, std::move(input));
   setUpRowReaderOptions(rowReaderOpts, spec);
   rowReaderOpts.setMetadataFilter(metadataFilter);
@@ -500,8 +500,8 @@ void E2EFilterTestBase::testMetadataFilter() {
   test::VectorMaker vectorMaker(leafPool_.get());
   functions::prestosql::registerAllScalarFunctions();
   parse::registerTypeResolver();
-  core::QueryCtx queryCtx;
-  exec::SimpleExpressionEvaluator evaluator(&queryCtx, leafPool_.get());
+  auto queryCtx = core::QueryCtx::create();
+  exec::SimpleExpressionEvaluator evaluator(queryCtx.get(), leafPool_.get());
 
   // a: bigint, b: struct<c: bigint>
   std::vector<RowVectorPtr> batches;
@@ -650,8 +650,7 @@ void E2EFilterTestBase::testSubfieldsPruning() {
   ReaderOptions readerOpts{leafPool_.get()};
   RowReaderOptions rowReaderOpts;
   auto input = std::make_unique<BufferedInput>(
-      std::make_shared<InMemoryReadFile>(sinkData_),
-      readerOpts.getMemoryPool());
+      std::make_shared<InMemoryReadFile>(sinkData_), readerOpts.memoryPool());
   auto reader = makeReader(readerOpts, std::move(input));
   setUpRowReaderOptions(rowReaderOpts, spec);
   auto rowReader = reader->createRowReader(rowReaderOpts);
@@ -715,8 +714,7 @@ void E2EFilterTestBase::testMutationCornerCases() {
   writeToMemory(rowType, batches, false);
   ReaderOptions readerOpts{leafPool_.get()};
   auto input = std::make_unique<BufferedInput>(
-      std::make_shared<InMemoryReadFile>(sinkData_),
-      readerOpts.getMemoryPool());
+      std::make_shared<InMemoryReadFile>(sinkData_), readerOpts.memoryPool());
   auto reader = makeReader(readerOpts, std::move(input));
 
   // 1. Interleave batches with and without deletions.

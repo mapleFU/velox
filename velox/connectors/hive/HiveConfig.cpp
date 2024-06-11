@@ -132,6 +132,15 @@ std::string HiveConfig::gcsCredentials() const {
   return config_->get<std::string>(kGCSCredentials, std::string(""));
 }
 
+std::optional<int> HiveConfig::gcsMaxRetryCount() const {
+  return static_cast<std::optional<int>>(config_->get<int>(kGCSMaxRetryCount));
+}
+
+std::optional<std::string> HiveConfig::gcsMaxRetryTime() const {
+  return static_cast<std::optional<std::string>>(
+      config_->get<std::string>(kGCSMaxRetryTime));
+}
+
 bool HiveConfig::isOrcUseColumnNames(const Config* session) const {
   return session->get<bool>(
       kOrcUseColumnNamesSession, config_->get<bool>(kOrcUseColumnNames, false));
@@ -204,6 +213,25 @@ uint64_t HiveConfig::orcWriterMinCompressionSize(const Config* session) const {
       config_->get<uint64_t>(kOrcWriterMinCompressionSize, 1024));
 }
 
+std::optional<uint8_t> HiveConfig::orcWriterCompressionLevel(
+    const Config* session) const {
+  auto sessionProp = session->get<uint8_t>(kOrcWriterCompressionLevelSession);
+
+  if (sessionProp.has_value()) {
+    return sessionProp.value();
+  }
+
+  auto configProp = config_->get<uint8_t>(kOrcWriterCompressionLevel);
+
+  if (configProp.has_value()) {
+    return configProp.value();
+  }
+
+  // Presto has a single config controlling this value, but different defaults
+  // depending on the compression kind.
+  return std::nullopt;
+}
+
 std::string HiveConfig::writeFileCreateConfig() const {
   return config_->get<std::string>(kWriteFileCreateConfig, "");
 }
@@ -243,6 +271,12 @@ uint8_t HiveConfig::parquetWriteTimestampUnit(const Config* session) const {
           unit == 9,
       "Invalid timestamp unit.");
   return unit;
+}
+
+bool HiveConfig::cacheNoRetention(const Config* session) const {
+  return session->get<bool>(
+      kCacheNoRetentionSession,
+      config_->get<bool>(kCacheNoRetention, /*defaultValue=*/false));
 }
 
 } // namespace facebook::velox::connector::hive

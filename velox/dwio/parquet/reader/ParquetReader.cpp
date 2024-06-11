@@ -65,7 +65,7 @@ class ReaderBase {
   }
 
   bool isFileColumnNamesReadAsLowerCase() const {
-    return options_.isFileColumnNamesReadAsLowerCase();
+    return options_.fileColumnNamesReadAsLowerCase();
   }
 
   /// Ensures that streams are enqueued and loading for the row group at
@@ -127,9 +127,9 @@ class ReaderBase {
 ReaderBase::ReaderBase(
     std::unique_ptr<dwio::common::BufferedInput> input,
     const dwio::common::ReaderOptions& options)
-    : pool_{options.getMemoryPool()},
-      footerEstimatedSize_{options.getFooterEstimatedSize()},
-      filePreloadThreshold_{options.getFilePreloadThreshold()},
+    : pool_{options.memoryPool()},
+      footerEstimatedSize_{options.footerEstimatedSize()},
+      filePreloadThreshold_{options.filePreloadThreshold()},
       options_{options},
       input_{std::move(input)},
       fileLength_{input_->getReadFile()->size()} {
@@ -162,8 +162,8 @@ void ReaderBase::loadFileMetaData() {
       strncmp(copy.data() + readSize - 4, "PAR1", 4) == 0,
       "No magic bytes found at end of the Parquet file");
 
-  uint32_t footerLength =
-      *(reinterpret_cast<const uint32_t*>(copy.data() + readSize - 8));
+  uint32_t footerLength;
+  std::memcpy(&footerLength, copy.data() + readSize - 8, sizeof(uint32_t));
   VELOX_CHECK_LE(footerLength + 12, fileLength_);
   int32_t footerOffsetInBuffer = readSize - 8 - footerLength;
   if (footerLength > readSize - 8) {
@@ -646,7 +646,7 @@ TypePtr ReaderBase::convertType(
       case thrift::Type::type::INT64:
         return BIGINT();
       case thrift::Type::type::INT96:
-        return DOUBLE(); // TODO: Lose precision
+        return TIMESTAMP(); // INT96 only maps to a timestamp
       case thrift::Type::type::FLOAT:
         return REAL();
       case thrift::Type::type::DOUBLE:
@@ -768,6 +768,8 @@ class ParquetRowReader::Impl {
         readerBase_->schemaWithId(), // Id is schema id
         params,
         *options_.getScanSpec());
+    columnReader_->setFillMutatedOutputRows(
+        options_.getRowNumberColumnInfo().has_value());
 
     filterRowGroups();
     if (!rowGroupIds_.empty()) {

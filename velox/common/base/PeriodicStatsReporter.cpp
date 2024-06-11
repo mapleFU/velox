@@ -62,6 +62,7 @@ PeriodicStatsReporter::PeriodicStatsReporter(const Options& options)
     : allocator_(options.allocator),
       cache_(options.cache),
       arbitrator_(options.arbitrator),
+      spillMemoryPool_(options.spillMemoryPool),
       options_(options) {}
 
 void PeriodicStatsReporter::start() {
@@ -79,6 +80,10 @@ void PeriodicStatsReporter::start() {
       "report_arbitrator_stats",
       [this]() { reportArbitratorStats(); },
       options_.arbitratorStatsIntervalMs);
+  addTask(
+      "report_spill_stats",
+      [this]() { reportSpillStats(); },
+      options_.spillStatsIntervalMs);
 }
 
 void PeriodicStatsReporter::stop() {
@@ -198,10 +203,14 @@ void PeriodicStatsReporter::reportCacheStats() {
     REPORT_IF_NOT_ZERO(
         kMetricSsdCacheWriteSsdErrors, deltaSsdStats.writeSsdErrors);
     REPORT_IF_NOT_ZERO(
+        kMetricSsdCacheWriteSsdDropped, deltaSsdStats.writeSsdDropped);
+    REPORT_IF_NOT_ZERO(
         kMetricSsdCacheWriteCheckpointErrors,
         deltaSsdStats.writeCheckpointErrors);
     REPORT_IF_NOT_ZERO(
         kMetricSsdCacheReadSsdErrors, deltaSsdStats.readSsdErrors);
+    REPORT_IF_NOT_ZERO(
+        kMetricSsdCacheReadCorruptions, deltaSsdStats.readSsdCorruptions);
     REPORT_IF_NOT_ZERO(
         kMetricSsdCacheReadCheckpointErrors,
         deltaSsdStats.readCheckpointErrors);
@@ -226,6 +235,18 @@ void PeriodicStatsReporter::reportCacheStats() {
   }
 
   lastCacheStats_ = cacheStats;
+}
+
+void PeriodicStatsReporter::reportSpillStats() {
+  if (spillMemoryPool_ == nullptr) {
+    return;
+  }
+  const auto spillMemoryStats = spillMemoryPool_->stats();
+  LOG(INFO) << "Spill memory usage: current["
+            << velox::succinctBytes(spillMemoryStats.usedBytes) << "] peak["
+            << velox::succinctBytes(spillMemoryStats.peakBytes) << "]";
+  RECORD_METRIC_VALUE(kMetricSpillMemoryBytes, spillMemoryStats.usedBytes);
+  RECORD_METRIC_VALUE(kMetricSpillPeakMemoryBytes, spillMemoryStats.peakBytes);
 }
 
 } // namespace facebook::velox

@@ -63,6 +63,16 @@ Task Execution
      - Count
      - The number of times that a driver has yielded from the thread when it
        hits the per-driver cpu time slice limit if enforced.
+   * - driver_queue_time_ms
+     - Histogram
+     - The distribution of driver queue latency in range of [0, 10s] with
+       20 buckets. It is configured to report the latency at P50, P90, P99,
+       and P100 percentiles.
+   * - driver_exec_time_ms
+     - Histogram
+     - The distribution of driver execution time in range of [0, 30s] with
+       30 buckets. It is configured to report the latency at P50, P90, P99,
+       and P100 percentiles.
 
 Memory Management
 -----------------
@@ -92,15 +102,21 @@ Memory Management
        with 20 buckets. It is configured to report latency at P50, P90, P99, and
        P100 percentiles.
    * - memory_reclaim_bytes
-     - Sum
-     - The sum of reclaimed memory bytes.
+     - Histogram
+     - The distribution of reclaimed bytes in range of [0, 4GB] with 64 buckets
+       and reports P50, P90, P99, and P100.
    * - task_memory_reclaim_count
      - Count
      - The count of task memory reclaims.
    * - task_memory_reclaim_wait_ms
      - Histogram
      - The distribution of task memory reclaim wait time in range of [0, 60s]
-       with 10 buckets. It is configured to report latency at P50, P90, P99,
+       with 60 buckets. It is configured to report latency at P50, P90, P99,
+       and P100 percentiles.
+   * - task_memory_reclaim_exec_ms
+     - Histogram
+     - The distribution of task memory execution time in range of [0, 240s]
+       with 60 buckets. It is configured to report latency at P50, P90, P99,
        and P100 percentiles.
    * - task_memory_reclaim_wait_timeout_count
      - Count
@@ -144,7 +160,7 @@ Memory Management
        its request, the arbitration request would surpass the maximum allowed
        capacity for the requester, or the arbitration process couldn't release
        the requested amount of memory.
-   * - arbitrator_queue_time_ms
+   * - arbitrator_wait_time_ms
      - Histogram
      - The distribution of the amount of time an arbitration request stays in
        arbitration queues and waits the arbitration r/w locks in range of [0, 600s]
@@ -163,7 +179,7 @@ Memory Management
    * - arbitrator_free_reserved_capacity_bytes
      - Average
      - The average of free memory capacity reserved to ensure each query has
-       the minimal reuired capacity to run.
+       the minimal required capacity to run.
    * - memory_pool_initial_capacity_bytes
      - Histogram
      - The distribution of a root memory pool's initial capacity in range of [0 256MB]
@@ -336,9 +352,15 @@ Cache
    * - ssd_cache_write_ssd_errors
      - Sum
      - Total number of error while writing to SSD cache files.
+   * - ssd_cache_write_ssd_dropped
+     - Sum
+     - Total number of writes dropped due to no cache space.
    * - ssd_cache_write_checkpoint_errors
      - Sum
      - Total number of errors while writing SSD checkpoint file.
+   * - ssd_cache_read_corruptions
+     - Sum
+     - Total number of corrupted SSD data read detected by checksum.
    * - ssd_cache_read_ssd_errors
      - Sum
      - Total number of errors while reading from SSD cache files.
@@ -414,6 +436,12 @@ Spilling
    * - file_writer_early_flushed_raw_bytes
      - Sum
      - Number of bytes pre-maturely flushed from file writers because of memory reclaiming.
+   * - spill_memory_bytes
+     - Avg
+     - The current spilling memory usage in bytes.
+   * - spill_peak_memory_bytes
+     - Avg
+     - The peak spilling memory usage in bytes.
 
 Hive Connector
 --------------
