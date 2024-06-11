@@ -1480,6 +1480,7 @@ exec::Split Task::getSplitLocked(
     SplitsStore& splitsStore,
     int32_t maxPreloadSplits,
     const ConnectorSplitPreloadFunc& preload) {
+  // 尝试找到 ready 的 Split.
   int32_t readySplitIndex = -1;
   if (maxPreloadSplits > 0) {
     for (auto i = 0; i < splitsStore.splits.size() && i < maxPreloadSplits;

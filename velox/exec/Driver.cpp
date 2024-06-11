@@ -475,6 +475,7 @@ CpuWallTiming Driver::processLazyTiming(
 }
 
 bool Driver::shouldYield() const {
+  // 根据 Driver 占用的时间，来设置是否 yield ( 让出时间 )
   if (cpuSliceMs_ == 0) {
     return false;
   }
@@ -960,6 +961,8 @@ std::unordered_set<column_index_t> Driver::canPushdownFilters(
 
       if (j == 0) {
         // Source operator.
+        //
+        // 简单检查 SourceOperator 是否可以下推 DF
         if (prevOp->canAddDynamicFilter()) {
           supportedChannels.emplace(channels[i]);
         }

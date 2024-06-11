@@ -798,6 +798,8 @@ std::vector<column_index_t> calculateOutputChannels(
     const RowTypePtr& targetOutputType);
 
 // A first operator in a Driver, e.g. table scan or exchange client.
+//
+// SourceOperator, 其他 TableFunctions 应该也要提供一个 Source Operator?
 class SourceOperator : public Operator {
  public:
   SourceOperator(

@@ -183,9 +183,11 @@ struct ThreadState {
   }
 };
 
+/// Velox 的阻塞原因集合
 enum class BlockingReason {
   kNotBlocked,
   kWaitForConsumer,
+  /// 等待上层分发 Split
   kWaitForSplit,
   /// Some operators can get blocked due to the producer(s) (they are
   /// currently waiting data from) not having anything produced. Used by
@@ -210,6 +212,8 @@ enum class BlockingReason {
   /// Some operators (like Table Scan) may run long loops and can 'voluntarily'
   /// exit them because Task requested to yield or stop or after a certain time.
   /// This is the blocking reason used in such cases.
+  ///
+  /// TableScan 的 Yield (睡眠等待 io?)
   kYield,
   /// Operator is blocked waiting for its associated query memory arbitration to
   /// finish.
@@ -242,6 +246,8 @@ class BlockingState {
 
   /// Moves out the blocking future stored inside. Can be called only once.
   /// Used in single-threaded execution.
+  ///
+  /// Blocking 的 Future
   ContinueFuture future() {
     return std::move(future_);
   }
@@ -407,6 +413,8 @@ class Driver : public std::enable_shared_from_this<Driver> {
 
   /// Returns a subset of channels for which there are operators upstream from
   /// filterSource that accept dynamically generated filters.
+  ///
+  /// 支持把 Filter PushDown, 返回一些列的 Filter
   std::unordered_set<column_index_t> canPushdownFilters(
       const Operator* filterSource,
       const std::vector<column_index_t>& channels) const;

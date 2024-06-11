@@ -61,6 +61,8 @@ bool TableScan::shouldYield(StopReason taskStopReason, size_t startTimeMs)
     const {
   // Checks task-level yield signal, driver-level yield signal and table scan
   // output processing time limit.
+  //
+  // TableScan 采用分时系统来做 Yield, 如果占用的时间过多，那就直接让出.
   return taskStopReason == StopReason::kYield ||
       driverCtx_->driver->shouldYield() ||
       ((getOutputTimeLimitMs_ != 0) &&
@@ -148,6 +150,7 @@ RowVectorPtr TableScan::getOutput() {
           connectorSplit->connectorId,
           "Got splits with different connector IDs");
 
+      // 同步构建 DataSource, DataSource 只会初始化一次, split 会初始化很多次.
       if (dataSource_ == nullptr) {
         curStatus_ = "getOutput: creating dataSource_";
         connectorQueryCtx_ = operatorCtx_->createConnectorQueryCtx(
@@ -224,6 +227,7 @@ RowVectorPtr TableScan::getOutput() {
          &debugString_});
 
     int readBatchSize = readBatchSize_;
+    // 根据 Filter Ratio 再调整 batchSize.
     if (maxFilteringRatio_ > 0) {
       readBatchSize = std::min(
           maxReadBatchSize_,
@@ -256,6 +260,7 @@ RowVectorPtr TableScan::getOutput() {
         if (data->size() > 0) {
           lockedStats->addInputVector(data->estimateFlatSize(), data->size());
           constexpr int kMaxSelectiveBatchSizeMultiplier = 4;
+          // 根据这个来再次估计 selection ratio.
           maxFilteringRatio_ = std::max(
               {maxFilteringRatio_,
                1.0 * data->size() / readBatchSize,
@@ -314,6 +319,7 @@ void TableScan::preload(std::shared_ptr<connector::ConnectorSplit> split) {
              },
              &debugString});
 
+        // 主要是把 createDataSource 放在后台执行.
         auto dataSource =
             connector->createDataSource(type, table, columns, ctx.get());
         if (task->isCancelled()) {
@@ -336,6 +342,7 @@ void TableScan::checkPreload() {
   if (dataSource_->allPrefetchIssued()) {
     maxPreloadedSplits_ = driverCtx_->task->numDrivers(driverCtx_->driver) *
         maxSplitPreloadPerDriver_;
+    // 如果需要 preload, 就在 executor 中去 load
     if (!splitPreloader_) {
       splitPreloader_ =
           [executor,

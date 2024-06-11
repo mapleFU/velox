@@ -69,6 +69,7 @@ enum class SerDeSeparator {
   MAP_KEY_DELIM = 2,
 };
 
+// (吐槽: 我以后抄 SerDe 要不要直接来这抄).
 class SerDeOptions {
  public:
   std::array<uint8_t, 8> separators;

@@ -21,6 +21,9 @@
 namespace facebook::velox::cache {
 
 // Dummy implementation of SsdCache admission stats.
+//
+// 根据访问的频繁程度选择要不要进 cache
+// TODO(mwish): 由上层的查询共享?
 class FileGroupStats {
  public:
   // Records ScanTracker::recordReference at group level

@@ -114,6 +114,7 @@ HiveDataSource::HiveDataSource(
     randomSkip_ = std::make_shared<random::RandomSkipTracker>(sampleRate);
   }
 
+  // 额外实现 SubFields 的 Filter.
   std::vector<common::Subfield> remainingFilterSubfields;
   if (remainingFilter) {
     remainingFilterExprSet_ = expressionEvaluator_->compile(remainingFilter);

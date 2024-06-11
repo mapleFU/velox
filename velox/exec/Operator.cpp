@@ -253,6 +253,8 @@ OperatorStats Operator::stats(bool clear) {
   return stats;
 }
 
+// 根据 avg row size 来估计 batch rowSize, 如果没有就按照 Query
+// 的配置来区别.
 uint32_t Operator::outputBatchRows(
     std::optional<uint64_t> averageRowSize) const {
   const auto& queryConfig = operatorCtx_->task()->queryCtx()->queryConfig();
