@@ -64,6 +64,9 @@ using FilterPtr = std::unique_ptr<Filter>;
 /**
  * A simple filter (e.g. comparison with literal) that can be applied
  * efficiently while extracting values from an ORC stream.
+ *
+ * 通用的 Scan 接口, 给 dwio 之类的格式用来 Filtering 的. 这坨东西有点抽象,
+ * 感觉像是手动再实现了一遍 Runtime 的 Filtering.
  */
 class Filter : public velox::ISerializable {
  protected:

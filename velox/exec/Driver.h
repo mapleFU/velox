@@ -213,7 +213,7 @@ enum class BlockingReason {
   /// exit them because Task requested to yield or stop or after a certain time.
   /// This is the blocking reason used in such cases.
   ///
-  /// TableScan 的 Yield (睡眠等待 io?)
+  /// TableScan 的 Yield (按照时间调度, yield 占用时间长的 Task)
   kYield,
   /// Operator is blocked waiting for its associated query memory arbitration to
   /// finish.
