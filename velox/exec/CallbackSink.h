@@ -20,6 +20,7 @@
 
 namespace facebook::velox::exec {
 
+/// Wrap 一个函数伪装成末端的 Sink Operator.
 class CallbackSink : public Operator {
  public:
   CallbackSink(

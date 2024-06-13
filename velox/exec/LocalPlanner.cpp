@@ -51,6 +51,7 @@ namespace facebook::velox::exec {
 namespace detail {
 
 /// Returns true if source nodes must run in a separate pipeline.
+/// 决定单个 Node 是否要 start pipeline.
 bool mustStartNewPipeline(
     std::shared_ptr<const core::PlanNode> planNode,
     int sourceId) {
@@ -65,9 +66,11 @@ bool mustStartNewPipeline(
   }
 
   // Non-first sources always run in their own pipeline.
+  // 比如多个 TableScan, 总会出现在多个 Pipeline
   return sourceId != 0;
 }
 
+/// 把 ConsumerSupplier 适配成 OperatorSupplier, 作为 Operator 的输出性下游.
 OperatorSupplier makeConsumerSupplier(ConsumerSupplier consumerSupplier) {
   if (consumerSupplier) {
     return [consumerSupplier](int32_t operatorId, DriverCtx* ctx) {
@@ -78,6 +81,7 @@ OperatorSupplier makeConsumerSupplier(ConsumerSupplier consumerSupplier) {
   return nullptr;
 }
 
+/// 切出一个 Consumer 来处理 Pipeline 桥接
 OperatorSupplier makeConsumerSupplier(
     const std::shared_ptr<const core::PlanNode>& planNode) {
   if (auto localMerge =
@@ -139,14 +143,19 @@ void plan(
     OperatorSupplier consumerSupplier,
     std::vector<std::unique_ptr<DriverFactory>>* driverFactories) {
   if (!currentPlanNodes) {
+    // 说明是根结点, 切出一个 Pipeline, 根节点加入基本的 Consumer(最终的
+    // consumerSupplier) 和 Node.
     driverFactories->push_back(std::make_unique<DriverFactory>());
+    // 初始化 currentPlanNodes 队列指针
     currentPlanNodes = &driverFactories->back()->planNodes;
     driverFactories->back()->consumerSupplier = consumerSupplier;
     driverFactories->back()->consumerNode = consumerNode;
   }
 
   auto sources = planNode->sources();
+  // 拿到 PlanNode 的输入.
   if (sources.empty()) {
+    // 是一个 Input Driver
     driverFactories->back()->inputDriver = true;
   } else {
     for (int32_t i = 0; i < sources.size(); ++i) {
@@ -172,6 +181,7 @@ uint32_t maxDriversForConsumer(
   return std::numeric_limits<uint32_t>::max();
 }
 
+/// 根据 Plan (DriverFactory) 来推断 MaxDriver?
 uint32_t maxDrivers(
     const DriverFactory& driverFactory,
     const core::QueryConfig& queryConfig) {
@@ -179,6 +189,7 @@ uint32_t maxDrivers(
   if (count == 1) {
     return count;
   }
+  // 扫所有中间节点, 看看有没有能直接推断出 MaxDriverCount 的, 不然用 consumer 端的推断.
   for (auto& node : driverFactory.planNodes) {
     if (auto topN = std::dynamic_pointer_cast<const core::TopNNode>(node)) {
       if (!topN->isPartial()) {
@@ -274,11 +285,13 @@ void LocalPlanner::plan(
       adapter.inspect(planFragment);
     }
   }
+  // Root 提供的是一个 Parent == nullptr, consumer == nullptr
+  // 的环境.
   detail::plan(
       planFragment.planNode,
       nullptr,
       nullptr,
-      detail::makeConsumerSupplier(consumerSupplier),
+      detail::makeConsumerSupplier(std::move(consumerSupplier)),
       driverFactories);
 
   (*driverFactories)[0]->outputDriver = true;
@@ -297,6 +310,8 @@ void LocalPlanner::plan(
     // of drivers dealing with separate split groups (one driver can access
     // splits from only one designated split group), hence we will have total
     // number of drivers multiplied by the number of split groups.
+    //
+    // 如果是 Group Execution, 需要按照 Group 来调度切分.
     if (factory->groupedExecution) {
       factory->numTotalDrivers =
           factory->numDrivers * planFragment.numSplitGroups;
@@ -307,6 +322,8 @@ void LocalPlanner::plan(
 }
 
 // static
+//
+// 设置对应的 Group Exec 属性.
 void LocalPlanner::determineGroupedExecutionPipelines(
     const core::PlanFragment& planFragment,
     std::vector<std::unique_ptr<DriverFactory>>& driverFactories) {
@@ -319,6 +336,8 @@ void LocalPlanner::determineGroupedExecutionPipelines(
       factory->groupedExecution = true;
     }
 
+    // 对 LocalPartitionNode 进行一定的切分.
+    //
     // If a pipeline's leaf node is Local Partition, which has all sources
     // belonging to pipelines that run Grouped Execution, then our pipeline
     // should run Grouped Execution as well.
@@ -615,6 +634,7 @@ std::shared_ptr<Driver> DriverFactory::createDriver(
   return driver;
 }
 
+// 给 Wave Execution 用的
 std::vector<std::unique_ptr<Operator>> DriverFactory::replaceOperators(
     Driver& driver,
     int32_t begin,

@@ -1015,6 +1015,7 @@ void Task::createSplitGroupStateLocked(uint32_t splitGroupId) {
           splitGroupId, exchangeId.value(), factory->numDrivers);
     }
 
+    // 插入 JoinBridge
     addHashJoinBridgesLocked(splitGroupId, factory->needsHashJoinBridges());
     addNestedLoopJoinBridgesLocked(
         splitGroupId, factory->needsNestedLoopJoinBridges());
