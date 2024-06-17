@@ -344,6 +344,12 @@ Task::~Task() {
   CLEAR(pool_.reset());
   CLEAR(planFragment_ = core::PlanFragment());
   clearStage = "exiting ~Task()";
+
+  // Ful-fill the task deletion promises at the end.
+  auto taskDeletionPromises = std::move(taskDeletionPromises_);
+  for (auto& promise : taskDeletionPromises) {
+    promise.setValue();
+  }
 }
 
 uint64_t Task::timeSinceStartMsLocked() const {
@@ -702,6 +708,7 @@ void Task::start(uint32_t maxDrivers, uint32_t concurrentSplitGroups) {
                      << errorMessageLocked();
         return;
       }
+      // 创建 Driver
       createDriverFactoriesLocked(maxDrivers);
     }
     initializePartitionOutput();
@@ -734,6 +741,8 @@ void Task::createDriverFactoriesLocked(uint32_t maxDrivers) {
   VELOX_CHECK(driverFactories_.empty());
 
   // Create driver factories.
+  //
+  // 根据 PlanFragment 创建 DriverFactory 和计算 max DOP
   LocalPlanner::plan(
       planFragment_,
       consumerSupplier(),
@@ -742,6 +751,8 @@ void Task::createDriverFactoriesLocked(uint32_t maxDrivers) {
       maxDrivers);
 
   // Calculates total number of drivers and create pipeline stats.
+  //
+  // 设置 DOP
   for (auto& factory : driverFactories_) {
     if (factory->groupedExecution) {
       numDriversPerSplitGroup_ += factory->numDrivers;
@@ -1005,10 +1016,12 @@ void Task::createSplitGroupStateLocked(uint32_t splitGroupId) {
 
     auto exchangeId = factory->needsLocalExchange();
     if (exchangeId.has_value()) {
+      // 创建 Context 中的 Local Exchange Queue.
       createLocalExchangeQueuesLocked(
           splitGroupId, exchangeId.value(), factory->numDrivers);
     }
 
+    // 插入 JoinBridge
     addHashJoinBridgesLocked(splitGroupId, factory->needsHashJoinBridges());
     addNestedLoopJoinBridgesLocked(
         splitGroupId, factory->needsNestedLoopJoinBridges());
@@ -2233,6 +2246,14 @@ ContinueFuture Task::taskCompletionFuture() {
   auto [promise, future] = makeVeloxContinuePromiseContract(
       fmt::format("Task::taskCompletionFuture {}", taskId_));
   taskCompletionPromises_.emplace_back(std::move(promise));
+  return std::move(future);
+}
+
+ContinueFuture Task::taskDeletionFuture() {
+  std::lock_guard<std::timed_mutex> l(mutex_);
+  auto [promise, future] = makeVeloxContinuePromiseContract(
+      fmt::format("Task::taskDeletionFuture {}", taskId_));
+  taskDeletionPromises_.emplace_back(std::move(promise));
   return std::move(future);
 }
 

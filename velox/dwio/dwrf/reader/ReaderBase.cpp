@@ -61,7 +61,8 @@ FooterStatisticsImpl::FooterStatisticsImpl(
         for (uint32_t statsIndex = 0; statsIndex < stats->statistics_size();
              ++statsIndex) {
           colStats_[node + statsIndex] = buildColumnStatisticsFromProto(
-              stats->statistics(statsIndex), statsContext);
+              ColumnStatisticsWrapper(&stats->statistics(statsIndex)),
+              statsContext);
         }
       }
     }
@@ -95,14 +96,16 @@ ReaderBase::ReaderBase(
     uint64_t filePreloadThreshold,
     FileFormat fileFormat,
     bool fileColumnNamesReadAsLowerCase,
-    std::shared_ptr<random::RandomSkipTracker> randomSkip)
+    std::shared_ptr<random::RandomSkipTracker> randomSkip,
+    std::shared_ptr<velox::common::ScanSpec> scanSpec)
     : pool_{pool},
       arena_(std::make_unique<google::protobuf::Arena>()),
       decryptorFactory_(decryptorFactory),
       footerEstimatedSize_(footerEstimatedSize),
       filePreloadThreshold_(filePreloadThreshold),
       input_(std::move(input)),
-      randomSkip_(std::move(randomSkip)) {
+      randomSkip_(std::move(randomSkip)),
+      scanSpec_(std::move(scanSpec)) {
   process::TraceContext trace("ReaderBase::ReaderBase");
   // read last bytes into buffer to get PostScript
   // If file is small, load the entire file.
@@ -248,7 +251,7 @@ std::unique_ptr<ColumnStatistics> ReaderBase::getColumnStatistics(
       "column index out of range");
   StatsContext statsContext(getWriterVersion());
   if (!handler_->isEncrypted(index)) {
-    auto& stats = footer_->statistics(index);
+    auto stats = footer_->statistics(index);
     return buildColumnStatisticsFromProto(stats, statsContext);
   }
 
@@ -259,7 +262,7 @@ std::unique_ptr<ColumnStatistics> ReaderBase::getColumnStatistics(
 
   // if key is not loaded, return plaintext stats
   if (!decrypter.isKeyLoaded()) {
-    auto& stats = footer_->statistics(index);
+    auto stats = footer_->statistics(index);
     return buildColumnStatisticsFromProto(stats, statsContext);
   }
 
@@ -275,7 +278,7 @@ std::unique_ptr<ColumnStatistics> ReaderBase::getColumnStatistics(
   auto stats = readProtoFromString<proto::FileStatistics>(
       group.statistics(nodeIndex), &decrypter);
   return buildColumnStatisticsFromProto(
-      stats->statistics(index - root), statsContext);
+      ColumnStatisticsWrapper(&stats->statistics(index - root)), statsContext);
 }
 
 std::shared_ptr<const Type> ReaderBase::convertType(

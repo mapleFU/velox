@@ -102,6 +102,7 @@ struct DynamicFilterStats {
   }
 };
 
+/// Operator 的 Root Stats
 struct OperatorStats {
   /// Initial ordinal position in the operator's pipeline.
   int32_t operatorId = 0;
@@ -285,6 +286,8 @@ class Operator : public BaseRuntimeStatWriter {
  public:
   /// Factory class for mapping a user-registered PlanNode into the
   /// corresponding Operator.
+  ///
+  /// 上层绑定的一些额外的 PlanNodeTranslator, 感觉基本上是测试开洞在用?
   class PlanNodeTranslator {
    public:
     virtual ~PlanNodeTranslator() = default;
@@ -469,6 +472,7 @@ class Operator : public BaseRuntimeStatWriter {
     operatorCtx_->pool()->release();
   }
 
+  // (下面的注释好微妙)
   // Returns true if 'this' never has more output rows than input rows.
   virtual bool isFilter() const {
     return false;

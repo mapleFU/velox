@@ -149,6 +149,8 @@ void Operator::initialize() {
 }
 
 // static
+//
+// 静态工厂, 用来做转化
 OperatorSupplier Operator::operatorSupplierFromPlanNode(
     const core::PlanNodePtr& planNode) {
   for (auto& translator : translators()) {
