@@ -538,6 +538,7 @@ class Driver : public std::enable_shared_from_this<Driver> {
   // should update.
   size_t curOperatorId_{0};
 
+  // Driver 内的 Operator Chain
   std::vector<std::unique_ptr<Operator>> operators_;
 
   BlockingReason blockingReason_{BlockingReason::kNotBlocked};
@@ -569,6 +570,7 @@ struct DriverAdapter {
 };
 
 struct DriverFactory {
+  /// 顺序: 前面的节点是后面节点的 Consumer
   std::vector<std::shared_ptr<const core::PlanNode>> planNodes;
   /// Function that will generate the final operator of a driver being
   /// constructed.
