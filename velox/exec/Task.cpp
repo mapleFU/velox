@@ -708,6 +708,7 @@ void Task::start(uint32_t maxDrivers, uint32_t concurrentSplitGroups) {
                      << errorMessageLocked();
         return;
       }
+      // 创建 Driver
       createDriverFactoriesLocked(maxDrivers);
     }
     initializePartitionOutput();
@@ -740,6 +741,8 @@ void Task::createDriverFactoriesLocked(uint32_t maxDrivers) {
   VELOX_CHECK(driverFactories_.empty());
 
   // Create driver factories.
+  //
+  // 根据 PlanFragment 创建 DriverFactory 和计算 max DOP
   LocalPlanner::plan(
       planFragment_,
       consumerSupplier(),
@@ -748,6 +751,8 @@ void Task::createDriverFactoriesLocked(uint32_t maxDrivers) {
       maxDrivers);
 
   // Calculates total number of drivers and create pipeline stats.
+  //
+  // 设置 DOP
   for (auto& factory : driverFactories_) {
     if (factory->groupedExecution) {
       numDriversPerSplitGroup_ += factory->numDrivers;
@@ -1011,6 +1016,7 @@ void Task::createSplitGroupStateLocked(uint32_t splitGroupId) {
 
     auto exchangeId = factory->needsLocalExchange();
     if (exchangeId.has_value()) {
+      // 创建 Context 中的 Local Exchange Queue.
       createLocalExchangeQueuesLocked(
           splitGroupId, exchangeId.value(), factory->numDrivers);
     }

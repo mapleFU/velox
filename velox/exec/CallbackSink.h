@@ -31,6 +31,7 @@ class CallbackSink : public Operator {
         callback_{callback} {}
 
   void addInput(RowVectorPtr input) override {
+    // Load LazyColumn
     loadColumns(input, *operatorCtx_->execCtx());
     blockingReason_ = callback_(input, &future_);
   }
