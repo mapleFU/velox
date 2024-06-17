@@ -82,12 +82,36 @@ class DateTimeFunctionsTest : public functions::test::FunctionBaseTest {
   }
 
  public:
+  // Helper class to manipulate timestamp with timezone types in tests. Provided
+  // only for convenience.
   struct TimestampWithTimezone {
     TimestampWithTimezone(int64_t milliSeconds, int16_t timezoneId)
         : milliSeconds_(milliSeconds), timezoneId_(timezoneId) {}
 
+    TimestampWithTimezone(int64_t milliSeconds, std::string_view timezoneName)
+        : TimestampWithTimezone{
+              milliSeconds,
+              util::getTimeZoneID(timezoneName)} {}
+
     int64_t milliSeconds_{0};
     int16_t timezoneId_{0};
+
+    static std::optional<int64_t> pack(
+        std::optional<TimestampWithTimezone> zone) {
+      if (zone.has_value()) {
+        return facebook::velox::pack(zone->milliSeconds_, zone->timezoneId_);
+      }
+      return std::nullopt;
+    }
+
+    static std::optional<TimestampWithTimezone> unpack(
+        std::optional<int64_t> input) {
+      if (input.has_value()) {
+        return TimestampWithTimezone(
+            unpackMillisUtc(input.value()), unpackZoneKeyId(input.value()));
+      }
+      return std::nullopt;
+    }
 
     // Provides a nicer printer for gtest.
     friend std::ostream& operator<<(
@@ -97,27 +121,6 @@ class DateTimeFunctionsTest : public functions::test::FunctionBaseTest {
                 << ", timezoneId: " << in.timezoneId_ << ")";
     }
   };
-
-  std::optional<TimestampWithTimezone> parseDatetime(
-      const std::optional<std::string>& input,
-      const std::optional<std::string>& format) {
-    auto resultVector = evaluate(
-        "parse_datetime(c0, c1)",
-        makeRowVector(
-            {makeNullableFlatVector<std::string>({input}),
-             makeNullableFlatVector<std::string>({format})}));
-    EXPECT_EQ(1, resultVector->size());
-
-    if (resultVector->isNullAt(0)) {
-      return std::nullopt;
-    }
-
-    auto timestampWithTimezone =
-        resultVector->as<FlatVector<int64_t>>()->valueAt(0);
-    return TimestampWithTimezone{
-        unpackMillisUtc(timestampWithTimezone),
-        unpackZoneKeyId(timestampWithTimezone)};
-  }
 
   std::optional<Timestamp> dateParse(
       const std::optional<std::string>& input,
@@ -153,19 +156,6 @@ class DateTimeFunctionsTest : public functions::test::FunctionBaseTest {
         "format_datetime(c0, c1)",
         makeRowVector(
             {makeNullableFlatVector<Timestamp>({timestamp}),
-             makeNullableFlatVector<std::string>({format})}));
-    return resultVector->as<SimpleVector<StringView>>()->valueAt(0);
-  }
-
-  std::optional<std::string> formatDatetimeWithTimezone(
-      std::optional<Timestamp> timestamp,
-      std::optional<std::string> timeZoneName,
-      const std::string& format) {
-    auto resultVector = evaluate(
-        "format_datetime(c0, c1)",
-        makeRowVector(
-            {makeTimestampWithTimeZoneVector(
-                 timestamp.value().toMillis(), timeZoneName.value().c_str()),
              makeNullableFlatVector<std::string>({format})}));
     return resultVector->as<SimpleVector<StringView>>()->valueAt(0);
   }
@@ -1099,8 +1089,17 @@ TEST_F(DateTimeFunctionsTest, timestampWithTimeZonePlusIntervalDayTime) {
       "2024-10-03 01:51:00.000 America/Los_Angeles",
       test("2024-10-03 01:50 America/Los_Angeles", 1 * kMillisInMinute));
 
-  // TODO Add tests for transitioning to/from DST once
-  // https://github.com/facebookincubator/velox/issues/10163 is fixed.
+  // Testing daylight saving transitions.
+
+  // At the beginning there is a 1 hour gap.
+  EXPECT_EQ(
+      "2024-03-10 01:30:00.000 America/Los_Angeles",
+      test("2024-03-10 03:30 America/Los_Angeles", -1 * kMillisInHour));
+
+  // At the end there is a 1 hour duplication.
+  EXPECT_EQ(
+      "2024-11-03 01:30:00.000 America/Los_Angeles",
+      test("2024-11-03 01:30 America/Los_Angeles", 1 * kMillisInHour));
 }
 
 TEST_F(DateTimeFunctionsTest, minusTimestamp) {
@@ -1561,6 +1560,40 @@ TEST_F(DateTimeFunctionsTest, millisecondTimestampWithTimezone) {
           "millisecond(c0)", -980, "+05:30"));
 }
 
+TEST_F(DateTimeFunctionsTest, extractFromIntervalDayTime) {
+  const auto millis = 5 * kMillisInDay + 7 * kMillisInHour +
+      11 * kMillisInMinute + 13 * kMillisInSecond + 17;
+
+  auto extract = [&](const std::string& unit, int64_t millis) {
+    return evaluateOnce<int64_t>(
+               fmt::format("{}(c0)", unit),
+               INTERVAL_DAY_TIME(),
+               std::optional(millis))
+        .value();
+  };
+
+  EXPECT_EQ(17, extract("millisecond", millis));
+  EXPECT_EQ(13, extract("second", millis));
+  EXPECT_EQ(11, extract("minute", millis));
+  EXPECT_EQ(7, extract("hour", millis));
+  EXPECT_EQ(5, extract("day", millis));
+}
+
+TEST_F(DateTimeFunctionsTest, extractFromIntervalYearMonth) {
+  const auto months = 3 * 12 + 4;
+
+  auto extract = [&](const std::string& unit, int32_t months) {
+    return evaluateOnce<int64_t>(
+               fmt::format("{}(c0)", unit),
+               INTERVAL_YEAR_MONTH(),
+               std::optional(months))
+        .value();
+  };
+
+  EXPECT_EQ(3, extract("year", months));
+  EXPECT_EQ(4, extract("month", months));
+}
+
 TEST_F(DateTimeFunctionsTest, dateTrunc) {
   const auto dateTrunc = [&](const std::string& unit,
                              std::optional<Timestamp> timestamp) {
@@ -1606,6 +1639,7 @@ TEST_F(DateTimeFunctionsTest, dateTrunc) {
   EXPECT_EQ(std::nullopt, dateTrunc("second", std::nullopt));
   EXPECT_EQ(Timestamp(0, 0), dateTrunc("second", Timestamp(0, 0)));
   EXPECT_EQ(Timestamp(0, 0), dateTrunc("second", Timestamp(0, 123)));
+
   EXPECT_EQ(Timestamp(-57600, 0), dateTrunc("day", Timestamp(0, 0)));
   EXPECT_EQ(
       Timestamp(998474645, 0),
@@ -1631,6 +1665,13 @@ TEST_F(DateTimeFunctionsTest, dateTrunc) {
   EXPECT_EQ(
       Timestamp(978336000, 0),
       dateTrunc("year", Timestamp(998'474'645, 321'001'234)));
+
+  // Check that truncation during daylight saving transition where conversions
+  // may be ambiguous return the right values.
+  EXPECT_EQ(
+      Timestamp(1667725200, 0), dateTrunc("hour", Timestamp(1667725200, 0)));
+  EXPECT_EQ(
+      Timestamp(1667725200, 0), dateTrunc("minute", Timestamp(1667725200, 0)));
 
   setQueryTimeZone("Asia/Kolkata");
 
@@ -2293,35 +2334,38 @@ TEST_F(DateTimeFunctionsTest, dateAddTimestamp) {
 }
 
 TEST_F(DateTimeFunctionsTest, dateAddTimestampWithTimeZone) {
-  const auto dateAdd = [&](const std::string& unit,
-                           std::optional<int32_t> value,
-                           std::optional<int64_t> timestamp,
-                           const std::optional<std::string>& timeZoneName) {
-    return evaluateWithTimestampWithTimezone(
-        fmt::format("date_add('{}', {}, c0)", unit, *value),
-        timestamp,
-        timeZoneName);
-  };
+  auto dateAdd =
+      [&](std::optional<std::string> unit,
+          std::optional<int32_t> value,
+          std::optional<TimestampWithTimezone> timestampWithTimezone) {
+        auto result = evaluateOnce<int64_t>(
+            "date_add(c0, c1, c2)",
+            {VARCHAR(), INTEGER(), TIMESTAMP_WITH_TIME_ZONE()},
+            unit,
+            value,
+            TimestampWithTimezone::pack(timestampWithTimezone));
+        return TimestampWithTimezone::unpack(result);
+      };
 
   // 1970-01-01 00:00:00.000 UTC-8
-  auto result = dateAdd("day", 5, 0, "-08:00");
-  auto expected = makeTimestampWithTimeZoneVector(432000000, "-08:00");
-  assertEqualVectors(expected, result);
+  EXPECT_EQ(
+      TimestampWithTimezone(432000000, "-08:00"),
+      dateAdd("day", 5, TimestampWithTimezone(0, "-08:00")));
 
   // 2023-01-08 00:00:00.000 UTC-8
-  result = dateAdd("day", -7, 1673136000, "-08:00");
-  expected = makeTimestampWithTimeZoneVector(1068336000, "-08:00");
-  assertEqualVectors(expected, result);
+  EXPECT_EQ(
+      TimestampWithTimezone(1068336000, "-08:00"),
+      dateAdd("day", -7, TimestampWithTimezone(1673136000, "-08:00")));
 
   // 2023-01-08 00:00:00.000 UTC-8
-  result = dateAdd("millisecond", -7, 1673136000, "-08:00");
-  expected = makeTimestampWithTimeZoneVector(1673135993, "-08:00");
-  assertEqualVectors(expected, result);
+  EXPECT_EQ(
+      TimestampWithTimezone(1673135993, "-08:00"),
+      dateAdd("millisecond", -7, TimestampWithTimezone(1673136000, "-08:00")));
 
   // 2023-01-08 00:00:00.000 UTC-8
-  result = dateAdd("millisecond", +7, 1673136000, "-08:00");
-  expected = makeTimestampWithTimeZoneVector(1673136007, "-08:00");
-  assertEqualVectors(expected, result);
+  EXPECT_EQ(
+      TimestampWithTimezone(1673136007, "-08:00"),
+      dateAdd("millisecond", +7, TimestampWithTimezone(1673136000, "-08:00")));
 
   const auto evaluateDateAddFromStrings = [&](const std::string& unit,
                                               int32_t value,
@@ -2368,6 +2412,31 @@ TEST_F(DateTimeFunctionsTest, dateAddTimestampWithTimeZone) {
       "year", 3, "1972-05-20+23:01:02+14:00", "1975-05-20+23:01:02+14:00");
   evaluateDateAddFromStrings(
       "year", 3, "1968-02-20+23:01:02+14:00", "1971-02-20+23:01:02+14:00");
+
+  // Tests date_add() on daylight saving transition boundaries.
+  //
+  // Presto's semantic is to apply the delta to GMT, which means that at times
+  // the observed delta may not be linear, in cases when it hits a daylight
+  // savings boundary.
+  auto dateAddAndCast = [&](std::optional<std::string> unit,
+                            std::optional<int32_t> value,
+                            std::optional<std::string> timestampString) {
+    return evaluateOnce<std::string>(
+        "cast(date_add(c0, c1, cast(c2 as timestamp with time zone)) as VARCHAR)",
+        unit,
+        value,
+        timestampString);
+  };
+
+  EXPECT_EQ(
+      "2024-03-10 03:50:00.000 America/Los_Angeles",
+      dateAddAndCast("hour", 1, "2024-03-10 01:50:00 America/Los_Angeles"));
+  EXPECT_EQ(
+      "2024-11-03 01:50:00.000 America/Los_Angeles",
+      dateAddAndCast("hour", 1, "2024-11-03 01:50:00 America/Los_Angeles"));
+  EXPECT_EQ(
+      "2024-11-03 00:50:00.000 America/Los_Angeles",
+      dateAddAndCast("hour", -1, "2024-11-03 01:50:00 America/Los_Angeles"));
 }
 
 TEST_F(DateTimeFunctionsTest, dateDiffDate) {
@@ -2779,6 +2848,13 @@ TEST_F(DateTimeFunctionsTest, dateDiffTimestampWithTimezone) {
 }
 
 TEST_F(DateTimeFunctionsTest, parseDatetime) {
+  const auto parseDatetime = [&](const std::optional<std::string>& input,
+                                 const std::optional<std::string>& format) {
+    auto result =
+        evaluateOnce<int64_t>("parse_datetime(c0, c1)", input, format);
+    return TimestampWithTimezone::unpack(result);
+  };
+
   // Check null behavior.
   EXPECT_EQ(std::nullopt, parseDatetime("1970-01-01", std::nullopt));
   EXPECT_EQ(std::nullopt, parseDatetime(std::nullopt, "YYYY-MM-dd"));
@@ -2811,23 +2887,22 @@ TEST_F(DateTimeFunctionsTest, parseDatetime) {
   // 118860000 is the number of milliseconds since epoch at 1970-01-02
   // 09:01:00.000 UTC.
   EXPECT_EQ(
-      TimestampWithTimezone(118860000, util::getTimeZoneID("+00:00")),
+      TimestampWithTimezone(118860000, "+00:00"),
       parseDatetime("1970-01-02+09:01+00:00", "YYYY-MM-dd+HH:mmZZ"));
   EXPECT_EQ(
-      TimestampWithTimezone(118860000, util::getTimeZoneID("-09:00")),
+      TimestampWithTimezone(118860000, "-09:00"),
       parseDatetime("1970-01-02+00:01-09:00", "YYYY-MM-dd+HH:mmZZ"));
   EXPECT_EQ(
-      TimestampWithTimezone(118860000, util::getTimeZoneID("-02:00")),
+      TimestampWithTimezone(118860000, "-02:00"),
       parseDatetime("1970-01-02+07:01-02:00", "YYYY-MM-dd+HH:mmZZ"));
   EXPECT_EQ(
-      TimestampWithTimezone(118860000, util::getTimeZoneID("+14:00")),
+      TimestampWithTimezone(118860000, "+14:00"),
       parseDatetime("1970-01-02+23:01+14:00", "YYYY-MM-dd+HH:mmZZ"));
   EXPECT_EQ(
-      TimestampWithTimezone(
-          198060000, util::getTimeZoneID("America/Los_Angeles")),
+      TimestampWithTimezone(198060000, "America/Los_Angeles"),
       parseDatetime("1970-01-02+23:01 PST", "YYYY-MM-dd+HH:mm z"));
   EXPECT_EQ(
-      TimestampWithTimezone(169260000, util::getTimeZoneID("+00:00")),
+      TimestampWithTimezone(169260000, "+00:00"),
       parseDatetime("1970-01-02+23:01 GMT", "YYYY-MM-dd+HH:mm z"));
 
   setQueryTimeZone("Asia/Kolkata");
@@ -2835,23 +2910,23 @@ TEST_F(DateTimeFunctionsTest, parseDatetime) {
   // 66600000 is the number of millisecond since epoch at 1970-01-01
   // 18:30:00.000 UTC.
   EXPECT_EQ(
-      TimestampWithTimezone(66600000, util::getTimeZoneID("Asia/Kolkata")),
+      TimestampWithTimezone(66600000, "Asia/Kolkata"),
       parseDatetime("1970-01-02+00:00", "YYYY-MM-dd+HH:mm"));
   EXPECT_EQ(
-      TimestampWithTimezone(66600000, util::getTimeZoneID("-03:00")),
+      TimestampWithTimezone(66600000, "-03:00"),
       parseDatetime("1970-01-01+15:30-03:00", "YYYY-MM-dd+HH:mmZZ"));
 
   // -66600000 is the number of millisecond since epoch at 1969-12-31
   // 05:30:00.000 UTC.
   EXPECT_EQ(
-      TimestampWithTimezone(-66600000, util::getTimeZoneID("Asia/Kolkata")),
+      TimestampWithTimezone(-66600000, "Asia/Kolkata"),
       parseDatetime("1969-12-31+11:00", "YYYY-MM-dd+HH:mm"));
   EXPECT_EQ(
-      TimestampWithTimezone(-66600000, util::getTimeZoneID("+02:00")),
+      TimestampWithTimezone(-66600000, "+02:00"),
       parseDatetime("1969-12-31+07:30+02:00", "YYYY-MM-dd+HH:mmZZ"));
 
   // Joda also lets 'Z' to be UTC|UCT|GMT|GMT0.
-  auto ts = TimestampWithTimezone(1708840800000, util::getTimeZoneID("GMT"));
+  auto ts = TimestampWithTimezone(1708840800000, "GMT");
   EXPECT_EQ(
       ts, parseDatetime("2024-02-25+06:00:99 GMT", "yyyy-MM-dd+HH:mm:99 ZZZ"));
   EXPECT_EQ(
@@ -3139,6 +3214,16 @@ TEST_F(DateTimeFunctionsTest, formatDateTime) {
 }
 
 TEST_F(DateTimeFunctionsTest, formatDateTimeTimezone) {
+  const auto formatDatetimeWithTimezone =
+      [&](std::optional<TimestampWithTimezone> timestampWithTimezone,
+          std::optional<std::string> format) {
+        return evaluateOnce<std::string>(
+            "format_datetime(c0, c1)",
+            {TIMESTAMP_WITH_TIME_ZONE(), VARCHAR()},
+            TimestampWithTimezone::pack(timestampWithTimezone),
+            format);
+      };
+
   const auto zeroTs = parseTimestamp("1970-01-01");
 
   // No timezone set; default to GMT.
@@ -3149,12 +3234,14 @@ TEST_F(DateTimeFunctionsTest, formatDateTimeTimezone) {
   EXPECT_EQ(
       "1970-01-01 05:30:00",
       formatDatetimeWithTimezone(
-          zeroTs, "Asia/Kolkata", "YYYY-MM-dd HH:mm:ss"));
+          TimestampWithTimezone(zeroTs.toMillis(), "Asia/Kolkata"),
+          "YYYY-MM-dd HH:mm:ss"));
 
   EXPECT_EQ(
       "1969-12-31 16:00:00",
       formatDatetimeWithTimezone(
-          zeroTs, "America/Los_Angeles", "YYYY-MM-dd HH:mm:ss"));
+          TimestampWithTimezone(zeroTs.toMillis(), "America/Los_Angeles"),
+          "YYYY-MM-dd HH:mm:ss"));
 }
 
 TEST_F(DateTimeFunctionsTest, dateFormat) {
@@ -3477,10 +3564,7 @@ TEST_F(DateTimeFunctionsTest, fromIso8601Timestamp) {
   const auto fromIso = [&](const std::string& input) {
     auto result =
         evaluateOnce<int64_t, std::string>("from_iso8601_timestamp(c0)", input);
-    VELOX_CHECK(result.has_value());
-
-    return TimestampWithTimezone(
-        unpackMillisUtc(result.value()), unpackZoneKeyId(result.value()));
+    return TimestampWithTimezone::unpack(result);
   };
 
   // Full strings with different time zones.
@@ -3489,21 +3573,16 @@ TEST_F(DateTimeFunctionsTest, fromIso8601Timestamp) {
   const std::string ts = "1970-01-02T11:38:56.123";
 
   EXPECT_EQ(
-      TimestampWithTimezone(
-          millis + 5 * kMillisInHour, util::getTimeZoneID("-05:00")),
+      TimestampWithTimezone(millis + 5 * kMillisInHour, "-05:00"),
       fromIso(ts + "-05:00"));
 
   EXPECT_EQ(
-      TimestampWithTimezone(
-          millis - 8 * kMillisInHour, util::getTimeZoneID("+08:00")),
+      TimestampWithTimezone(millis - 8 * kMillisInHour, "+08:00"),
       fromIso(ts + "+08:00"));
 
-  EXPECT_EQ(
-      TimestampWithTimezone(millis, util::getTimeZoneID("UTC")),
-      fromIso(ts + "Z"));
+  EXPECT_EQ(TimestampWithTimezone(millis, "UTC"), fromIso(ts + "Z"));
 
-  EXPECT_EQ(
-      TimestampWithTimezone(millis, util::getTimeZoneID("UTC")), fromIso(ts));
+  EXPECT_EQ(TimestampWithTimezone(millis, "UTC"), fromIso(ts));
 
   // Partial strings with different session time zones.
   struct {
@@ -3514,7 +3593,7 @@ TEST_F(DateTimeFunctionsTest, fromIso8601Timestamp) {
       {"Asia/Kolkata", 5 * kMillisInHour + 30 * kMillisInMinute},
   };
 
-  for (auto timezone : timezones) {
+  for (const auto& timezone : timezones) {
     setQueryTimeZone(timezone.name);
 
     const auto timezoneId = util::getTimeZoneID(timezone.name);
@@ -4071,10 +4150,10 @@ TEST_F(DateTimeFunctionsTest, timeZoneMinute) {
 }
 
 TEST_F(DateTimeFunctionsTest, timestampWithTimezoneComparisons) {
-  auto runAndCompare = [&](std::string expr,
-                           std::shared_ptr<RowVector>& inputs,
-                           VectorPtr expectedResult) {
-    auto actual = evaluate<SimpleVector<bool>>(expr, inputs);
+  auto runAndCompare = [&](const std::string& expr,
+                           const RowVectorPtr& inputs,
+                           const VectorPtr& expectedResult) {
+    auto actual = evaluate(expr, inputs);
     test::assertEqualVectors(expectedResult, actual);
   };
 
@@ -4101,23 +4180,26 @@ TEST_F(DateTimeFunctionsTest, timestampWithTimezoneComparisons) {
   auto inputs =
       makeRowVector({timestampWithTimezoneLhs, timestampWithTimezoneRhs});
 
-  auto expectedEq = makeNullableFlatVector<bool>({true, false, false});
+  auto expectedEq = makeFlatVector<bool>({true, false, false});
   runAndCompare("c0 = c1", inputs, expectedEq);
 
-  auto expectedNeq = makeNullableFlatVector<bool>({false, true, true});
+  auto expectedNeq = makeFlatVector<bool>({false, true, true});
   runAndCompare("c0 != c1", inputs, expectedNeq);
 
-  auto expectedLt = makeNullableFlatVector<bool>({false, true, false});
+  auto expectedLt = makeFlatVector<bool>({false, true, false});
   runAndCompare("c0 < c1", inputs, expectedLt);
 
-  auto expectedGt = makeNullableFlatVector<bool>({false, false, true});
+  auto expectedGt = makeFlatVector<bool>({false, false, true});
   runAndCompare("c0 > c1", inputs, expectedGt);
 
-  auto expectedLte = makeNullableFlatVector<bool>({true, true, false});
+  auto expectedLte = makeFlatVector<bool>({true, true, false});
   runAndCompare("c0 <= c1", inputs, expectedLte);
 
-  auto expectedGte = makeNullableFlatVector<bool>({true, false, true});
+  auto expectedGte = makeFlatVector<bool>({true, false, true});
   runAndCompare("c0 >= c1", inputs, expectedGte);
+
+  auto expectedBetween = makeNullableFlatVector<bool>({true, true, false});
+  runAndCompare("c0 between c0 and c1", inputs, expectedBetween);
 }
 
 TEST_F(DateTimeFunctionsTest, castDateToTimestamp) {
@@ -4394,4 +4476,13 @@ TEST_F(DateTimeFunctionsTest, atTimezoneTest) {
       std::nullopt);
 
   EXPECT_EQ(at_timezone(std::nullopt, "Pacific/Fiji"), std::nullopt);
+}
+
+TEST_F(DateTimeFunctionsTest, toMilliseconds) {
+  EXPECT_EQ(
+      123,
+      evaluateOnce<int64_t>(
+          "to_milliseconds(c0)",
+          INTERVAL_DAY_TIME(),
+          std::optional<int64_t>(123)));
 }
