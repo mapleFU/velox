@@ -26,6 +26,8 @@
 
 namespace facebook::velox::core {
 
+/// 配置和绑定的 Executor 集合, 配置应该是 Query 级别的, Executor 我总觉得
+/// 和 Query 有关但是更多还是进程之类的相关的?
 class QueryCtx : public std::enable_shared_from_this<QueryCtx> {
  public:
   ~QueryCtx() {
@@ -197,6 +199,7 @@ class QueryCtx : public std::enable_shared_from_this<QueryCtx> {
   void finishArbitration();
 
   const std::string queryId_;
+  // 对应的 CPU Executor.
   folly::Executor* const executor_{nullptr};
   folly::Executor* const spillExecutor_{nullptr};
   cache::AsyncDataCache* const cache_;

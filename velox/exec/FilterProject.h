@@ -21,6 +21,9 @@
 #include "velox/expression/Expr.h"
 
 namespace facebook::velox::exec {
+
+/// Filter + Project, 其实相当于类似 Calc 的逻辑了, Filter
+/// 的表达式可能和输出列有关 比如 Select func(a) from tbl where func(a) == 1;
 class FilterProject : public Operator {
  public:
   FilterProject(

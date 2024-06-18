@@ -27,6 +27,9 @@ namespace facebook::velox::exec {
 
 // Represents a column that is copied from input to output, possibly
 // with cardinality change, i.e. values removed or duplicated.
+//
+// 自身的 Projection 列表, 应该不包括计算的结果那种列, 这个 Projection 就单纯是
+// 给一些地方做的计算吧.
 struct IdentityProjection {
   IdentityProjection(
       column_index_t _inputChannel,
@@ -388,6 +391,8 @@ class Operator : public BaseRuntimeStatWriter {
   /// operator, e.g. the first operator in the pipeline.
   virtual bool needsInput() const = 0;
 
+  /// 提供对应的输入. 看来 Input/output 是解耦的.
+  ///
   /// Adds input. Not used if operator is a source operator, e.g. the first
   /// operator in the pipeline.
   /// @param input Non-empty input vector.
@@ -427,6 +432,8 @@ class Operator : public BaseRuntimeStatWriter {
   /// upstream operators. Used to push down filters on join keys from broadcast
   /// hash join into probe-side table scan. Can also be used to push down TopN
   /// cutoff.
+  ///
+  /// 每个 Column 能绑定一个 Filter.
   virtual const std::
       unordered_map<column_index_t, std::shared_ptr<common::Filter>>&
       getDynamicFilters() const {

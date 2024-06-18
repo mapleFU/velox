@@ -621,6 +621,8 @@ class Task : public std::enable_shared_from_this<Task> {
   /// Once 'pauseRequested_' is set, it will not be cleared until
   /// task::resume(). It is therefore OK to read it without a mutex
   /// from a thread that this flag concerns.
+  ///
+  /// 上层去调用 requestPause()，然后 Task 内部会设置 pauseRequested_ 为 true
   bool pauseRequested() const {
     return pauseRequested_;
   }

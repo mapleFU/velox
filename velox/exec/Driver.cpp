@@ -208,9 +208,12 @@ BlockingState::BlockingState(
 }
 
 // static
+//
+// 设置 Driver 和恢复有关的 Callback
 void BlockingState::setResume(std::shared_ptr<BlockingState> state) {
   VELOX_CHECK(!state->driver_->isOnThread());
   auto& exec = folly::QueuedImmediateExecutor::instance();
+  // 等待 state->fut 完成.
   std::move(state->future_)
       .via(&exec)
       .thenValue([state](auto&& /* unused */) {
@@ -218,7 +221,7 @@ void BlockingState::setResume(std::shared_ptr<BlockingState> state) {
         auto& task = driver->task();
 
         std::lock_guard<std::timed_mutex> l(task->mutex());
-        // 调度延迟记录在 blockingTime.
+        // 调度延迟记录在 blockingTime, 如果 Terminated 就不记录了
         if (!driver->state().isTerminated) {
           state->operator_->recordBlockingTime(
               state->sinceMicros_, state->reason_);
@@ -230,6 +233,7 @@ void BlockingState::setResume(std::shared_ptr<BlockingState> state) {
           // The thread will be enqueued at resume.
           return;
         }
+        // 重新调度执行
         Driver::enqueue(state->driver_);
       })
       .thenError(
@@ -273,10 +277,15 @@ std::ostream& operator<<(std::ostream& out, const StopReason& reason) {
 }
 
 // static
+//
+// 调度执行
 void Driver::enqueue(std::shared_ptr<Driver> driver) {
   process::ScopedThreadDebugInfo scopedInfo(
       driver->driverCtx()->threadDebugInfo);
   // This is expected to be called inside the Driver's Tasks's mutex.
+  //
+  // 设置对应的 QueueTime 和内部信息什么的, 看起来是为了修 bug:
+  // https://github.com/facebookincubator/velox/pull/7786
   driver->enqueueInternal();
   if (driver->closed_) {
     return;
@@ -515,6 +524,9 @@ StopReason Driver::runInternal(
 
   // Update the queued time after entering the Task to ensure the stats have not
   // been deleted.
+  //
+  // 上一次 Block 在哪了就在哪里记录, 但还是从最底层的 Operator 开始执行,
+  // 推测是因为这样管理 比较简单.
   if (curOperatorId_ < operators_.size()) {
     operators_[curOperatorId_]->addRuntimeStat(
         "queuedWallNanos",
@@ -550,12 +562,14 @@ StopReason Driver::runInternal(
 
     for (;;) {
       for (int32_t i = numOperators - 1; i >= 0; --i) {
+        // 每个 Node 通信的时候, 看看全局的 Stop 信息.
         stop = task()->shouldStop();
         if (stop != StopReason::kNone) {
           guard.notThrown();
           return stop;
         }
 
+        // 占用的时间比较多, 应该 Yield 了.
         if (FOLLY_UNLIKELY(shouldYield())) {
           recordYieldCount();
           guard.notThrown();
@@ -586,6 +600,7 @@ StopReason Driver::runInternal(
           return StopReason::kBlock;
         }
 
+        // 在 Output 之前, 检查 Operator 是否 Blocked.
         CALL_OPERATOR(
             blockingReason_ = op->isBlocked(&future),
             op,
@@ -601,6 +616,8 @@ StopReason Driver::runInternal(
         }
 
         if (i < numOperators - 1) {
+          // 不是 Pipeline 的 Root Input, 需要尝试从本 Operator 拿到 Output
+          // 然后喂给下一个 Operator.
           Operator* nextOp = operators_[i + 1].get();
 
           CALL_OPERATOR(
@@ -618,12 +635,16 @@ StopReason Driver::runInternal(
           }
 
           bool needsInput;
+          // 检查下一个 Operator 是否需要输入.
+          // NOTE: 这个 needsInput 可能是带状态的, 比如 FilterProject
+          // 如果有 Filter, 那么就需要输入.
           CALL_OPERATOR(
               needsInput = nextOp->needsInput(),
               nextOp,
               curOperatorId_ + 1,
               kOpMethodNeedsInput);
           if (needsInput) {
+            // 去 Pull 本节点的数据.
             uint64_t resultBytes = 0;
             RowVectorPtr intermediateResult;
             {
@@ -656,6 +677,7 @@ StopReason Driver::runInternal(
                 }
               }
             }
+            // TODO(mwish): 计算玩 Input 之后, 尝试 PushDown Filter?
             pushdownFilters(i);
             if (intermediateResult) {
               auto timer = createDeltaCpuWallTimer(
@@ -683,6 +705,7 @@ StopReason Driver::runInternal(
               i += 2;
               continue;
             } else {
+              // 消费完了 Operator 所有输入.
               stop = task()->shouldStop();
               if (stop != StopReason::kNone) {
                 guard.notThrown();
@@ -713,6 +736,7 @@ StopReason Driver::runInternal(
                   op,
                   curOperatorId_,
                   kOpMethodIsFinished);
+              // 推进 Op, 设置没有更多 Input 了.
               if (finished) {
                 auto timer = createDeltaCpuWallTimer(
                     [op, this](const CpuWallTiming& timing) {
@@ -840,11 +864,14 @@ void Driver::run(std::shared_ptr<Driver> self) {
       // Set the resume action outside the Task so that, if the
       // future is already realized we do not have a second thread
       // entering the same Driver.
+      //
+      // Driver 恢复有关的 Callback
       BlockingState::setResume(blockingState);
       return;
 
     case StopReason::kYield:
       // Go to the end of the queue.
+      // 重新进入 CPU 执行队列
       enqueue(self);
       return;
 

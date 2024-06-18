@@ -296,8 +296,8 @@ void LocalPlanner::plan(
   // Root 提供的是一个 Parent == nullptr, consumer == nullptr
   // 的环境.
   //
-  // 这里造出基本的 DriverFactories, DriverFactory 其实不等于 Pipeline,
-  // 中间概念还是有区别的.
+  // 这里造出基本的 DriverFactories, DriverFactory 基本上等于 Pipeline,
+  // 可能还包含了一些 Grouped Execution 的信息.
   detail::plan(
       planFragment.planNode,
       nullptr,

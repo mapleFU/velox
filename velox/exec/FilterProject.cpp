@@ -80,6 +80,7 @@ void FilterProject::initialize() {
     isIdentityProjection_ = true;
   }
   numExprs_ = allExprs.size();
+  // 构建 ExprSet, 用来做 Evaluation.
   exprs_ = makeExprSetFromFlag(std::move(allExprs), operatorCtx_->execCtx());
 
   if (numExprs_ > 0 && !identityProjections_.empty()) {
