@@ -708,7 +708,7 @@ void Task::start(uint32_t maxDrivers, uint32_t concurrentSplitGroups) {
                      << errorMessageLocked();
         return;
       }
-      // 创建 Driver
+      // 创建 Driver (但不启动这些 Driver).
       createDriverFactoriesLocked(maxDrivers);
     }
     initializePartitionOutput();
