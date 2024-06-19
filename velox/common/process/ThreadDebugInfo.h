@@ -23,6 +23,11 @@ namespace facebook::velox::process {
 
 // Used to store thread local information which can be retrieved by a signal
 // handler and logged.
+//
+// Q: 这个为啥要叫 ThreadDebugInfo? 感觉应该是 TaskDebugInfo? 感觉没有任何和
+//  Thread 相关的信息...
+// A: 因为 `ScopedThreadDebugInfo` 会设置 thread
+//  的上下文到全局的 `threadDebugInfo`.
 struct ThreadDebugInfo {
   std::string queryId_;
   std::string taskId_;

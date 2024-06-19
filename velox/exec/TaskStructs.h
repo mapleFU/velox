@@ -50,12 +50,16 @@ struct BarrierState {
 };
 
 /// Structure to accumulate splits for distribution.
+///
+/// Split 的状态存储, 可以负责 Push / Pull split.
 struct SplitsStore {
   /// Arrived (added), but not distributed yet, splits.
   std::deque<exec::Split> splits;
   /// Signal, that no more splits will arrive.
   bool noMoreSplits{false};
   /// Blocking promises given out when out of splits to distribute.
+  ///
+  /// 等待 Split 的上层请求.
   std::vector<ContinuePromise> splitPromises;
 };
 

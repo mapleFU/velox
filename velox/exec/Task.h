@@ -35,16 +35,24 @@ class NestedLoopJoinBridge;
 using ConnectorSplitPreloadFunc =
     std::function<void(const std::shared_ptr<connector::ConnectorSplit>&)>;
 
+/// Velox 的 Task, 内容见 doc:
+/// https://facebookincubator.github.io/velox/develop/task.html .
+/// 这里管理 Task 内部的共享状态(Join-Bridge, Shuffle 等), task 的执行状态.
+/// 此外还有 Task 的单机调度(start, pause) 等.
 class Task : public std::enable_shared_from_this<Task> {
  public:
   /// Threading mode the task is executed.
   enum class ExecutionMode {
     /// Mode that executes the query serially (single-threaded) on the calling
     /// thread. Task is executed via the Task::next() API.
+    ///
+    /// 特殊的单线程执行模式.
     kSerial,
     /// Mode that executes the query in parallel (multi-threaded) using provided
     /// executor. Task is executed via the Task::start() API that starts up
     /// multiple driver threads and manages their lifecycle.
+    ///
+    /// 正常的并行执行模式.
     kParallel,
   };
 
@@ -161,12 +169,17 @@ class Task : public std::enable_shared_from_this<Task> {
   /// nodes require splits and there are not enough of these.
   /// @param concurrentSplitGroups In grouped execution, maximum number of
   /// splits groups processed concurrently.
+  ///
+  /// 开始执行对应的 Group, 然后设置上层的 maxDriver. 这个接口需要非 single
+  /// thread 才能 调用.
   void start(uint32_t maxDrivers, uint32_t concurrentSplitGroups = 1);
 
   /// If this returns true, this Task supports the single-threaded execution API
   /// next().
   bool supportsSingleThreadedExecution() const;
 
+  /// 单线程执行 pull 结果, 可能是 Blocking 的 Pull.
+  ///
   /// Single-threaded execution API. Runs the query and returns results one
   /// batch at a time. Returns nullptr if query evaluation is finished and no
   /// more data will be produced. Throws an exception if query execution
@@ -621,6 +634,8 @@ class Task : public std::enable_shared_from_this<Task> {
   /// Once 'pauseRequested_' is set, it will not be cleared until
   /// task::resume(). It is therefore OK to read it without a mutex
   /// from a thread that this flag concerns.
+  ///
+  /// 上层去调用 requestPause()，然后 Task 内部会设置 pauseRequested_ 为 true
   bool pauseRequested() const {
     return pauseRequested_;
   }

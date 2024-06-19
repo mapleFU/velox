@@ -38,6 +38,7 @@ class Operator;
 struct OperatorStats;
 class Task;
 
+/// Driver 的 StopReason.
 enum class StopReason {
   /// Keep running.
   kNone,
@@ -222,6 +223,7 @@ enum class BlockingReason {
 
 std::string blockingReasonToString(BlockingReason reason);
 
+/// Driver 的 Blocking 状态, 包含 block 的 (Future, Operator, Reason).
 class BlockingState {
  public:
   BlockingState(
@@ -271,6 +273,8 @@ class BlockingState {
 /// Special group id to reflect the ungrouped execution.
 constexpr uint32_t kUngroupedGroupId{std::numeric_limits<uint32_t>::max()};
 
+/// Driver 的信息存储, 重点是 `task`, 然后包含 driver, pipeline 的 Id 和 Group
+/// Exec 有关的信息 ( 这么看真没啥信息我擦 ).
 struct DriverCtx {
   const int driverId;
   const int pipelineId;
