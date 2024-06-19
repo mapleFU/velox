@@ -386,7 +386,8 @@ class Connector {
   /// so that file opening and metadata operations are off the Driver'
   /// thread.
   ///
-  /// TODO(mwish): 允许去 add 多个 Split?
+  /// Connector 本身支持 Preload Split, 如果可以的话, 这里
+  /// TableScan::checkPreload() 可以生成一个对应的 split preloader
   virtual bool supportsSplitPreload() {
     return false;
   }

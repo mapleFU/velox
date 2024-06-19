@@ -52,7 +52,6 @@ class HiveConnector : public Connector {
           std::shared_ptr<connector::ColumnHandle>>& columnHandles,
       ConnectorQueryCtx* connectorQueryCtx) override;
 
-  // 支持去 Preload Split, 这个就允许给 DataSource 加多个 split 了?
   bool supportsSplitPreload() override {
     return true;
   }
