@@ -102,6 +102,8 @@ class HiveDataSource : public DataSource {
   memory::MemoryPool* pool_;
   std::shared_ptr<common::ScanSpec> scanSpec_;
   VectorPtr output_;
+  // Split 内部实际的 split 消费者, 可以是普通的 SplitReader, 也可以是
+  // Iceberg Split Reader
   std::unique_ptr<SplitReader> splitReader_;
 
   // Output type from file reader.  This is different from outputType_ that it
@@ -111,6 +113,8 @@ class HiveDataSource : public DataSource {
 
   // Column handles for the partition key columns keyed on partition key column
   // name.
+  //
+  // Hive 的 Partition 实际上文件是没有这几列的, 得根据 Partition 的信息抽取.
   std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>
       partitionKeys_;
 
@@ -118,7 +122,9 @@ class HiveDataSource : public DataSource {
   folly::Executor* const executor_;
   const ConnectorQueryCtx* const connectorQueryCtx_;
   const std::shared_ptr<HiveConfig> hiveConfig_;
+  // Statistics.
   std::shared_ptr<io::IoStatistics> ioStats_;
+  // RowId 虚拟列
   std::shared_ptr<HiveColumnHandle> rowIndexColumn_;
 
  private:

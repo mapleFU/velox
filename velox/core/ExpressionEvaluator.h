@@ -32,6 +32,8 @@ class ITypedExpr;
 // objects from the thread which constructs this.  Passing this between threads
 // is allowed as long as uses are sequential.  May reference query-level
 // structures like QueryCtx.
+//
+// Connector 内部用的 Expr Eval.
 class ExpressionEvaluator {
  public:
   virtual ~ExpressionEvaluator() = default;

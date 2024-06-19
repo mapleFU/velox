@@ -62,6 +62,7 @@ struct ConnectorSplit {
   }
 };
 
+/// 协议上的 Column.
 class ColumnHandle : public ISerializable {
  public:
   virtual ~ColumnHandle() = default;
@@ -74,6 +75,7 @@ class ColumnHandle : public ISerializable {
 
 using ColumnHandlePtr = std::shared_ptr<const ColumnHandle>;
 
+/// 协议上的 Table, 从属于一个 connector.
 class ConnectorTableHandle : public ISerializable {
  public:
   explicit ConnectorTableHandle(std::string connectorId)
@@ -117,6 +119,8 @@ class ConnectorInsertTableHandle : public ISerializable {
 };
 
 /// Represents the commit strategy for writing to connector.
+///
+/// TODO(mwish): 写入的时候做 Commit?
 enum class CommitStrategy {
   /// No more commit actions are needed.
   kNoCommit,
@@ -140,6 +144,8 @@ CommitStrategy stringToCommitStrategy(const std::string& strategy);
 /// Writes data received from table writer operator into different partitions
 /// based on the specific table layout. The actual implementation doesn't need
 /// to be thread-safe.
+///
+/// Sink 的写入目标.
 class DataSink {
  public:
   struct Stats {
@@ -171,6 +177,8 @@ class DataSink {
   virtual void abort() = 0;
 };
 
+/// 这个 DataSource 对应一个 Split Consumer 感觉, push 进去一个 split, 就可以
+/// pull 到 RowVectorPtr 了.
 class DataSource {
  public:
   static constexpr int64_t kUnknownRowSize = -1;
@@ -191,7 +199,8 @@ class DataSource {
       uint64_t size,
       velox::ContinueFuture& future) = 0;
 
-  /// Add dynamically generated filter.
+  /// Add dynamically generated filter ( 再次去 pushdown df ).
+  ///
   /// @param outputChannel index into outputType specified in
   /// Connector::createDataSource() that identifies the column this filter
   /// applies to.
@@ -247,6 +256,8 @@ class DataSource {
 /// of this per DataSource and DataSink. This may be passed between threads but
 /// methods must be invoked sequentially. Serializing use is the responsibility
 /// of the caller.
+///
+/// 给 DataSource/DataSink 准备的上下文.
 class ConnectorQueryCtx {
  public:
   ConnectorQueryCtx(
@@ -311,7 +322,7 @@ class ConnectorQueryCtx {
     return scanId_;
   }
 
-  const std::string queryId() const {
+  const std::string& queryId() const {
     return queryId_;
   }
 
@@ -361,6 +372,7 @@ class Connector {
     return false;
   }
 
+  /// 创建 Reader
   virtual std::unique_ptr<DataSource> createDataSource(
       const RowTypePtr& outputType,
       const std::shared_ptr<ConnectorTableHandle>& tableHandle,
@@ -373,6 +385,8 @@ class Connector {
   /// ConnectorSplit in addSplit(). If so, TableScan can preload splits
   /// so that file opening and metadata operations are off the Driver'
   /// thread.
+  ///
+  /// TODO(mwish): 允许去 add 多个 Split?
   virtual bool supportsSplitPreload() {
     return false;
   }
