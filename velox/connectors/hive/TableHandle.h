@@ -26,6 +26,8 @@ namespace facebook::velox::connector::hive {
 using SubfieldFilters =
     std::unordered_map<common::Subfield, std::unique_ptr<common::Filter>>;
 
+/// Hive 的 column handle, 这里特殊处理了 subfield 的逻辑. 但我总觉得这个叫 Hive
+/// 是不是历史原因, 感觉跟 Hive 其实没那么大关系? 还是 FB 内部就这么叫的.
 class HiveColumnHandle : public ColumnHandle {
  public:
   enum class ColumnType {
@@ -134,6 +136,7 @@ class HiveTableHandle : public ConnectorTableHandle {
     return tableName_;
   }
 
+  // TODO(mwish): 为啥有这个呢?
   bool isFilterPushdownEnabled() const {
     return filterPushdownEnabled_;
   }

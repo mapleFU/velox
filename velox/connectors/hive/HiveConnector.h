@@ -38,6 +38,8 @@ class HiveConnector : public Connector {
     return hiveConfig_->config();
   }
 
+  // (DataSource) 允许下推 DF
+  // (吐槽: 为啥不在 Input 里面加)
   bool canAddDynamicFilter() const override {
     return true;
   }

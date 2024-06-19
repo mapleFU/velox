@@ -779,6 +779,7 @@ core::TypedExprPtr extractFiltersFromRemainingFilter(
     bool negated,
     SubfieldFilters& filters,
     double& sampleRate) {
+  // 只处理 call.
   auto* call = dynamic_cast<const core::CallTypedExpr*>(expr.get());
   if (call == nullptr) {
     return expr;
@@ -786,6 +787,7 @@ core::TypedExprPtr extractFiltersFromRemainingFilter(
   common::Filter* oldFilter = nullptr;
   try {
     common::Subfield subfield;
+    // 把 call 尝试转化成 subfield call.
     if (auto filter = exec::leafCallToSubfieldFilter(
             *call, subfield, evaluator, negated)) {
       if (auto it = filters.find(subfield); it != filters.end()) {
