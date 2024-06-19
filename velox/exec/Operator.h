@@ -810,7 +810,9 @@ std::vector<column_index_t> calculateOutputChannels(
 
 // A first operator in a Driver, e.g. table scan or exchange client.
 //
-// SourceOperator, 其他 TableFunctions 应该也要提供一个 Source Operator?
+// SourceOperator, 产生数据的 Operator, 其实下面 Doc 写了不少:
+// https://facebookincubator.github.io/velox/develop/operators.html
+// ( 这里 Exchange 包含 LocalExchange 和 Exchange ).
 class SourceOperator : public Operator {
  public:
   SourceOperator(

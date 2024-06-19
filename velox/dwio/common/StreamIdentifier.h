@@ -25,6 +25,7 @@ namespace facebook::velox::dwio::common {
 
 constexpr uint32_t MAX_UINT32 = std::numeric_limits<uint32_t>::max();
 
+/// 这个感觉是 Dwrf 的 Stream
 class StreamIdentifier {
  public:
   StreamIdentifier() : id_(MAX_UINT32) {}

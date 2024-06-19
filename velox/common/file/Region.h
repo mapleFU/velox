@@ -21,6 +21,9 @@
 namespace facebook::velox::common {
 
 /// Defines a disk region to read.
+///
+/// 定义一个 Disk 的 <offset, length>, 然后给出一些 label,
+/// label 可以定义一些 IOTask 的 Flag, 给下层来便于调度
 struct Region {
   uint64_t offset;
   uint64_t length;
