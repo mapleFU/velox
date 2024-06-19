@@ -47,6 +47,8 @@ HiveDataSource::HiveDataSource(
       outputType_(outputType),
       expressionEvaluator_(connectorQueryCtx->expressionEvaluator()) {
   // Column handled keyed on the column alias, the name used in the query.
+  //
+  // 处理一些特殊的 Input Columns( Partition, RowIndex 等)
   for (const auto& [canonicalizedName, columnHandle] : columnHandles) {
     auto handle = std::dynamic_pointer_cast<HiveColumnHandle>(columnHandle);
     VELOX_CHECK_NOT_NULL(
@@ -69,6 +71,7 @@ HiveDataSource::HiveDataSource(
 
   std::vector<std::string> readerRowNames;
   auto readerRowTypes = outputType_->children();
+  // Normalize subfield 等输出
   folly::F14FastMap<std::string, std::vector<const common::Subfield*>>
       subfields;
   for (const auto& outputName : outputType_->names()) {
@@ -99,15 +102,21 @@ HiveDataSource::HiveDataSource(
     checkColumnNameLowerCase(hiveTableHandle_->remainingFilter());
   }
 
+  // 把 subfield filters 抽取到 `filters` 中
   SubfieldFilters filters;
   for (const auto& [k, v] : hiveTableHandle_->subfieldFilters()) {
     filters.emplace(k.clone(), v->clone());
   }
+
+  /// 下面是 sample 的逻辑
   double sampleRate = 1;
+
+  // 抽取 field filters 和 sample rate, 非 field 的 filter
+  // 抽取到 `remainingFilter` 中.
   auto remainingFilter = extractFiltersFromRemainingFilter(
       hiveTableHandle_->remainingFilter(),
       expressionEvaluator_,
-      false,
+      /*nagated=*/false,
       filters,
       sampleRate);
   if (sampleRate != 1) {
