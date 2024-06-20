@@ -26,6 +26,8 @@ class Config;
 namespace facebook::velox::connector::hive {
 
 /// Hive connector configs.
+///
+/// 除了 Config 还抽取了很多别的垃圾出来, 我擦
 class HiveConfig {
  public:
   enum class InsertExistingPartitionsBehavior {
