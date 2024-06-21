@@ -1477,6 +1477,7 @@ BlockingReason Task::getSplitOrFutureLocked(
     if (splitsStore.noMoreSplits) {
       return BlockingReason::kNotBlocked;
     }
+    // 如果没有的话, 尝试 Pushback 到等待队列中.
     auto [splitPromise, splitFuture] = makeVeloxContinuePromiseContract(
         fmt::format("Task::getSplitOrFuture {}", taskId_));
     future = std::move(splitFuture);

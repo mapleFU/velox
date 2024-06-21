@@ -77,6 +77,7 @@ bool TableScan::shouldStop(StopReason taskStopReason) const {
 RowVectorPtr TableScan::getOutput() {
   auto exitCurStatusGuard = folly::makeGuard([this]() { curStatus_ = ""; });
 
+  // Task 层表示 noMoreSplit, 停止任务.
   if (noMoreSplits_) {
     return nullptr;
   }
@@ -105,6 +106,7 @@ RowVectorPtr TableScan::getOutput() {
 
       exec::Split split;
       curStatus_ = "getOutput: task->getSplitOrFuture";
+      // 去 Task 层抢 Split, 可能是 Blocking 的.
       blockingReason_ = driverCtx_->task->getSplitOrFuture(
           driverCtx_->splitGroupId,
           planNodeId(),
@@ -116,6 +118,7 @@ RowVectorPtr TableScan::getOutput() {
         return nullptr;
       }
 
+      // 没有 ConnectorSplit 当成结束了
       if (!split.hasConnectorSplit()) {
         noMoreSplits_ = true;
         dynamicFilters_.clear();
@@ -160,6 +163,7 @@ RowVectorPtr TableScan::getOutput() {
             tableHandle_,
             columnHandles_,
             connectorQueryCtx_.get());
+        // 下推 DynamicFilter.
         for (const auto& entry : dynamicFilters_) {
           dataSource_->addDynamicFilter(entry.first, entry.second);
         }
@@ -341,6 +345,7 @@ void TableScan::checkPreload() {
     return;
   }
   if (dataSource_->allPrefetchIssued()) {
+    // 设置最多 Load 的 split 数量.
     maxPreloadedSplits_ = driverCtx_->task->numDrivers(driverCtx_->driver) *
         maxSplitPreloadPerDriver_;
     // 如果需要 preload, 就在 executor 中去 load

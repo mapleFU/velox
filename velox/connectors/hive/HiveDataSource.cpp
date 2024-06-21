@@ -48,7 +48,7 @@ HiveDataSource::HiveDataSource(
       expressionEvaluator_(connectorQueryCtx->expressionEvaluator()) {
   // Column handled keyed on the column alias, the name used in the query.
   //
-  // 处理一些特殊的 Input Columns( Partition, RowIndex 等)
+  // 处理一些特殊的 Input Columns(Partition, RowIndex 等)
   for (const auto& [canonicalizedName, columnHandle] : columnHandles) {
     auto handle = std::dynamic_pointer_cast<HiveColumnHandle>(columnHandle);
     VELOX_CHECK_NOT_NULL(
@@ -72,6 +72,7 @@ HiveDataSource::HiveDataSource(
   std::vector<std::string> readerRowNames;
   auto readerRowTypes = outputType_->children();
   // Normalize subfield 等输出
+  // 在 HiveDataSource 中, 大概看的感觉是会从 Filter 的 Map 中抽取
   folly::F14FastMap<std::string, std::vector<const common::Subfield*>>
       subfields;
   for (const auto& outputName : outputType_->names()) {
@@ -95,6 +96,7 @@ HiveDataSource::HiveDataSource(
   hiveTableHandle_ = std::dynamic_pointer_cast<HiveTableHandle>(tableHandle);
   VELOX_CHECK_NOT_NULL(
       hiveTableHandle_, "TableHandle must be an instance of HiveTableHandle");
+  // 做 TableName 的检查
   if (hiveConfig_->isFileColumnNamesReadAsLowerCase(
           connectorQueryCtx->sessionProperties())) {
     checkColumnNameLowerCase(outputType_);
@@ -111,8 +113,9 @@ HiveDataSource::HiveDataSource(
   /// 下面是 sample 的逻辑
   double sampleRate = 1;
 
-  // 抽取 field filters 和 sample rate, 非 field 的 filter
+  // 抽取 field filters 和 sample rate, 非 subfield 的 filter
   // 抽取到 `remainingFilter` 中.
+  // 这里是因为 `remainingFilter` 可能包含 subField 的表达式.
   auto remainingFilter = extractFiltersFromRemainingFilter(
       hiveTableHandle_->remainingFilter(),
       expressionEvaluator_,
@@ -215,6 +218,7 @@ void HiveDataSource::addSplit(std::shared_ptr<ConnectorSplit> split) {
   splitReader_->prepareSplit(metadataFilter_, runtimeStats_, rowIndexColumn_);
 }
 
+/// 消费现有 Split, 返回下一个 RowVector
 std::optional<RowVectorPtr> HiveDataSource::next(
     uint64_t size,
     velox::ContinueFuture& /*future*/) {
@@ -365,6 +369,8 @@ int64_t HiveDataSource::estimatedRowSize() {
   return splitReader_->estimatedRowSize();
 }
 
+// 尝试去 Eval Filter, 这里基本上绑定了一些 ExprEval 的逻辑, 比如对 MultiRef 去
+// load Lazy.
 vector_size_t HiveDataSource::evaluateRemainingFilter(RowVectorPtr& rowVector) {
   filterRows_.resize(output_->size());
   for (auto fieldIndex : multiReferencedFields_) {

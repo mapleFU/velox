@@ -92,6 +92,8 @@ class HiveColumnHandle : public ColumnHandle {
   ///
   /// Pruning arrays means dropping values with indices larger than maximum
   /// required index.
+  ///
+  /// 内部需要读的 subFields.
   const std::vector<common::Subfield>& requiredSubfields() const {
     return requiredSubfields_;
   }
@@ -141,6 +143,7 @@ class HiveTableHandle : public ConnectorTableHandle {
     return filterPushdownEnabled_;
   }
 
+  // 对 Subfield 的 Filtering
   const SubfieldFilters& subfieldFilters() const {
     return subfieldFilters_;
   }

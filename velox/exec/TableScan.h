@@ -96,6 +96,8 @@ class TableScan : public SourceOperator {
   // callback's lifetime is the lifetime of 'this'. This callback can schedule
   // preloads on an executor. These preloads may outlive the Task and therefore
   // need to capture a shared_ptr to it.
+  //
+  // 去 load ConnectorSplit
   std::function<void(const std::shared_ptr<connector::ConnectorSplit>&)>
       splitPreloader_{nullptr};
 
