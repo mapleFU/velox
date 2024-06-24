@@ -125,6 +125,7 @@ std::vector<CacheRequest*> makeRequestParts(
       (100 * trackingData.numReads) / (1 + trackingData.numReferences);
   const auto readDensity =
       (100 * trackingData.readBytes) / (1 + trackingData.referencedBytes);
+  // 都读相近的请求才 Prefetch.
   const bool prefetch = trackingData.referencedBytes > 0 &&
       (isPrefetchPct(readPct) && readDensity >= 80);
   std::vector<CacheRequest*> parts;

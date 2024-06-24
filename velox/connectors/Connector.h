@@ -230,6 +230,9 @@ class DataSource {
   /// Adaptation like dynamic filters stay in effect but the parts dealing with
   /// open files, prefetched data etc. are moved. 'source' is freed after the
   /// move.
+  ///
+  /// 一个很奇怪的接口...把 `source` apply 到自己上面, 然后加上 dynamic filters
+  /// 之类的东西 这种一般都是 Preload dataSource 然后加上.
   virtual void setFromDataSource(std::unique_ptr<DataSource> /*source*/) {
     VELOX_UNSUPPORTED("setFromDataSource");
   }

@@ -82,6 +82,7 @@ class TableScan : public SourceOperator {
   bool needNewSplit_ = true;
   std::shared_ptr<connector::Connector> connector_;
   std::shared_ptr<connector::ConnectorQueryCtx> connectorQueryCtx_;
+  // (正在读的) dataSource
   std::unique_ptr<connector::DataSource> dataSource_;
   bool noMoreSplits_ = false;
   // Dynamic filters to add to the data source when it gets created.
