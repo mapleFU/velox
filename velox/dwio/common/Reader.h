@@ -39,6 +39,8 @@ namespace facebook::velox::dwio::common {
  * and columns from a file.
  *
  * RowReader objects are created through Reader objects.
+ *
+ * RowBatch Reader, 从文件中构造单个 Row 的 Reader.
  */
 class RowReader {
  public:
@@ -115,6 +117,8 @@ class RowReader {
   // Struct describing 1 prefetch unit. A prefetch unit is defined by
   // a rowCount and a function, that when called, will trigger the prefetch
   // or report that it was already triggered.
+  //
+  // 按照 RowCount 来定义 Prefetch Unit.
   struct PrefetchUnit {
     // Number of rows in the prefetch unit
     uint64_t rowCount;
@@ -168,6 +172,8 @@ class RowReader {
  *
  * Reader objects are created through factories implementing
  * ReaderFactory interface.
+ *
+ * 基本的(单个)文件 Reader 实现 ( dwio::common::Reader ).
  */
 class Reader {
  public:
@@ -180,6 +186,8 @@ class Reader {
   virtual std::optional<uint64_t> numberOfRows() const = 0;
 
   /**
+   * 每列的 Statistics.
+   *
    * Get statistics for a specified column.
    * @param index column index
    * @return column statisctics

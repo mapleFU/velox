@@ -105,6 +105,8 @@ struct TrackingData {
 /// partitions of the scan. The groupId argument identifies the file group (e.g.
 /// partition) a tracking event pertains to, since a single ScanTracker can
 /// range over multiple partitions.
+///
+/// 列访问的频繁程度.
 class ScanTracker {
  public:
   ScanTracker() : ScanTracker({}, nullptr, 1) {}
@@ -114,6 +116,8 @@ class ScanTracker {
   /// 'unregisterer' is supplied so that the destructor can remove the weak_ptr
   /// from the map of pending trackers. 'loadQuantum' is the largest single IO
   /// size for read.
+  ///
+  ///
   ScanTracker(
       std::string_view id,
       std::function<void(ScanTracker*)> unregisterer,
@@ -147,6 +151,8 @@ class ScanTracker {
       uint64_t groupId);
 
   /// True if 'trackingId' is read at least 'minReadPct' % of the time.
+  ///
+  /// 按照 `readPct` 来估计是否要 Prefetch.
   bool shouldPrefetch(TrackingId id, int32_t minReadPct) {
     return readPct(id) >= minReadPct;
   }
@@ -188,7 +194,9 @@ class ScanTracker {
   FileGroupStats* const fileGroupStats_;
 
   std::mutex mutex_;
+  // Scan 共享的 Tracking 信息
   folly::F14FastMap<TrackingId, TrackingData> data_;
+  // 全局的信息
   TrackingData sum_;
 };
 

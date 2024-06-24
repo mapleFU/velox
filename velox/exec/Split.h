@@ -20,6 +20,7 @@
 namespace facebook::velox::exec {
 
 struct Split {
+  // 具体的真实 Split, 比如 HiveConnectorSplit.
   std::shared_ptr<velox::connector::ConnectorSplit> connectorSplit;
   int32_t groupId{-1}; // Bucketed group id (-1 means 'none').
 

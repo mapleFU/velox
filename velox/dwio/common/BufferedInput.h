@@ -25,6 +25,7 @@ DECLARE_bool(wsVRLoad);
 
 namespace facebook::velox::dwio::common {
 
+/// dwio 读的 Base
 class BufferedInput {
  public:
   constexpr static uint64_t kMaxMergeDistance = 1024 * 1024 * 1.25;
@@ -72,6 +73,8 @@ class BufferedInput {
   /// (enqueue....load). 'si' allows tracking which streams actually get read.
   /// This may control read-ahead and caching for BufferedInput implementations
   /// supporting these.
+  ///
+  ///
   virtual std::unique_ptr<SeekableInputStream> enqueue(
       velox::common::Region region,
       const StreamIdentifier* sid = nullptr);

@@ -163,8 +163,10 @@ class HiveDataSource : public DataSource {
   // columns need to be materialized eagerly to avoid missing values in output.
   std::vector<column_index_t> multiReferencedFields_;
 
+  // Random Eval 的 Filtering
   std::shared_ptr<random::RandomSkipTracker> randomSkip_;
 
+  // Filter 需要的部分
   // Reusable memory for remaining filter evaluation.
   VectorPtr filterResult_;
   SelectivityVector filterRows_;

@@ -113,6 +113,7 @@ ReaderBase::ReaderBase(
   fileLength_ = input_->getReadFile()->size();
   DWIO_ENSURE(fileLength_ > 0, "ORC file is empty");
 
+  // 根据总长度定义是否 prefetch 整个文件.
   auto preloadFile = fileLength_ <= filePreloadThreshold_;
   uint64_t readSize =
       preloadFile ? fileLength_ : std::min(fileLength_, footerEstimatedSize_);

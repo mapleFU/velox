@@ -61,6 +61,8 @@ bool TableScan::shouldYield(StopReason taskStopReason, size_t startTimeMs)
     const {
   // Checks task-level yield signal, driver-level yield signal and table scan
   // output processing time limit.
+  //
+  // TableScan 采用分时系统来做 Yield, 如果占用的时间过多，那就直接让出.
   return taskStopReason == StopReason::kYield ||
       driverCtx_->driver->shouldYield() ||
       ((getOutputTimeLimitMs_ != 0) &&
@@ -75,6 +77,7 @@ bool TableScan::shouldStop(StopReason taskStopReason) const {
 RowVectorPtr TableScan::getOutput() {
   auto exitCurStatusGuard = folly::makeGuard([this]() { curStatus_ = ""; });
 
+  // Task 层表示 noMoreSplit, 停止任务.
   if (noMoreSplits_) {
     return nullptr;
   }
@@ -103,6 +106,7 @@ RowVectorPtr TableScan::getOutput() {
 
       exec::Split split;
       curStatus_ = "getOutput: task->getSplitOrFuture";
+      // 去 Task 层抢 (Group, PlanNode) 对应的 Split, 可能是 Blocking 的.
       blockingReason_ = driverCtx_->task->getSplitOrFuture(
           driverCtx_->splitGroupId,
           planNodeId(),
@@ -115,6 +119,7 @@ RowVectorPtr TableScan::getOutput() {
       }
 
       if (!split.hasConnectorSplit()) {
+        // 没有 ConnectorSplit 当成结束了, story end!
         noMoreSplits_ = true;
         dynamicFilters_.clear();
         if (dataSource_) {
@@ -148,6 +153,8 @@ RowVectorPtr TableScan::getOutput() {
           connectorSplit->connectorId,
           "Got splits with different connector IDs");
 
+      // 同步初始化 DataSource, DataSource 只会初始化一次, split 会从队列一直
+      // pull.
       if (dataSource_ == nullptr) {
         curStatus_ = "getOutput: creating dataSource_";
         connectorQueryCtx_ = operatorCtx_->createConnectorQueryCtx(
@@ -157,6 +164,7 @@ RowVectorPtr TableScan::getOutput() {
             tableHandle_,
             columnHandles_,
             connectorQueryCtx_.get());
+        // 从 Operator 层推 DynamicFilter 到 DataSource 层
         for (const auto& entry : dynamicFilters_) {
           dataSource_->addDynamicFilter(entry.first, entry.second);
         }
@@ -174,6 +182,7 @@ RowVectorPtr TableScan::getOutput() {
            &debugString_});
 
       if (connectorSplit->dataSource != nullptr) {
+        // 从 Preload Split 中捞数据数据 (maxPreloadedSplits_, splitPreloader_).
         curStatus_ = "getOutput: preloaded split";
         ++numPreloadedSplits_;
         // The AsyncSource returns a unique_ptr to a shared_ptr. The unique_ptr
@@ -191,6 +200,7 @@ RowVectorPtr TableScan::getOutput() {
       } else {
         curStatus_ = "getOutput: adding split";
         const auto addSplitStartMicros = getCurrentTimeMicro();
+        // DataSource::addSplit 添加 split 并读取.
         dataSource_->addSplit(connectorSplit);
         stats_.wlock()->addRuntimeStat(
             "dataSourceAddSplitWallNanos",
@@ -203,6 +213,7 @@ RowVectorPtr TableScan::getOutput() {
 
       curStatus_ = "getOutput: dataSource_->estimatedRowSize";
       const auto estimatedRowSize = dataSource_->estimatedRowSize();
+      // adjust readBatchSize
       readBatchSize_ =
           estimatedRowSize == connector::DataSource::kUnknownRowSize
           ? outputBatchRows()
@@ -224,12 +235,15 @@ RowVectorPtr TableScan::getOutput() {
          &debugString_});
 
     int readBatchSize = readBatchSize_;
+    // 根据 Filter Ratio 再调整 batchSize, 这个主要是希望能有个稍微大点的
+    // readBatchSize( 在 maxReadBatchSize_ 之下, 然后希望有更大的 rowCount).
     if (maxFilteringRatio_ > 0) {
       readBatchSize = std::min(
           maxReadBatchSize_,
           static_cast<int>(readBatchSize / maxFilteringRatio_));
     }
     curStatus_ = "getOutput: dataSource_->next";
+    // 从 DataSource 里面 pull next batch
     auto dataOptional = dataSource_->next(readBatchSize, blockingFuture_);
     curStatus_ = "getOutput: checkPreload";
     checkPreload();
@@ -256,16 +270,19 @@ RowVectorPtr TableScan::getOutput() {
         if (data->size() > 0) {
           lockedStats->addInputVector(data->estimateFlatSize(), data->size());
           constexpr int kMaxSelectiveBatchSizeMultiplier = 4;
+          // 根据这个来再次估计 selection ratio, 用于之后调整 batchSize
           maxFilteringRatio_ = std::max(
               {maxFilteringRatio_,
                1.0 * data->size() / readBatchSize,
                1.0 / kMaxSelectiveBatchSizeMultiplier});
           return data;
         }
+        // data->size() == 0, continue.
         continue;
       }
     }
 
+    // 消费完了 DataSource 内的 RowVector, 需要调整 load splits 了
     {
       curStatus_ = "getOutput: updating stats_.preloadedSplits";
       auto lockedStats = stats_.wlock();
@@ -282,6 +299,7 @@ RowVectorPtr TableScan::getOutput() {
     }
 
     curStatus_ = "getOutput: task->splitFinished";
+    // 通知 task split 已经被消费.
     driverCtx_->task->splitFinished(true, currentSplitWeight_);
     needNewSplit_ = true;
   }
@@ -294,6 +312,8 @@ void TableScan::preload(
   // a shared_ptr to it. This is required to keep memory pools live
   // for the duration. The callback checks for task cancellation to
   // avoid needless work.
+  //
+  // 设置 `DataSource` 为 AsyncSource
   split->dataSource = std::make_unique<AsyncSource<connector::DataSource>>(
       [type = outputType_,
        table = tableHandle_,
@@ -315,6 +335,8 @@ void TableScan::preload(
              },
              &debugString});
 
+        // 主要是把 createDataSource 放在后台执行, 这块逻辑基本上和
+        // TableScan::getOutput 的 逻辑是一样的.
         auto dataSource =
             connector->createDataSource(type, table, columns, ctx.get());
         if (task->isCancelled()) {
@@ -329,14 +351,17 @@ void TableScan::preload(
 }
 
 void TableScan::checkPreload() {
+  // 在 Connector::Executor 上做 Preload.
   auto* executor = connector_->executor();
   if (maxSplitPreloadPerDriver_ == 0 || !executor ||
       !connector_->supportsSplitPreload()) {
     return;
   }
   if (dataSource_->allPrefetchIssued()) {
+    // 设置最多 Load 的 split 数量.
     maxPreloadedSplits_ = driverCtx_->task->numDrivers(driverCtx_->driver) *
         maxSplitPreloadPerDriver_;
+    // 如果需要 preload, 就在本线程 prepare, 然后 executor 中去 load
     if (!splitPreloader_) {
       splitPreloader_ =
           [executor,

@@ -22,10 +22,12 @@
 
 namespace facebook::velox::dwio::common {
 
+// 上层传入的 Deletion Vector.
 struct Mutation {
   /// Bit masks for row numbers to be deleted.
   const uint64_t* deletedRows = nullptr;
 
+  // random 采样
   random::RandomSkipTracker* randomSkip = nullptr;
 };
 

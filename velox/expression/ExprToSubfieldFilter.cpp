@@ -54,6 +54,8 @@ const core::CallTypedExpr* asCall(const core::ITypedExpr* expr) {
   return dynamic_cast<const core::CallTypedExpr*>(expr);
 }
 
+/// SubField 的形式可能是表达式上的几层表达式, 这里需要从 `const
+/// core::ITypedExpr*` 抽出 subfield 对象.
 bool toSubfield(const core::ITypedExpr* field, common::Subfield& subfield) {
   std::vector<std::unique_ptr<common::Subfield::PathElement>> path;
   for (auto* current = field;;) {

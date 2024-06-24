@@ -23,6 +23,7 @@
 
 namespace facebook::velox::connector::hive {
 
+/// dwio 等文件层的信息, 表示需要读的一个输入切分, 还有很多动态的标注信息.
 struct HiveConnectorSplit : public connector::ConnectorSplit {
   const std::string filePath;
   dwio::common::FileFormat fileFormat;
