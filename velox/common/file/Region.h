@@ -21,6 +21,9 @@
 namespace facebook::velox::common {
 
 /// Defines a disk region to read.
+///
+/// 这里提供了 <offset, length> 之外的 Label, 即允许标注一个 io 请求
+/// 的类型, 比如标注一些 IO 是 Footer IO.
 struct Region {
   uint64_t offset;
   uint64_t length;

@@ -31,6 +31,8 @@ DECLARE_int32(cache_load_quantum);
 
 namespace facebook::velox::dwio::common {
 
+// 单个请求被当成 CacheRequest, 其实我总觉得这个应该是 BufferInput
+// 的一部分, 在 Cache 里面也蛮奇怪的.
 struct CacheRequest {
   CacheRequest(
       cache::RawFileCacheKey _key,
