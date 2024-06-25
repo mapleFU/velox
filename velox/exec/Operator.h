@@ -809,6 +809,10 @@ std::vector<column_index_t> calculateOutputChannels(
     const RowTypePtr& targetOutputType);
 
 // A first operator in a Driver, e.g. table scan or exchange client.
+//
+// SourceOperator, 产生数据的 Operator, 其实下面 Doc 写了不少:
+// https://facebookincubator.github.io/velox/develop/operators.html
+// ( 这里 Exchange 包含 LocalExchange 和 Exchange ).
 class SourceOperator : public Operator {
  public:
   SourceOperator(

@@ -147,6 +147,7 @@ void SplitReader::prepareSplit(
     const std::shared_ptr<HiveColumnHandle>& rowIndexColumn) {
   createReader(std::move(metadataFilter), rowIndexColumn);
 
+  // 尝试 Prune 掉整个 split, 如果失败就去创建 RowReader.
   if (checkIfSplitIsEmpty(runtimeStats)) {
     VELOX_CHECK(emptySplit_);
     return;
@@ -246,9 +247,12 @@ void SplitReader::createReader(
   // are generated, if CacheTTLController was created. Creator of
   // CacheTTLController needs to make sure a size control strategy was available
   // such as removing aged out entries.
+  //
+  // Cache 相关的配置.
   if (auto* cacheTTLController = cache::CacheTTLController::getInstance()) {
     cacheTTLController->addOpenFileInfo(fileHandleCachePtr->uuid.id());
   }
+  // 创建 BufferInput, 给读来做处理.
   auto baseFileInput = createBufferedInput(
       *fileHandleCachePtr,
       baseReaderOpts_,
@@ -256,6 +260,7 @@ void SplitReader::createReader(
       ioStats_,
       executor_);
 
+  // 创建对应格式的文件.
   baseReader_ = dwio::common::getReaderFactory(baseReaderOpts_.fileFormat())
                     ->createReader(std::move(baseFileInput), baseReaderOpts_);
 
@@ -288,6 +293,8 @@ bool SplitReader::checkIfSplitIsEmpty(
   } else {
     // Check filters and see if the whole split can be skipped. Note that this
     // doesn't apply to Hudi tables.
+    //
+    // 尝试走 Filter 裁剪整个 Split.
     if (!testFilters(
             scanSpec_.get(),
             baseReader_.get(),

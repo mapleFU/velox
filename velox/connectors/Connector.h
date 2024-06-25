@@ -44,6 +44,9 @@ class DataSource;
 
 /// A split represents a chunk of data that a connector should load and return
 /// as a RowVectorPtr, potentially after processing pushdowns.
+///
+/// Connector 设置的需要 Load 的 Split, 基本上是 Connector 去 load
+/// 的时候设置的吧.
 struct ConnectorSplit {
   const std::string connectorId;
   const int64_t splitWeight{0};
@@ -227,6 +230,9 @@ class DataSource {
   /// Adaptation like dynamic filters stay in effect but the parts dealing with
   /// open files, prefetched data etc. are moved. 'source' is freed after the
   /// move.
+  ///
+  /// 一个很奇怪的接口...把 `source` apply 到自己上面, 然后加上 dynamic filters
+  /// 之类的东西 这种一般都是 Preload dataSource 然后加上.
   virtual void setFromDataSource(std::unique_ptr<DataSource> /*source*/) {
     VELOX_UNSUPPORTED("setFromDataSource");
   }

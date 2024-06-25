@@ -82,6 +82,7 @@ class TableScan : public SourceOperator {
   bool needNewSplit_ = true;
   std::shared_ptr<connector::Connector> connector_;
   std::shared_ptr<connector::ConnectorQueryCtx> connectorQueryCtx_;
+  // (正在读的) dataSource
   std::unique_ptr<connector::DataSource> dataSource_;
   bool noMoreSplits_ = false;
   // Dynamic filters to add to the data source when it gets created.
@@ -96,6 +97,8 @@ class TableScan : public SourceOperator {
   // callback's lifetime is the lifetime of 'this'. This callback can schedule
   // preloads on an executor. These preloads may outlive the Task and therefore
   // need to capture a shared_ptr to it.
+  //
+  // 去 load ConnectorSplit
   std::function<void(const std::shared_ptr<connector::ConnectorSplit>&)>
       splitPreloader_{nullptr};
 

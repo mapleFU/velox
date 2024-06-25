@@ -39,6 +39,8 @@ std::string executionStrategyToString(ExecutionStrategy strategy);
 
 /// Contains some information on how to execute the fragment of a plan.
 /// Used to construct Task.
+///
+/// PlanFragment 有点类似 "Stage" 这个概念, 是一整个 PlanNodeTree
 struct PlanFragment {
   /// Top level (root) Plan Node.
   std::shared_ptr<const core::PlanNode> planNode;

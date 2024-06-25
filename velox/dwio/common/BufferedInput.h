@@ -25,7 +25,7 @@ DECLARE_bool(wsVRLoad);
 
 namespace facebook::velox::dwio::common {
 
-/// Velox 的读 API
+/// Velox 的读 API, dwio 读的 Base, 是一个味道非常奇怪的接口.
 class BufferedInput {
  public:
   // 默认合并 1.5MB 的距离
@@ -75,7 +75,11 @@ class BufferedInput {
   /// This may control read-ahead and caching for BufferedInput implementations
   /// supporting these.
   ///
+<<<<<<< HEAD
   /// 分发 enqueue + load
+=======
+  ///
+>>>>>>> mwish-read
   virtual std::unique_ptr<SeekableInputStream> enqueue(
       velox::common::Region region,
       const StreamIdentifier* sid = nullptr);

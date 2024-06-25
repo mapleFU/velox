@@ -36,6 +36,9 @@ namespace facebook::velox {
 // consumer will make it instead. If multiple consumers request the
 // same item, exactly one gets it. Propagates exceptions to the
 // consumer.
+//
+// 为啥不用 Future 呢? 这个地方应该是想要一个惰性执行的特性, 等待后台线程去 Lazy
+// 的处理数据源.
 template <typename Item>
 class AsyncSource {
  public:

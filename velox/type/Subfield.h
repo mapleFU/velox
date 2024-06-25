@@ -53,6 +53,7 @@ struct Separators {
   char unicodeCaret = '^';
 };
 
+/// 抽取出 * 或者 [0] 这种的 SubField
 class Subfield {
  public:
   class PathElement {

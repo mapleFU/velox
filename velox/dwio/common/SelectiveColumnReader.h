@@ -78,6 +78,8 @@ struct RawScanState {
   uint8_t* __restrict filterCache;
 };
 
+// Row Scan 的状态集, 比如 dictionary 之类的.
+//
 // Maintains state for encoding between calls to readWithVisitor of
 // individual readers. DWRF sets up encoding information at the
 // start of a stripe and dictionaries at the start of stripes and

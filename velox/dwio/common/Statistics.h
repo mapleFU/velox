@@ -74,6 +74,8 @@ struct KeyInfoHash {
 
 /**
  * Statistics that are available for all types of columns.
+ *
+ * 具体实现塞在后面的列中.
  */
 class ColumnStatistics {
  public:
