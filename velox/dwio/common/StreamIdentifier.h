@@ -27,6 +27,8 @@ constexpr uint32_t MAX_UINT32 = std::numeric_limits<uint32_t>::max();
 
 /// 这个感觉是 Dwrf(ORC) 的 Stream, 类似 Parquet 中的 ColumnChunk, 但是
 /// Null 之类的东西也会被抽象成 Stream.
+///
+/// 详细含义要不要翻一下 ScanTracker
 class StreamIdentifier {
  public:
   StreamIdentifier() : id_(MAX_UINT32) {}

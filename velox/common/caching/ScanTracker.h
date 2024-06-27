@@ -30,6 +30,8 @@ namespace facebook::velox::cache {
 /// a file or partition. The low 5 bits are the stream kind, e.g. nulls, data
 /// etc. The high 27 bits are the node number in the file schema tree, i.e. the
 /// column.
+///
+/// 我日, 这和 StreamIdentifier 有什么区别? 擦
 class TrackingId {
  public:
   TrackingId() : id_(-1) {}
@@ -72,6 +74,9 @@ namespace facebook::velox::cache {
 class FileGroupStats;
 
 /// Records references and actual uses of a stream.
+///
+/// Reference: 标注某段内存未来可以被访问.
+/// Read: 真实的物理访问
 struct TrackingData {
   int64_t referencedBytes{};
   int64_t readBytes{};
@@ -84,6 +89,9 @@ struct TrackingData {
   /// cover 'bytes'. When reading a large object, we will get a read per
   /// quantum. So then if the referenced and read counts match, we know that the
   /// object is densely read.
+  ///
+  /// loadQuantum 是一次 IO 的 size, 用来计算 Reference 的次数. 没有(不指定)
+  /// 就是一次 IO.
   void incrementReference(uint64_t bytes, int32_t loadQuantum) {
     referencedBytes += bytes;
     if (loadQuantum == 0) {
@@ -106,7 +114,7 @@ struct TrackingData {
 /// partition) a tracking event pertains to, since a single ScanTracker can
 /// range over multiple partitions.
 ///
-/// 列访问的频繁程度.
+/// 列访问的频繁程度, 在 TableScan Task 多 Driver 中共享(实现在 Connector 中)
 class ScanTracker {
  public:
   ScanTracker() : ScanTracker({}, nullptr, 1) {}
@@ -136,6 +144,8 @@ class ScanTracker {
 
   /// Records that a scan references 'bytes' bytes of the stream given by 'id'.
   /// This is called when preparing to read a stripe.
+  ///
+  /// 记录某个 Stream 的 Reference (而不是读).
   void recordReference(
       const TrackingId id,
       uint64_t bytes,
@@ -144,6 +154,8 @@ class ScanTracker {
 
   /// Records that 'bytes' bytes have actually been read from the stream given
   /// by 'id'.
+  ///
+  /// 记录物理的读某一个 Stream.
   void recordRead(
       const TrackingId id,
       uint64_t bytes,
@@ -152,7 +164,7 @@ class ScanTracker {
 
   /// True if 'trackingId' is read at least 'minReadPct' % of the time.
   ///
-  /// 按照 `readPct` 来估计是否要 Prefetch.
+  /// 按照 `readPct` 来估计是否要 Prefetch 某个 Stream.
   bool shouldPrefetch(TrackingId id, int32_t minReadPct) {
     return readPct(id) >= minReadPct;
   }

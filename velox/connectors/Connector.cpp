@@ -110,6 +110,8 @@ void Connector::unregisterTracker(cache::ScanTracker* tracker) {
   trackers_.withWLock([&](auto& trackers) { trackers.erase(tracker->id()); });
 }
 
+// ScanTracker 绑定在 Connector 上, 一个 Task 里面所有的 Scan Job
+// 共享 ScanTracker
 std::shared_ptr<cache::ScanTracker> Connector::getTracker(
     const std::string& scanId,
     int32_t loadQuantum) {

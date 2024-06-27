@@ -252,7 +252,7 @@ void SplitReader::createReader(
   if (auto* cacheTTLController = cache::CacheTTLController::getInstance()) {
     cacheTTLController->addOpenFileInfo(fileHandleCachePtr->uuid.id());
   }
-  // 创建 BufferInput, 给读来做处理.
+  // 创建 BufferedInput, 给读来做处理.
   auto baseFileInput = createBufferedInput(
       *fileHandleCachePtr,
       baseReaderOpts_,

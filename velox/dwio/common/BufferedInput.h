@@ -84,6 +84,9 @@ class BufferedInput {
       const StreamIdentifier* sid = nullptr);
 
   /// Returns true if load synchronously.
+  ///
+  /// https://github.com/facebookincubator/velox/commit/ca5e409aad91462b0f4280b5ee24358deb9f97a1
+  /// 这个感觉就是额外开一个 Load 吧..
   virtual bool supportSyncLoad() const {
     return true;
   }

@@ -31,14 +31,14 @@ namespace facebook::velox::dwio::common {
 
 struct LoadRequest {
   LoadRequest() = default;
-  LoadRequest(velox::common::Region& _region, cache::TrackingId _trackingId)
+  LoadRequest(velox::common::Region _region, cache::TrackingId _trackingId)
       : region(_region), trackingId(_trackingId) {}
 
   velox::common::Region region;
   cache::TrackingId trackingId;
   bool processed{false};
 
-  const SeekableInputStream* stream;
+  const SeekableInputStream* stream{nullptr};
 
   /// Buffers to be handed to 'stream' after load.
   memory::Allocation data;
@@ -99,6 +99,9 @@ class DirectCoalescedLoad : public cache::CoalescedLoad {
   std::vector<LoadRequest> requests_;
 };
 
+/// https://github.com/facebookincubator/velox/commit/55e24867781e797a3ed7d9e119668dbee70ad9fb
+/// 这里描述写的比较详细:
+/// 1.
 class DirectBufferedInput : public BufferedInput {
  public:
   static constexpr int32_t kTinySize = 2'000;
