@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include "folly/CancellationToken.h"
 #include "velox/common/base/AsyncSource.h"
 #include "velox/common/base/RuntimeMetrics.h"
 #include "velox/common/base/SpillConfig.h"
@@ -276,7 +277,9 @@ class ConnectorQueryCtx {
       const std::string& queryId,
       const std::string& taskId,
       const std::string& planNodeId,
-      int driverId)
+      int driverId,
+      const std::string& sessionTimezone,
+      folly::CancellationToken cancellationToken = {})
       : operatorPool_(operatorPool),
         connectorPool_(connectorPool),
         sessionProperties_(sessionProperties),
@@ -287,7 +290,9 @@ class ConnectorQueryCtx {
         queryId_(queryId),
         taskId_(taskId),
         driverId_(driverId),
-        planNodeId_(planNodeId) {
+        planNodeId_(planNodeId),
+        sessionTimezone_(sessionTimezone),
+        cancellationToken_(std::move(cancellationToken)) {
     VELOX_CHECK_NOT_NULL(sessionProperties);
   }
 
@@ -344,6 +349,18 @@ class ConnectorQueryCtx {
     return planNodeId_;
   }
 
+  /// Session timezone used for reading Timestamp. Stores a string with the
+  /// actual timezone name. If the session timezone is not set in the
+  /// QueryConfig, it will return an empty string.
+  const std::string& sessionTimezone() const {
+    return sessionTimezone_;
+  }
+
+  /// Returns the cancellation token associated with this task.
+  const folly::CancellationToken& cancellationToken() const {
+    return cancellationToken_;
+  }
+
  private:
   memory::MemoryPool* const operatorPool_;
   memory::MemoryPool* const connectorPool_;
@@ -356,6 +373,8 @@ class ConnectorQueryCtx {
   const std::string taskId_;
   const int driverId_;
   const std::string planNodeId_;
+  const std::string sessionTimezone_;
+  const folly::CancellationToken cancellationToken_;
 };
 
 class Connector {

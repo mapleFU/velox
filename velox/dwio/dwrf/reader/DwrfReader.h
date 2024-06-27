@@ -27,6 +27,21 @@ namespace facebook::velox::dwrf {
 class ColumnReader;
 class DwrfUnit;
 
+class DwrfOptions : public dwio::common::FormatSpecificOptions {
+ public:
+  void setColumnReaderFactory(
+      std::shared_ptr<ColumnReaderFactory> columnReaderFactory) {
+    columnReaderFactory_ = std::move(columnReaderFactory);
+  }
+
+  const std::shared_ptr<ColumnReaderFactory>& columnReaderFactory() const {
+    return columnReaderFactory_;
+  }
+
+ private:
+  std::shared_ptr<ColumnReaderFactory> columnReaderFactory_;
+};
+
 class DwrfRowReader : public StrideIndexProvider,
                       public StripeReaderBase,
                       public dwio::common::RowReader {
@@ -132,6 +147,33 @@ class DwrfRowReader : public StrideIndexProvider,
   }
 
  private:
+  bool shouldReadNode(uint32_t nodeId) const;
+
+  std::optional<size_t> estimatedRowSizeHelper(
+      const FooterWrapper& fileFooter,
+      const dwio::common::Statistics& stats,
+      uint32_t nodeId) const;
+
+  bool isEmptyFile() const {
+    return stripeCeiling_ == firstStripe_;
+  }
+
+  void checkSkipStrides(uint64_t strideSize);
+
+  void readNext(
+      uint64_t rowsToRead,
+      const dwio::common::Mutation*,
+      VectorPtr& result);
+
+  uint64_t skip(uint64_t numValues);
+
+  std::unique_ptr<ColumnReader>& getColumnReader();
+
+  std::unique_ptr<dwio::common::SelectiveColumnReader>&
+  getSelectiveColumnReader();
+
+  std::unique_ptr<dwio::common::UnitLoader> getUnitLoader();
+
   // footer
   std::vector<uint64_t> firstRowOfStripe_;
   mutable std::shared_ptr<const dwio::common::TypeWithId> selectedSchema_;
@@ -173,35 +215,6 @@ class DwrfRowReader : public StrideIndexProvider,
 
   std::unique_ptr<dwio::common::UnitLoader> unitLoader_;
   DwrfUnit* currentUnit_;
-
-  // internal methods
-
-  bool shouldReadNode(uint32_t nodeId) const;
-
-  std::optional<size_t> estimatedRowSizeHelper(
-      const FooterWrapper& fileFooter,
-      const dwio::common::Statistics& stats,
-      uint32_t nodeId) const;
-
-  bool isEmptyFile() const {
-    return (stripeCeiling_ == firstStripe_);
-  }
-
-  void checkSkipStrides(uint64_t strideSize);
-
-  void readNext(
-      uint64_t rowsToRead,
-      const dwio::common::Mutation*,
-      VectorPtr& result);
-
-  uint64_t skip(uint64_t numValues);
-
-  std::unique_ptr<ColumnReader>& getColumnReader();
-
-  std::unique_ptr<dwio::common::SelectiveColumnReader>&
-  getSelectiveColumnReader();
-
-  std::unique_ptr<dwio::common::UnitLoader> getUnitLoader();
 };
 
 class DwrfReader : public dwio::common::Reader {
@@ -346,9 +359,5 @@ class DwrfReaderFactory : public dwio::common::ReaderFactory {
     return DwrfReader::create(std::move(input), options);
   }
 };
-
-void registerDwrfReaderFactory();
-
-void unregisterDwrfReaderFactory();
 
 } // namespace facebook::velox::dwrf

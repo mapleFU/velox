@@ -55,7 +55,7 @@ namespace detail {
 /// 如果是 Merge / Partition 之类的实际上会切分出一个 Pipeline, 否则会按照节点
 /// source 数量来决定.
 bool mustStartNewPipeline(
-    std::shared_ptr<const core::PlanNode> planNode,
+    const std::shared_ptr<const core::PlanNode>& planNode,
     int sourceId) {
   if (auto localMerge =
           std::dynamic_pointer_cast<const core::LocalMergeNode>(planNode)) {
@@ -75,7 +75,8 @@ bool mustStartNewPipeline(
 /// 把 ConsumerSupplier 适配成 OperatorSupplier, 作为 Operator 的输出性下游.
 OperatorSupplier makeConsumerSupplier(ConsumerSupplier consumerSupplier) {
   if (consumerSupplier) {
-    return [consumerSupplier](int32_t operatorId, DriverCtx* ctx) {
+    return [consumerSupplier = std::move(consumerSupplier)](
+               int32_t operatorId, DriverCtx* ctx) {
       return std::make_unique<CallbackSink>(
           operatorId, ctx, consumerSupplier());
     };
@@ -98,7 +99,7 @@ OperatorSupplier makeConsumerSupplier(
 
       auto consumer = [mergeSource](
                           RowVectorPtr input, ContinueFuture* future) {
-        return mergeSource->enqueue(input, future);
+        return mergeSource->enqueue(std::move(input), future);
       };
       return std::make_unique<CallbackSink>(operatorId, ctx, consumer);
     };
@@ -133,7 +134,7 @@ OperatorSupplier makeConsumerSupplier(
       auto source =
           ctx->task->getMergeJoinSource(ctx->splitGroupId, planNodeId);
       auto consumer = [source](RowVectorPtr input, ContinueFuture* future) {
-        return source->enqueue(input, future);
+        return source->enqueue(std::move(input), future);
       };
       return std::make_unique<CallbackSink>(operatorId, ctx, consumer);
     };
@@ -154,12 +155,12 @@ void plan(
     driverFactories->push_back(std::make_unique<DriverFactory>());
     // 初始化 currentPlanNodes 队列指针
     currentPlanNodes = &driverFactories->back()->planNodes;
-    driverFactories->back()->consumerSupplier = consumerSupplier;
+    driverFactories->back()->consumerSupplier = std::move(consumerSupplier);
     driverFactories->back()->consumerNode = consumerNode;
   }
 
-  auto sources = planNode->sources();
   // 拿到 PlanNode 的输入.
+  const auto& sources = planNode->sources();
   if (sources.empty()) {
     // 是一个 Input Driver
     driverFactories->back()->inputDriver = true;

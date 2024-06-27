@@ -25,6 +25,15 @@
 #include "velox/common/base/SuccinctPrinter.h"
 #include "velox/common/caching/FileIds.h"
 
+#define VELOX_CACHE_ERROR(errorMessage)                             \
+  _VELOX_THROW(                                                     \
+      ::facebook::velox::VeloxRuntimeError,                         \
+      ::facebook::velox::error_source::kErrorSourceRuntime.c_str(), \
+      ::facebook::velox::error_code::kNoCacheSpace.c_str(),         \
+      /* isRetriable */ true,                                       \
+      "{}",                                                         \
+      errorMessage);
+
 namespace facebook::velox::cache {
 
 using memory::MachinePageCount;
@@ -120,13 +129,10 @@ void AsyncDataCacheEntry::initialize(FileCacheKey key) {
     } else {
       // No memory to cover 'this'.
       release();
-      _VELOX_THROW(
-          VeloxRuntimeError,
-          error_source::kErrorSourceRuntime.c_str(),
-          error_code::kNoCacheSpace.c_str(),
-          /* isRetriable */ true,
-          "Failed to allocate {} bytes for cache",
-          size_);
+      VELOX_CACHE_ERROR(fmt::format(
+          "Failed to allocate {} bytes for cache: {}",
+          size_,
+          cache->allocator()->getAndClearFailureMessage()));
     }
   }
 }
@@ -200,6 +206,8 @@ CachePin CacheShard::findOrCreate(
           << " requested size " << size;
       // The old entry is superseded. Possible readers of the old entry still
       // retain a valid read pin.
+      RECORD_METRIC_VALUE(kMetricMemoryCacheNumStaleEntries);
+      ++numStales_;
       foundEntry->key_.fileNum.clear();
       entryMap_.erase(it);
     }
@@ -534,6 +542,7 @@ void CacheShard::updateStats(CacheStats& stats) {
   stats.numEvictChecks += numEvictChecks_;
   stats.numWaitExclusive += numWaitExclusive_;
   stats.numAgedOut += numAgedOut_;
+  stats.numStales += numStales_;
   stats.sumEvictScore += sumEvictScore_;
   stats.allocClocks += allocClocks_;
 }
@@ -619,6 +628,7 @@ CacheStats CacheStats::operator-(CacheStats& other) const {
   result.numEvictChecks = numEvictChecks - other.numEvictChecks;
   result.numWaitExclusive = numWaitExclusive - other.numWaitExclusive;
   result.numAgedOut = numAgedOut - other.numAgedOut;
+  result.numStales = numStales - other.numStales;
   result.allocClocks = allocClocks - other.allocClocks;
   result.sumEvictScore = sumEvictScore - other.sumEvictScore;
   if (ssdStats != nullptr && other.ssdStats != nullptr) {
@@ -676,11 +686,11 @@ AsyncDataCache** AsyncDataCache::getInstancePtr() {
 }
 
 void AsyncDataCache::shutdown() {
-  for (auto& shard : shards_) {
-    shard->shutdown();
-  }
   if (ssdCache_) {
     ssdCache_->shutdown();
+  }
+  for (auto& shard : shards_) {
+    shard->shutdown();
   }
 }
 
@@ -993,6 +1003,7 @@ std::string CacheStats::toString() const {
       << "Cache access miss: " << numNew << " hit: " << numHit
       << " hit bytes: " << succinctBytes(hitBytes) << " eviction: " << numEvict
       << " eviction checks: " << numEvictChecks << " aged out: " << numAgedOut
+      << " stales: " << numStales
       << "\n"
       // Cache prefetch stats.
       << "Prefetch entries: " << numPrefetch
