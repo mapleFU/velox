@@ -121,6 +121,7 @@ class CachedBufferedInput : public BufferedInput {
   /// if shouldPreload() is false.
   bool prefetch(velox::common::Region region);
 
+  // 我日, 这地方为什么是 numPage?
   bool shouldPreload(int32_t numPages = 0) override;
 
   bool shouldPrefetchStripes() const override {

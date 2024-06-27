@@ -25,7 +25,10 @@ DECLARE_bool(wsVRLoad);
 
 namespace facebook::velox::dwio::common {
 
-/// Velox 的读 API, dwio 读的 Base, 是一个味道非常奇怪的接口.
+/// Velox 的读 API, dwio 读的 Base, 是一个味道非常奇怪的接口, 负责对同一个
+/// "文件" ( 或者至少是 split 吧, 一个 split 最多一个 file?) 的 io.
+///
+/// 外部的请求按照 `Region` 来切分, Region 带上了对应的 Label.
 class BufferedInput {
  public:
   // 默认合并 1.5MB 的距离
@@ -69,24 +72,23 @@ class BufferedInput {
     return input_->getName();
   }
 
+  /// 这里面它拆分成了一个两阶段的 API, 先去 enqueue, 然后对 enqueue 的对象再去 Load.
+
   /// The previous API was taking a vector of regions. Now we allow callers to
   /// enqueue region any time/place and we do final load into buffer in 2 steps
   /// (enqueue....load). 'si' allows tracking which streams actually get read.
   /// This may control read-ahead and caching for BufferedInput implementations
   /// supporting these.
-  ///
-<<<<<<< HEAD
-  /// 分发 enqueue + load
-=======
-  ///
->>>>>>> mwish-read
   virtual std::unique_ptr<SeekableInputStream> enqueue(
       velox::common::Region region,
       const StreamIdentifier* sid = nullptr);
 
   /// load all regions to be read in an optimized way (IO efficiency)
+  ///
+  /// 内部去尝试全部 Load
   virtual void load(const LogType);
 
+  /// check 一段 Range 是否被 buffered
   virtual bool isBuffered(uint64_t offset, uint64_t length) const {
     return !!readBuffer(offset, length);
   }
@@ -117,6 +119,9 @@ class BufferedInput {
   // metadata after reading a file footer. The stripe footers are
   // likely to be hit and should be read ahead of demand if
   // BufferedInput has background load.
+  //
+  // 在 IO 介质上判断这里的内容需要 Prefetch, 看实现上 Cached 就会需要
+  // buffer.
   virtual bool shouldPrefetchStripes() const {
     return false;
   }
@@ -141,6 +146,9 @@ class BufferedInput {
   }
 
   // Internal API, do not use outside Velox.
+  //
+  // 因为这个接口是包了一层 ReadFile 的, 这里应该是类似直接拿到 ReadFile 或者 read
+  // file 的 Stream 吧, 和上面那个 sb 接口 getReadFile 差不多.
   const std::shared_ptr<ReadFileInputStream>& getInputStream() const {
     return input_;
   }
@@ -149,6 +157,9 @@ class BufferedInput {
     return nullptr;
   }
 
+  // 一个比较 sb 的接口, 感觉不是一个精确的估计, 这里实现成了所有 region
+  // length 的和.
+  // 操你妈的, 下面 Cache 和 Direct 都没实现这个接口, 我操了.
   virtual uint64_t nextFetchSize() const;
 
  protected:
@@ -156,6 +167,9 @@ class BufferedInput {
   memory::MemoryPool* const pool_;
 
  private:
+  // 这里返回一个 `SeekableInputStream`, 注意接口上这玩意可能是 Lazy 的,
+  // 不过翻了一下, 这个实现是不会返回 lazy 的, 因为内部实现 `readInternal`
+  // 没有返回 Lazy.
   std::unique_ptr<SeekableInputStream> readBuffer(
       uint64_t offset,
       uint64_t length) const;
@@ -172,6 +186,9 @@ class BufferedInput {
 
   folly::Range<char*> allocate(const velox::common::Region& region) {
     // Save the file offset and the buffer to which we'll read it
+    //
+    // 根据 region 申请需要的 `offsets_` 和 `buffer_`, 返回一个 `folly::Range`
+    // 的 API.
     offsets_.push_back(region.offset);
     buffers_.emplace_back(
         allocPool_->allocateFixed(region.length), region.length);
@@ -195,9 +212,13 @@ class BufferedInput {
   std::vector<velox::common::Region> regions_;
 
   // Offsets in the file to which the corresponding Region belongs
+  //
+  // 内部 `regions_` 的 offset.
   std::vector<uint64_t> offsets_;
 
   // Buffers allocated for reading each Region.
+  //
+  // 需要读 `regions_` 的 buffer.
   std::vector<folly::Range<char*>> buffers_;
 
   // Maps the position in which the Region was originally enqueued to the
