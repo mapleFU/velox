@@ -173,7 +173,12 @@ void DwrfUnit::ensureDecoders() {
         options_.getRowNumberColumnInfo().has_value());
   } else {
     auto requestedType = columnSelector_->getSchemaWithId();
-    columnReader_ = ColumnReader::build( // enqueue streams
+    auto factory = &ColumnReaderFactory::defaultFactory();
+    if (auto formatOptions = std::dynamic_pointer_cast<DwrfOptions>(
+            options_.formatSpecificOptions())) {
+      factory = formatOptions->columnReaderFactory().get();
+    }
+    columnReader_ = factory->build(
         requestedType,
         fileType,
         *stripeStreams_,
@@ -305,7 +310,7 @@ DwrfRowReader::DwrfRowReader(
 }
 
 std::unique_ptr<ColumnReader>& DwrfRowReader::getColumnReader() {
-  VELOX_DCHECK(currentUnit_ != nullptr);
+  VELOX_DCHECK_NOT_NULL(currentUnit_);
   return currentUnit_->getColumnReader();
 }
 
@@ -603,7 +608,7 @@ uint64_t DwrfRowReader::next(
     uint64_t size,
     velox::VectorPtr& result,
     const dwio::common::Mutation* mutation) {
-  auto nextRow = nextRowNumber();
+  const auto nextRow = nextRowNumber();
   if (nextRow == kAtEnd) {
     if (!isEmptyFile()) {
       previousRow_ = firstRowOfStripe_[stripeCeiling_ - 1] +
@@ -659,6 +664,23 @@ bool DwrfRowReader::shouldReadNode(uint32_t nodeId) const {
   return projectedNodes_->contains(nodeId);
 }
 
+namespace {
+
+template <typename T>
+std::optional<uint64_t> getStringOrBinaryColumnSize(
+    const dwio::common::ColumnStatistics& stats) {
+  if (auto* typedStats = dynamic_cast<const T*>(&stats)) {
+    if (typedStats->getTotalLength().has_value()) {
+      return typedStats->getTotalLength();
+    }
+  }
+  // Sometimes the column statistics are not typed and we don't have total
+  // length, use raw size as an estimation.
+  return stats.getRawSize();
+}
+
+} // namespace
+
 std::optional<size_t> DwrfRowReader::estimatedRowSizeHelper(
     const FooterWrapper& fileFooter,
     const dwio::common::Statistics& stats,
@@ -699,30 +721,12 @@ std::optional<size_t> DwrfRowReader::estimatedRowSizeHelper(
     case TypeKind::DOUBLE: {
       return valueCount * sizeof(double);
     }
-    case TypeKind::VARCHAR: {
-      auto stringStats =
-          dynamic_cast<const dwio::common::StringColumnStatistics*>(&s);
-      if (!stringStats) {
-        return std::nullopt;
-      }
-      auto length = stringStats->getTotalLength();
-      if (!length) {
-        return std::nullopt;
-      }
-      return length.value();
-    }
-    case TypeKind::VARBINARY: {
-      auto binaryStats =
-          dynamic_cast<const dwio::common::BinaryColumnStatistics*>(&s);
-      if (!binaryStats) {
-        return std::nullopt;
-      }
-      auto length = binaryStats->getTotalLength();
-      if (!length) {
-        return std::nullopt;
-      }
-      return length.value();
-    }
+    case TypeKind::VARCHAR:
+      return getStringOrBinaryColumnSize<dwio::common::StringColumnStatistics>(
+          s);
+    case TypeKind::VARBINARY:
+      return getStringOrBinaryColumnSize<dwio::common::BinaryColumnStatistics>(
+          s);
     case TypeKind::TIMESTAMP: {
       return valueCount * sizeof(uint64_t) * 2;
     }

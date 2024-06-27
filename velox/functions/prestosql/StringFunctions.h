@@ -121,13 +121,49 @@ struct SubstrFunction {
       length = numCharacters - start + 1;
     }
 
-    auto byteRange =
-        stringCore::getByteRange<isAscii>(input.data(), start, length);
+    auto byteRange = stringCore::getByteRange<isAscii>(
+        input.data(), input.size(), start, length);
 
     // Generating output string
     // 我日你妈的，要自己设置 setNoCopy, 你这个文档写你妈的呢
     result.setNoCopy(StringView(
         input.data() + byteRange.first, byteRange.second - byteRange.first));
+  }
+};
+
+template <typename TExec>
+struct SubstrVarbinaryFunction {
+  VELOX_DEFINE_FUNCTION_TYPES(TExec);
+
+  // Results refer to strings in the first argument.
+  static constexpr int32_t reuse_strings_from_arg = 0;
+
+  FOLLY_ALWAYS_INLINE void call(
+      out_type<Varchar>& result,
+      const arg_type<Varchar>& input,
+      int64_t start,
+      int64_t length = std::numeric_limits<int64_t>::max()) {
+    if (start == 0 || length <= 0) {
+      result.setEmpty();
+      return;
+    }
+
+    int64_t size = input.size();
+
+    if (start < 0) {
+      start = size + start + 1;
+    }
+
+    if (start <= 0 || start > size) {
+      result.setEmpty();
+      return;
+    }
+
+    if (size - start + 1 < length) {
+      length = size - start + 1;
+    }
+
+    result.setNoCopy(StringView(input.data() + start - 1, length));
   }
 };
 

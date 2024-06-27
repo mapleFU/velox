@@ -406,6 +406,81 @@ TEST_F(StringFunctionsTest, substrVariable) {
   }
 }
 
+TEST_F(StringFunctionsTest, substrInvalidUtf8) {
+  const auto substr = [&](std::optional<std::string> str,
+                          std::optional<int32_t> start,
+                          std::optional<int32_t> length) {
+    return evaluateOnce<std::string>("substr(c0, c1, c2)", str, start, length);
+  };
+
+  // The byte \xE7 indicates it should have 2 more bytes to be valid UTF-8, but
+  // it doesn't.
+  EXPECT_EQ(substr("abc\xE7xyz", 2, 4), "bc\xE7x");
+  // The byte \xBF is a UTF-8 continuation character, these aren't preceded by
+  // a valid prefix byte, but they should be ignored and not count towards the
+  // length of the substring or where the substring starts.
+  EXPECT_EQ(
+      substr(
+          "\xBF"
+          "\xBF"
+          "a"
+          "\xBF"
+          "\xBF"
+          "b"
+          "\xBF"
+          "\xBF"
+          "c"
+          "\xBF"
+          "\xBF"
+          "x"
+          "\xBF"
+          "\xBF"
+          "y"
+          "\xBF"
+          "\xBF"
+          "z"
+          "\xBF"
+          "\xBF",
+          2,
+          4),
+      "b"
+      "\xBF"
+      "\xBF"
+      "c"
+      "\xBF"
+      "\xBF"
+      "x"
+      "\xBF"
+      "\xBF"
+      "y"
+      "\xBF"
+      "\xBF");
+  // Check that when the substring goes to the end of the string, and the string
+  // ends with UTF-8 continuation characters, we don't go off the end of the
+  // string.
+  EXPECT_EQ(
+      substr(
+          "\xBF"
+          "\xBF"
+          "a"
+          "\xBF"
+          "\xBF"
+          "b"
+          "\xBF"
+          "\xBF"
+          "c"
+          "\xBF"
+          "\xBF",
+          2,
+          2),
+      "b"
+      "\xBF"
+      "\xBF"
+      "c"
+      "\xBF"
+      "\xBF");
+}
+
 /**
  * The test for one of non-optimized cases (all constant values)
  */
@@ -589,6 +664,54 @@ TEST_F(StringFunctionsTest, substrWithConditionalSingleBuffer) {
       }
     }
   }
+}
+
+TEST_F(StringFunctionsTest, substrVarbinary) {
+  auto substr = [&](const std::string& input,
+                    int64_t start,
+                    std::optional<int64_t> length = {}) {
+    if (length.has_value()) {
+      return evaluateOnce<std::string>(
+          "substr(c0, c1, c2)",
+          {VARBINARY(), BIGINT(), BIGINT()},
+          std::optional(input),
+          std::optional(start),
+          length);
+    } else {
+      return evaluateOnce<std::string>(
+          "substr(c0, c1)",
+          {VARBINARY(), BIGINT()},
+          std::optional(input),
+          std::optional(start));
+    }
+  };
+
+  EXPECT_EQ(substr("Apple", 0), "");
+  EXPECT_EQ(substr("Apple", 1), "Apple");
+  EXPECT_EQ(substr("Apple", 3), "ple");
+  EXPECT_EQ(substr("Apple", 5), "e");
+  EXPECT_EQ(substr("Apple", 100), "");
+
+  EXPECT_EQ(substr("Apple", -1), "e");
+  EXPECT_EQ(substr("Apple", -4), "pple");
+  EXPECT_EQ(substr("Apple", -5), "Apple");
+  EXPECT_EQ(substr("Apple", -100), "");
+
+  EXPECT_EQ(substr("", 0), "");
+  EXPECT_EQ(substr("", 1), "");
+  EXPECT_EQ(substr("", -1), "");
+
+  EXPECT_EQ(substr("Apple", 1, 1), "A");
+  EXPECT_EQ(substr("Apple", 2, 3), "ppl");
+  EXPECT_EQ(substr("Apple", 2, 4), "pple");
+  EXPECT_EQ(substr("Apple", 2, 10), "pple");
+
+  EXPECT_EQ(substr("Apple", -1, 1), "e");
+  EXPECT_EQ(substr("Apple", -3, 2), "pl");
+  EXPECT_EQ(substr("Apple", -3, 5), "ple");
+  EXPECT_EQ(substr("Apple", -5, 4), "Appl");
+  EXPECT_EQ(substr("Apple", -5, 10), "Apple");
+  EXPECT_EQ(substr("Apple", -6, 1), "");
 }
 
 namespace {

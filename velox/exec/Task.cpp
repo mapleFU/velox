@@ -295,7 +295,7 @@ Task::Task(
       queryCtx_(std::move(queryCtx)),
       mode_(mode),
       consumerSupplier_(std::move(consumerSupplier)),
-      onError_(onError),
+      onError_(std::move(onError)),
       splitsStates_(buildSplitStates(planFragment_.planNode)),
       bufferManager_(OutputBufferManager::getInstance()) {
   // NOTE: the executor must not be folly::InlineLikeExecutor for parallel
@@ -1864,7 +1864,7 @@ ContinueFuture Task::terminate(TaskState terminalState) {
     if (taskStats_.executionEndTimeMs == 0) {
       taskStats_.executionEndTimeMs = getCurrentTimeMs();
     }
-    if (not isRunningLocked()) {
+    if (!isRunningLocked()) {
       return makeFinishFutureLocked("Task::terminate");
     }
     state_ = terminalState;
@@ -1881,6 +1881,10 @@ ContinueFuture Task::terminate(TaskState terminalState) {
       } catch (const std::exception&) {
         exception_ = std::current_exception();
       }
+    }
+    if (state_ != TaskState::kFinished) {
+      VELOX_CHECK(!cancellationSource_.isCancellationRequested());
+      cancellationSource_.requestCancellation();
     }
 
     LOG(INFO) << "Terminating task " << taskId() << " with state "

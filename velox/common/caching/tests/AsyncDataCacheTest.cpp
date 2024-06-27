@@ -95,8 +95,8 @@ class AsyncDataCacheTest : public ::testing::TestWithParam<TestParam> {
         ssdCache->testingDeleteFiles();
       }
     }
-    if (executor_) {
-      executor_->join();
+    if (loadExecutor_ != nullptr) {
+      loadExecutor_->join();
     }
     filenames_.clear();
     CacheTTLController::testingClear();
@@ -133,7 +133,7 @@ class AsyncDataCacheTest : public ::testing::TestWithParam<TestParam> {
           fmt::format("{}/cache", tempDirectory_->getPath()),
           ssdBytes,
           4,
-          executor(),
+          ssdExecutor(),
           checkpointIntervalBytes > 0 ? checkpointIntervalBytes : ssdBytes / 20,
           false,
           GetParam().checksumEnabled,
@@ -261,15 +261,26 @@ class AsyncDataCacheTest : public ::testing::TestWithParam<TestParam> {
     };
   }
 
-  folly::IOThreadPoolExecutor* executor() {
+  folly::IOThreadPoolExecutor* loadExecutor() {
     static std::mutex mutex;
     std::lock_guard<std::mutex> l(mutex);
-    if (!executor_) {
+    if (loadExecutor_ == nullptr) {
       // We have up to 20 threads. Some tests run at max 16 threads so
       // that there are threads left over for SSD background write.
-      executor_ = std::make_unique<folly::IOThreadPoolExecutor>(20);
+      loadExecutor_ = std::make_unique<folly::IOThreadPoolExecutor>(20);
     }
-    return executor_.get();
+    return loadExecutor_.get();
+  }
+
+  folly::IOThreadPoolExecutor* ssdExecutor() {
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> l(mutex);
+    if (ssdExecutor_ == nullptr) {
+      // We have up to 20 threads. Some tests run at max 16 threads so
+      // that there are threads left over for SSD background write.
+      ssdExecutor_ = std::make_unique<folly::IOThreadPoolExecutor>(20);
+    }
+    return ssdExecutor_.get();
   }
 
   void clearAllocations(std::deque<memory::Allocation>& allocations) {
@@ -284,7 +295,8 @@ class AsyncDataCacheTest : public ::testing::TestWithParam<TestParam> {
   memory::MemoryAllocator* allocator_;
   std::shared_ptr<AsyncDataCache> cache_;
   std::vector<StringIdLease> filenames_;
-  std::unique_ptr<folly::IOThreadPoolExecutor> executor_;
+  std::unique_ptr<folly::IOThreadPoolExecutor> loadExecutor_;
+  std::unique_ptr<folly::IOThreadPoolExecutor> ssdExecutor_;
   int32_t numLargeRetries_{0};
   std::atomic_int64_t numPendingLoads_{0};
 };
@@ -474,7 +486,7 @@ void AsyncDataCacheTest::loadBatch(
     auto load = std::make_shared<TestingCoalescedLoad>(
         std::move(keys), std::move(sizes), cache_, injectError);
     ++numPendingLoads_;
-    executor()->add([this, load, semaphore]() {
+    loadExecutor()->add([this, load, semaphore]() {
       SCOPE_EXIT {
         --numPendingLoads_;
       };
@@ -507,7 +519,7 @@ void AsyncDataCacheTest::loadBatch(
         cache_,
         injectError);
     ++numPendingLoads_;
-    executor()->add([this, load, semaphore]() {
+    loadExecutor()->add([this, load, semaphore]() {
       SCOPE_EXIT {
         --numPendingLoads_;
       };
@@ -688,8 +700,8 @@ TEST_P(AsyncDataCacheTest, replace) {
   initializeCache(kMaxBytes);
   // Load 10x the max size, inject an error every 21 batches.
   loadLoop(0, kMaxBytes * 10, 21);
-  if (executor_) {
-    executor_->join();
+  if (loadExecutor_ != nullptr) {
+    loadExecutor_->join();
   }
   auto stats = cache_->refreshStats();
   EXPECT_LT(0, stats.numHit);
@@ -733,8 +745,8 @@ TEST_P(AsyncDataCacheTest, largeEvict) {
   runThreads(kNumThreads, [&](int32_t /*i*/) {
     loadLoop(0, kMaxBytes * 1.2, 0, 1, kMaxBytes / 4);
   });
-  if (executor_) {
-    executor_->join();
+  if (loadExecutor_ != nullptr) {
+    loadExecutor_->join();
   }
   auto stats = cache_->refreshStats();
   EXPECT_LT(0, stats.numEvict);
@@ -819,8 +831,8 @@ TEST_P(AsyncDataCacheTest, DISABLED_ssd) {
   // data may not get written if reading is faster than writing. Error out once
   // every 11 load batches.
   //
-  // Note that executor() must have more threads so that background
-  // write does not wait for the workload.
+  // NOTE: loadExecutor() must have more threads so that background write does
+  // not wait for the workload.
   runThreads(16, [&](int32_t /*i*/) { loadLoop(0, kSsdBytes, 11); });
   LOG(INFO) << "Stats after first pass: " << cache_->toString();
   auto ssdStats = cache_->ssdCache()->stats();
@@ -873,7 +885,7 @@ TEST_P(AsyncDataCacheTest, DISABLED_ssd) {
 TEST_P(AsyncDataCacheTest, invalidSsdPath) {
   auto testPath = "hdfs:/test/prefix_";
   uint64_t ssdBytes = 256UL << 20;
-  SsdCache::Config config(testPath, ssdBytes, 4, executor(), ssdBytes / 20);
+  SsdCache::Config config(testPath, ssdBytes, 4, ssdExecutor(), ssdBytes / 20);
   VELOX_ASSERT_THROW(
       SsdCache(config),
       fmt::format(
@@ -904,14 +916,39 @@ TEST_P(AsyncDataCacheTest, cacheStats) {
   stats.numAgedOut = 10;
   stats.allocClocks = 1320;
   stats.sumEvictScore = 123;
+  stats.numStales = 100;
   ASSERT_EQ(
       stats.toString(),
       "Cache size: 2.56KB tinySize: 257B large size: 2.31KB\n"
       "Cache entries: 100 read pins: 30 write pins: 20 pinned shared: 10.00MB pinned exclusive: 10.00MB\n"
       " num write wait: 244 empty entries: 20\n"
-      "Cache access miss: 2041 hit: 46 hit bytes: 1.34KB eviction: 463 eviction checks: 348 aged out: 10\n"
+      "Cache access miss: 2041 hit: 46 hit bytes: 1.34KB eviction: 463 eviction checks: 348 aged out: 10 stales: 100\n"
       "Prefetch entries: 30 bytes: 100B\n"
       "Alloc Megaclocks 0");
+
+  CacheStats statsDelta = stats - stats;
+  ASSERT_EQ(statsDelta.tinySize, 0);
+  ASSERT_EQ(statsDelta.largeSize, 0);
+  ASSERT_EQ(statsDelta.tinyPadding, 0);
+  ASSERT_EQ(statsDelta.largePadding, 0);
+  ASSERT_EQ(statsDelta.numEntries, 0);
+  ASSERT_EQ(statsDelta.numExclusive, 0);
+  ASSERT_EQ(statsDelta.numShared, 0);
+  ASSERT_EQ(statsDelta.sharedPinnedBytes, 0);
+  ASSERT_EQ(statsDelta.exclusivePinnedBytes, 0);
+  ASSERT_EQ(statsDelta.numEmptyEntries, 0);
+  ASSERT_EQ(statsDelta.numPrefetch, 0);
+  ASSERT_EQ(statsDelta.prefetchBytes, 0);
+  ASSERT_EQ(statsDelta.numHit, 0);
+  ASSERT_EQ(statsDelta.hitBytes, 0);
+  ASSERT_EQ(statsDelta.numNew, 0);
+  ASSERT_EQ(statsDelta.numEvict, 0);
+  ASSERT_EQ(statsDelta.numEvictChecks, 0);
+  ASSERT_EQ(statsDelta.numWaitExclusive, 0);
+  ASSERT_EQ(statsDelta.numAgedOut, 0);
+  ASSERT_EQ(statsDelta.allocClocks, 0);
+  ASSERT_EQ(statsDelta.sumEvictScore, 0);
+  ASSERT_EQ(statsDelta.numStales, 0);
 
   constexpr uint64_t kRamBytes = 32 << 20;
   constexpr uint64_t kSsdBytes = 512UL << 20;
@@ -921,7 +958,7 @@ TEST_P(AsyncDataCacheTest, cacheStats) {
       "Cache size: 0B tinySize: 0B large size: 0B\n"
       "Cache entries: 0 read pins: 0 write pins: 0 pinned shared: 0B pinned exclusive: 0B\n"
       " num write wait: 0 empty entries: 0\n"
-      "Cache access miss: 0 hit: 0 hit bytes: 0B eviction: 0 eviction checks: 0 aged out: 0\n"
+      "Cache access miss: 0 hit: 0 hit bytes: 0B eviction: 0 eviction checks: 0 aged out: 0 stales: 0\n"
       "Prefetch entries: 0 bytes: 0B\n"
       "Alloc Megaclocks 0\n"
       "Allocated pages: 0 cached pages: 0\n"
@@ -945,11 +982,52 @@ TEST_P(AsyncDataCacheTest, cacheStats) {
       "Cache size: 0B tinySize: 0B large size: 0B\n"
       "Cache entries: 0 read pins: 0 write pins: 0 pinned shared: 0B pinned exclusive: 0B\n"
       " num write wait: 0 empty entries: 0\n"
-      "Cache access miss: 0 hit: 0 hit bytes: 0B eviction: 0 eviction checks: 0 aged out: 0\n"
+      "Cache access miss: 0 hit: 0 hit bytes: 0B eviction: 0 eviction checks: 0 aged out: 0 stales: 0\n"
       "Prefetch entries: 0 bytes: 0B\n"
       "Alloc Megaclocks 0\n"
       "Allocated pages: 0 cached pages: 0\n";
   ASSERT_EQ(cache_->toString(false), expectedShortCacheOutput);
+}
+
+TEST_P(AsyncDataCacheTest, staleEntry) {
+  constexpr uint64_t kRamBytes = 1UL << 30;
+  // Disable SSD cache to test in-memory cache stale entry only.
+  initializeCache(kRamBytes, 0, 0);
+  StringIdLease file(fileIds(), std::string_view("staleEntry"));
+  const uint64_t offset = 1000;
+  const uint64_t size = 200;
+  folly::SemiFuture<bool> wait(false);
+  RawFileCacheKey key{file.id(), offset};
+  auto pin = cache_->findOrCreate(key, size, &wait);
+  ASSERT_FALSE(pin.empty());
+  ASSERT_TRUE(wait.isReady());
+  ASSERT_TRUE(pin.entry()->isExclusive());
+  pin.entry()->setExclusiveToShared();
+  ASSERT_FALSE(pin.entry()->isExclusive());
+  auto stats = cache_->refreshStats();
+  ASSERT_EQ(stats.numStales, 0);
+  ASSERT_EQ(stats.numEntries, 1);
+  ASSERT_EQ(stats.numHit, 0);
+
+  auto validPin = cache_->findOrCreate(key, size, &wait);
+  ASSERT_FALSE(validPin.empty());
+  ASSERT_TRUE(wait.isReady());
+  ASSERT_FALSE(validPin.entry()->isExclusive());
+  stats = cache_->refreshStats();
+  ASSERT_EQ(stats.numStales, 0);
+  ASSERT_EQ(stats.numEntries, 1);
+  ASSERT_EQ(stats.numHit, 1);
+
+  // Stale cache access with large cache size.
+  auto stalePin = cache_->findOrCreate(key, 2 * size, &wait);
+  ASSERT_FALSE(stalePin.empty());
+  ASSERT_TRUE(wait.isReady());
+  ASSERT_TRUE(stalePin.entry()->isExclusive());
+  stalePin.entry()->setExclusiveToShared();
+  stats = cache_->refreshStats();
+  ASSERT_EQ(stats.numStales, 1);
+  ASSERT_EQ(stats.numEntries, 1);
+  ASSERT_EQ(stats.numHit, 1);
 }
 
 TEST_P(AsyncDataCacheTest, shrinkCache) {
@@ -1111,6 +1189,12 @@ TEST_P(AsyncDataCacheTest, shutdown) {
     // Shutdown cache.
     if (!asyncShutdown) {
       waitForSsdWriteToFinish(cache_->ssdCache());
+    }
+    // NOTE: we need to wait for async load to complete before shutdown as async
+    // data cache doesn't handle the cache access after the cache shutdown.
+    if (loadExecutor_ != nullptr) {
+      loadExecutor_->join();
+      loadExecutor_.reset();
     }
     const uint64_t bytesWrittenBeforeShutdown =
         cache_->ssdCache()->stats().bytesWritten;
