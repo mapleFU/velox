@@ -31,7 +31,9 @@ namespace facebook::velox::cache {
 /// etc. The high 27 bits are the node number in the file schema tree, i.e. the
 /// column.
 ///
-/// 我日, 这和 StreamIdentifier 有什么区别? 擦
+/// Q: 我日, 这和 StreamIdentifier 有什么区别?
+/// A: 答案是对某个 Table 中的列, 这里做了一些 Table 级别的强制映射,
+/// 把 columnId 映射到对应的实现上. Stream 感觉就是 File 级别的语义了.
 class TrackingId {
  public:
   TrackingId() : id_(-1) {}
