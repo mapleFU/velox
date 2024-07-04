@@ -1,4 +1,3 @@
-#!/bin/sh
 # Copyright (c) Facebook, Inc. and its affiliates.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+include_guard(GLOBAL)
 
-set -e
-
-$SPARK_HOME/sbin/start-connect-server.sh --jars $SPARK_HOME/misc/spark-connect_2.12-3.5.1.jar
+add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/arrow)
