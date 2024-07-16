@@ -2099,8 +2099,13 @@ TaskStats Task::taskStats() const {
       ++taskStats.numRunningDrivers;
     } else if (driver->isTerminated()) {
       ++taskStats.numTerminatedDrivers;
+    } else if (driver->state().isEnqueued) {
+      ++taskStats.numQueuedDrivers;
     } else {
-      ++taskStats.numBlockedDrivers[driver->blockingReason()];
+      const auto blockingReason = driver->blockingReason();
+      if (blockingReason != BlockingReason::kNotBlocked) {
+        ++taskStats.numBlockedDrivers[blockingReason];
+      }
     }
     // Find the longest running operator.
     auto ocs = driver->opCallStatus();
@@ -2194,7 +2199,7 @@ Task::DriverCounts Task::driverCounts() const {
       } else {
         const auto blockingReason = driver->blockingReason();
         if (blockingReason != BlockingReason::kNotBlocked) {
-          ++ret.numBlockedDrivers[driver->blockingReason()];
+          ++ret.numBlockedDrivers[blockingReason];
         }
       }
     }

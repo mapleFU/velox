@@ -304,6 +304,12 @@ struct DriverCtx {
 
   /// Builds the spill config for the operator with specified 'operatorId'.
   std::optional<common::SpillConfig> makeSpillConfig(int32_t operatorId) const;
+
+  common::PrefixSortConfig prefixSortConfig() const {
+    return common::PrefixSortConfig{
+        queryConfig().prefixSortNormalizedKeyMaxBytes(),
+        queryConfig().prefixSortMinRows()};
+  }
 };
 
 constexpr const char* kOpMethodNone = "";
