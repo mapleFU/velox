@@ -21,6 +21,9 @@ namespace facebook::velox::common::hll {
 /// HyperLogLog implementation using sparse storage layout.
 /// It uses 26-bit buckets and provides high accuracy for low cardinalities.
 /// Memory usage: 4 bytes for each observed bucket.
+///
+/// Sparse 会把 HLL 转换为 entries_, entries 是二分的 <index, Entry> 序列(基本上
+/// 等价于 Hash 序列, 但是更新方式是新来一个一样的值就去更新后面的 value.
 class SparseHll {
  public:
   explicit SparseHll(HashStringAllocator* allocator)

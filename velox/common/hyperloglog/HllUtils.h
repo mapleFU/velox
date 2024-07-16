@@ -26,8 +26,8 @@ constexpr double kHighestMaxStandardError = 0.26000;
 constexpr double kDefaultApproxDistinctStandardError = 0.023;
 constexpr double kDefaultApproxSetStandardError = 0.01625;
 
-const int8_t kPrestoSparseV2 = 2;
-const int8_t kPrestoDenseV2 = 3;
+constexpr int8_t kPrestoSparseV2 = 2;
+constexpr int8_t kPrestoDenseV2 = 3;
 
 inline void checkMaxStandardError(double error) {
   VELOX_USER_CHECK_GE(
@@ -50,12 +50,16 @@ inline int8_t toIndexBitLength(double maxStandardError) {
 }
 
 /// Returns first 'indexBitLength' bits of a hash.
+///
+/// 使用 64 位哈希, 算出一个 Index.
 inline uint32_t computeIndex(uint64_t hash, int indexBitLength) {
   return hash >> (64 - indexBitLength);
 }
 
 /// Returns number of contiguous zeros after 'indexBitLength' bits in the
 /// 'hash'.
+///
+/// 拿到(去掉 indexBit 之后) Leading zero 的记数.
 inline int numberOfLeadingZeros(uint64_t hash, int indexBitLength) {
   // Place a 1 in the LSB to preserve the original number of leading zeros if
   // the hash happens to be 0.

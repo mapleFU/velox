@@ -34,6 +34,7 @@ namespace facebook::velox::aggregate::prestosql {
 
 namespace {
 
+// 同时持有 dense 和 Sparse 的逻辑
 struct HllAccumulator {
   explicit HllAccumulator(HashStringAllocator* allocator)
       : sparseHll_{allocator}, denseHll_{allocator} {}

@@ -19,8 +19,10 @@
 
 namespace facebook::velox::common::hll {
 namespace {
-const int8_t kValueBitLength = 6;
-const int8_t kIndexBitLength = 26;
+// 默认使用 32 位, 所以 bit-length = 6,
+// index length = 26.
+constexpr int8_t kValueBitLength = 6;
+constexpr int8_t kIndexBitLength = 26;
 
 inline uint32_t encode(uint32_t index, uint32_t value) {
   return index << kValueBitLength | value;
@@ -74,6 +76,7 @@ bool SparseHll::insertHash(uint64_t hash) {
   auto value = numberOfLeadingZeros(hash, kIndexBitLength);
 
   auto entry = encode(index, value);
+  // 找到在 entries 这个 u32 数组中的位置.
   auto position = searchIndex(index, entries_);
 
   if (position >= 0) {
@@ -93,7 +96,7 @@ int64_t SparseHll::cardinality() const {
   // 2^kIndexBitLength buckets available due to the fact that we're
   // recording the raw leading kIndexBitLength of the hash. This produces
   // much better precision while in the sparse regime.
-  static const int kTotalBuckets = 1 << kIndexBitLength;
+  constexpr int kTotalBuckets = 1 << kIndexBitLength;
 
   int zeroBuckets = kTotalBuckets - entries_.size();
   return std::round(linearCounting(zeroBuckets, kTotalBuckets));
