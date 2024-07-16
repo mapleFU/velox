@@ -31,6 +31,7 @@ class SparseHll {
 
   SparseHll(const char* serialized, HashStringAllocator* allocator);
 
+  // 这里 Memory Limit 用类似估算的方案.
   void setSoftMemoryLimit(uint32_t softMemoryLimit) {
     softNumEntriesLimit_ = softMemoryLimit / 4;
   }

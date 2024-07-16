@@ -26,6 +26,9 @@ class SparseHll;
 ///
 /// Memory usage: 2 ^ (indexBitLength - 1) bytes. 2KB for indexBitLength of 12
 /// which provides max standard error of 0.023.
+///
+/// 参考: https://engineering.fb.com/2018/12/13/data-infrastructure/hyperloglog/
+/// 这里还有额外的 baseline 之类的概念.
 class DenseHll {
  public:
   DenseHll(int8_t indexBitLength, HashStringAllocator* allocator);

@@ -76,7 +76,8 @@ bool SparseHll::insertHash(uint64_t hash) {
   auto value = numberOfLeadingZeros(hash, kIndexBitLength);
 
   auto entry = encode(index, value);
-  // 找到在 entries 这个 u32 数组中的位置.
+  // 找到在 entries 这个 u32 数组中的位置, 如果找到则更新 value,
+  // 否则插入 entries_.
   auto position = searchIndex(index, entries_);
 
   if (position >= 0) {
