@@ -98,6 +98,7 @@ int8_t getOverflowImpl(
 
 double correctBias(double rawEstimate, int8_t indexBitLength) {
   const auto& estimates = BiasCorrection::kRawEstimates[indexBitLength - 4];
+  // 如果特别小或者特特别大就啥都不做.
   if (rawEstimate < estimates[0] ||
       rawEstimate > estimates[estimates.size() - 1]) {
     return rawEstimate;
@@ -243,6 +244,7 @@ int64_t cardinalityImpl(const DenseHllView& hll) {
   }
 
   double estimate = (alpha(hll.indexBitLength) * numBuckets * numBuckets) / sum;
+  // 需要修正 bias
   estimate = correctBias(estimate, hll.indexBitLength);
 
   return std::round(estimate);
