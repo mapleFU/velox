@@ -26,6 +26,8 @@ class SparseHll;
 ///
 /// Memory usage: 2 ^ (indexBitLength - 1) bytes. 2KB for indexBitLength of 12
 /// which provides max standard error of 0.023.
+///
+///
 class DenseHll {
  public:
   DenseHll(int8_t indexBitLength, HashStringAllocator* allocator);
@@ -142,9 +144,12 @@ class DenseHll {
   int8_t indexBitLength_;
 
   /// The baseline value for the deltas.
+  ///
+  /// 这个地方含义是, 给一个基数(0的数量)做修正.
   int8_t baseline_{0};
 
   /// Number of zero deltas.
+  /// 更新为 0 的 delta.
   int32_t baselineCount_;
 
   /// Per-bucket values represented as deltas from the baseline_. Each entry
@@ -157,6 +162,9 @@ class DenseHll {
   int16_t overflows_{0};
 
   /// List of buckets with overflowing values.
+  ///
+  /// overflow 拆分了 bucket 和 value. 和 sparse 的逻辑基本没区别, 但 sparse
+  /// 拆分 了 24B 的前缀.
   std::vector<uint16_t, StlAllocator<uint16_t>> overflowBuckets_;
 
   /// Overflowing values stored as deltas from the deltas: value - 15 -

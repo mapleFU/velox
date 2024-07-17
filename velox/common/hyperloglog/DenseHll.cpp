@@ -23,6 +23,7 @@
 
 namespace facebook::velox::common::hll {
 namespace {
+// index 不固定, per-bucket count 固定
 const int kBitsPerBucket = 4;
 const int8_t kMaxDelta = (1 << kBitsPerBucket) - 1;
 const int8_t kBucketMask = (1 << kBitsPerBucket) - 1;
@@ -32,6 +33,10 @@ constexpr double kLinearCountingMinEmptyBuckets = 0.4;
 /// Even buckets are stored in the first 4 bits of the byte. Odd buckets are
 /// stored in the last 4 bits of the byte. This function returns the offset in
 /// the byte for a given bucket, e.g. 0 for even and 4 for odd buckets.
+///
+/// 找到 4bit bucket 对应的位置, 因为这里 index length 可以缩放, 但是 value
+/// 用的是固定的 4bit ( indexKeyLength 是可变的, value 因为考虑 delta 修正,
+/// 所以感觉他们认为 4b 够用? 这里从 index 映射到对应的 bitpos. 这里返回 0/4
 int8_t shiftForBucket(int32_t index) {
   // ((1 - bucket) % 2) * kBitsPerBucket
   return ((~index) & 1) << 2;
@@ -39,6 +44,8 @@ int8_t shiftForBucket(int32_t index) {
 
 /// Returns the value of alpha constant. See "Practical considerations" section
 /// in https://en.wikipedia.org/wiki/HyperLogLog
+///
+/// bitLength 可以定义一个 Alpha.
 double alpha(int32_t indexBitLength) {
   switch (indexBitLength) {
     case 4:
@@ -144,6 +151,7 @@ void DenseHll::insertHash(uint64_t hash) {
 }
 
 void DenseHll::insert(int32_t index, int8_t value) {
+  // 修正0的位数
   auto delta = value - baseline_;
   auto oldDelta = getDelta(index);
 
@@ -157,6 +165,8 @@ void DenseHll::insert(int32_t index, int8_t value) {
   if (delta > kMaxDelta) {
     int8_t overflow = (int8_t)(delta - kMaxDelta);
 
+    // 超过上限的, 存放到 overflow values 里面,
+    // 这里机制类似 sparseHll.
     int overflowEntry = findOverflowEntry(index);
     if (overflowEntry != -1) {
       overflowValues_[overflowEntry] = overflow;
@@ -164,9 +174,11 @@ void DenseHll::insert(int32_t index, int8_t value) {
       addOverflow(index, overflow);
     }
 
+    // 修正到 maxDelta
     delta = kMaxDelta;
   }
 
+  // 更新新的 delta
   setDelta(index, delta);
 
   if (oldDelta == 0) {
@@ -186,10 +198,13 @@ struct DenseHllView {
   const int8_t* overflowValues;
 
   int8_t getDelta(int32_t index) const {
+    // slot = index / 2, 每个 slot 分到 4bit
     int slot = index >> 1;
+    // slot 再找到对应的, 然后 mask 最后 4b
     return (deltas[slot] >> shiftForBucket(index)) & kBucketMask;
   }
 
+  // value 是包含 delta 的实际逻辑.
   int8_t getValue(int32_t index) const {
     auto delta = getDelta(index);
 
@@ -205,6 +220,7 @@ struct DenseHllView {
 int64_t cardinalityImpl(const DenseHllView& hll) {
   auto numBuckets = 1 << hll.indexBitLength;
 
+  // 算出为 0 的数量
   int32_t baselineCount = 0;
   for (int i = 0; i < numBuckets; i++) {
     if (hll.getDelta(i) == 0) {
@@ -216,6 +232,7 @@ int64_t cardinalityImpl(const DenseHllView& hll) {
   // 0.
   if ((hll.baseline == 0) &&
       (baselineCount > (kLinearCountingMinEmptyBuckets * numBuckets))) {
+    // 0 过多的计算方式
     return std::round(linearCounting(baselineCount, numBuckets));
   }
 
@@ -300,6 +317,7 @@ int8_t DenseHll::getOverflow(int32_t index) const {
       index, overflows_, overflowBuckets_.data(), overflowValues_.data());
 }
 
+// overflow 的存储机制类似 sparseHll.
 int DenseHll::findOverflowEntry(int32_t index) const {
   for (auto i = 0; i < overflows_; i++) {
     if (overflowBuckets_[i] == index) {
@@ -309,6 +327,7 @@ int DenseHll::findOverflowEntry(int32_t index) const {
   return -1;
 }
 
+// 根据为 0 的量, 调整 baseline
 void DenseHll::adjustBaselineIfNeeded() {
   auto numBuckets = 1 << indexBitLength_;
 
