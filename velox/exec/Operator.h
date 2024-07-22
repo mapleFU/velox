@@ -463,7 +463,7 @@ class Operator : public BaseRuntimeStatWriter {
         toString());
   }
 
-  /// Returns a list of identify projections, e.g. columns that are projected
+  /// Returns a list of identity projections, e.g. columns that are projected
   /// as-is possibly after applying a filter.
   const std::vector<IdentityProjection>& identityProjections() const {
     return identityProjections_;
@@ -500,7 +500,7 @@ class Operator : public BaseRuntimeStatWriter {
     stats_.wlock()->addRuntimeStat(name, value);
   }
 
-  /// Returns reference to the operator stats synchronized object to gain bulck
+  /// Returns reference to the operator stats synchronized object to gain bulk
   /// read/write access to the stats.
   folly::Synchronized<OperatorStats>& stats() {
     return stats_;
@@ -510,7 +510,7 @@ class Operator : public BaseRuntimeStatWriter {
 
   virtual std::string toString() const;
 
-  /// Used in debug ednpoints.
+  /// Used in debug endpoints.
   virtual folly::dynamic toJson() const {
     folly::dynamic obj = folly::dynamic::object;
     obj["operator"] = toString();
