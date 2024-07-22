@@ -831,6 +831,8 @@ class SimpleFunctionAdapter : public VectorFunction {
         },
         [&](auto /* row */)
             INLINE_LAMBDA { applyContext.resultWriter.commitNull(); });
+
+    applyContext.resultWriter.finish();
   }
 
   // == NULLABLE VARIANTS ==

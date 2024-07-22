@@ -70,10 +70,8 @@ using FilterPtr = std::unique_ptr<Filter>;
  */
 class Filter : public velox::ISerializable {
  protected:
-  Filter(bool is_deterministic, bool nullAllowed, FilterKind kind)
-      : nullAllowed_(nullAllowed),
-        deterministic_(is_deterministic),
-        kind_(kind) {}
+  Filter(bool deterministic, bool nullAllowed, FilterKind kind)
+      : nullAllowed_(nullAllowed), deterministic_(deterministic), kind_(kind) {}
 
  public:
   virtual ~Filter() = default;
@@ -559,6 +557,10 @@ class IsNotNull final : public Filter {
   }
 
   bool testInt64(int64_t /* unused */) const final {
+    return true;
+  }
+
+  bool testInt128(int128_t /* unused */) const final {
     return true;
   }
 
@@ -1278,7 +1280,6 @@ class AbstractRange : public Filter {
     return obj;
   }
 
- protected:
   const bool lowerUnbounded_;
   const bool lowerExclusive_;
   const bool upperUnbounded_;
@@ -1820,6 +1821,11 @@ class TimestampRange final : public Filter {
         lower_.toString(),
         upper_.toString(),
         nullAllowed_ ? "with nulls" : "no nulls");
+  }
+
+  bool testInt128(int128_t value) const final {
+    const auto& ts = reinterpret_cast<const Timestamp&>(value);
+    return ts >= lower_ && ts <= upper_;
   }
 
   bool testTimestamp(Timestamp value) const override {

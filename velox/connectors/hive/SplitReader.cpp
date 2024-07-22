@@ -277,7 +277,9 @@ void SplitReader::createReader(
       scanSpec_,
       std::move(metadataFilter),
       ROW(std::move(columnNames), std::move(columnTypes)),
-      hiveSplit_);
+      hiveSplit_,
+      hiveConfig_,
+      connectorQueryCtx_->sessionProperties());
 }
 
 bool SplitReader::checkIfSplitIsEmpty(

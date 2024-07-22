@@ -240,6 +240,7 @@ Writer::Writer(
   arrowContext_->properties =
       getArrowParquetWriterOptions(options, flushPolicy_);
   setMemoryReclaimers();
+  writeInt96AsTimestamp_ = options.writeInt96AsTimestamp;
 }
 
 Writer::Writer(
@@ -257,7 +258,11 @@ Writer::Writer(
 void Writer::flush() {
   if (arrowContext_->stagingRows > 0) {
     if (!arrowContext_->writer) {
-      auto arrowProperties = ArrowWriterProperties::Builder().build();
+      ArrowWriterProperties::Builder builder;
+      if (writeInt96AsTimestamp_) {
+        builder.enable_deprecated_int96_timestamps();
+      }
+      auto arrowProperties = builder.build();
       PARQUET_ASSIGN_OR_THROW(
           arrowContext_->writer,
           FileWriter::Open(
@@ -416,10 +421,10 @@ void Writer::setMemoryReclaimers() {
 
 std::unique_ptr<dwio::common::Writer> ParquetWriterFactory::createWriter(
     std::unique_ptr<dwio::common::FileSink> sink,
-    const dwio::common::WriterOptions& options) {
-  auto parquetOptions = getParquetOptions(options);
+    const std::shared_ptr<dwio::common::WriterOptions>& options) {
+  auto parquetOptions = getParquetOptions(*options);
   return std::make_unique<Writer>(
-      std::move(sink), parquetOptions, asRowType(options.schema));
+      std::move(sink), parquetOptions, asRowType(options->schema));
 }
 
 } // namespace facebook::velox::parquet
