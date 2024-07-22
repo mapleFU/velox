@@ -41,11 +41,15 @@ struct FileHandle {
   // Each time we make a new FileHandle we assign it a uuid and use that id as
   // the identifier in downstream data caching structures. This saves a lot of
   // memory compared to using the filename as the identifier.
+  //
+  // 根据文件名静态规则生成的文件名 id, 这个 id 是全局唯一的.
   StringIdLease uuid;
 
   // Id for the group of files this belongs to, e.g. its
   // directory. Used for coarse granularity access tracking, for
   // example to decide placing on SSD.
+  //
+  // 根据文件名静态规则生成的目录 id, 这个 id 是全局唯一的.
   StringIdLease groupId;
 
   // We'll want to have a hash map here to record the identifier->byte range

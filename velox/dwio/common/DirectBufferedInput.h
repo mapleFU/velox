@@ -29,6 +29,7 @@
 
 namespace facebook::velox::dwio::common {
 
+/// 单个 ColumnChunk 作为一个 LoadRequest.
 struct LoadRequest {
   LoadRequest() = default;
   LoadRequest(velox::common::Region _region, cache::TrackingId _trackingId)
@@ -36,6 +37,7 @@ struct LoadRequest {
 
   velox::common::Region region;
   cache::TrackingId trackingId;
+  // 是否已经处理过
   bool processed{false};
 
   const SeekableInputStream* stream{nullptr};
@@ -48,6 +50,8 @@ struct LoadRequest {
 };
 
 /// Represents planned loads that should be performed as a single IO.
+///
+/// Direct 的去 load 的类型.
 class DirectCoalescedLoad : public cache::CoalescedLoad {
  public:
   DirectCoalescedLoad(
@@ -58,7 +62,7 @@ class DirectCoalescedLoad : public cache::CoalescedLoad {
       memory::MemoryPool& pool,
       int32_t loadQuantum)
       : CoalescedLoad({}, {}),
-        ioStats_(ioStats),
+        ioStats_(std::move(ioStats)),
         groupId_(groupId),
         input_(std::move(input)),
         loadQuantum_(loadQuantum),
@@ -71,6 +75,8 @@ class DirectCoalescedLoad : public cache::CoalescedLoad {
 
   /// Loads the regions. Returns {} since no cache entries are made. The loaded
   /// data is retrieved with getData().
+  ///
+  /// 本身不做任何 Cache.
   std::vector<cache::CachePin> loadData(bool prefetch) override;
 
   /// Returns the buffer for 'region' in either 'data' or 'tinyData'. 'region'
@@ -96,12 +102,13 @@ class DirectCoalescedLoad : public cache::CoalescedLoad {
   const std::shared_ptr<ReadFileInputStream> input_;
   const int32_t loadQuantum_;
   memory::MemoryPool& pool_;
+  // 子 LoadRequest
   std::vector<LoadRequest> requests_;
 };
 
 /// https://github.com/facebookincubator/velox/commit/55e24867781e797a3ed7d9e119668dbee70ad9fb
-/// 这里描述写的比较详细:
-/// 1.
+/// 这里描述写的比较详细. 总之是个按照 Column Chunk 来 Track 并决定是否 io
+/// 的类型.
 class DirectBufferedInput : public BufferedInput {
  public:
   static constexpr int32_t kTinySize = 2'000;
@@ -141,10 +148,13 @@ class DirectBufferedInput : public BufferedInput {
     return false;
   }
 
+  // 根据比例来尝试 load 一把
   void load(const LogType /*unused*/) override;
 
+  // 不 buffer
   bool isBuffered(uint64_t offset, uint64_t length) const override;
 
+  // 不 Preload
   bool shouldPreload(int32_t numPages = 0) override;
 
   bool shouldPrefetchStripes() const override {
@@ -215,6 +225,7 @@ class DirectBufferedInput : public BufferedInput {
   // covers.
   void readRegion(std::vector<LoadRequest*> requests, bool prefetch);
 
+  // 文件的 Id( 而不是数量 ).
   const uint64_t fileNum_;
   const std::shared_ptr<cache::ScanTracker> tracker_;
   const uint64_t groupId_;

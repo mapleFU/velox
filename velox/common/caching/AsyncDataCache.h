@@ -104,6 +104,8 @@ struct FileCacheKey {
 };
 
 /// Non-owning reference to a file number and offset.
+///
+/// 文件 id 和 IO-offset 作为一个 Load 里面的 key
 struct RawFileCacheKey {
   uint64_t fileNum;
   uint64_t offset;
@@ -421,6 +423,9 @@ class CachePin {
 /// to load multiple entries in most IOs. The IO is either done by a background
 /// prefetch thread or if the query thread gets there first, then the query
 /// thread will do the IO. The IO is also cancelled as a unit.
+///
+/// 是 Cache 的一个子类型, 但同时一些非 Cache 的合并 io (比如 Direct Load)
+/// 也会根据这个东西 来决定是否去 load.
 class CoalescedLoad {
  public:
   /// State of a CoalescedLoad
@@ -439,6 +444,8 @@ class CoalescedLoad {
   /// thread is in the process of doing this and 'wait' is not null, waits for
   /// the other thread to be done. If 'ssdSavable' is true, marks the loaded
   /// entries as ssdsavable.
+  ///
+  /// IO 或者产生一个 Future.
   bool loadOrFuture(folly::SemiFuture<bool>* wait, bool ssdSavable = true);
 
   State state() const {

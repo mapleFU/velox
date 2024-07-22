@@ -31,7 +31,7 @@ namespace facebook::velox::dwio::common {
 /// 外部的请求按照 `Region` 来切分, Region 带上了对应的 Label.
 class BufferedInput {
  public:
-  // 默认合并 1.5MB 的距离
+  // 默认合并 1.25MB 的距离
   constexpr static uint64_t kMaxMergeDistance = 1024 * 1024 * 1.25;
 
   BufferedInput(
@@ -129,7 +129,7 @@ class BufferedInput {
   // BufferedInput has background load.
   //
   // 在 IO 介质上判断这里的内容需要 Prefetch, 看实现上 Cached 就会需要
-  // buffer.
+  // buffer. 否则如果是 Direct 就不去 Buffer.
   virtual bool shouldPrefetchStripes() const {
     return false;
   }

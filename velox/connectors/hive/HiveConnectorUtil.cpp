@@ -687,6 +687,7 @@ bool testFilters(
   return true;
 }
 
+// 目前创建的 BufferInput 只有 Direct 和 Buffered 两种
 std::unique_ptr<dwio::common::BufferedInput> createBufferedInput(
     const FileHandle& fileHandle,
     const dwio::common::ReaderOptions& readerOpts,

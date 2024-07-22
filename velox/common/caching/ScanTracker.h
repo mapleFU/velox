@@ -116,7 +116,8 @@ struct TrackingData {
 /// partition) a tracking event pertains to, since a single ScanTracker can
 /// range over multiple partitions.
 ///
-/// 列访问的频繁程度, 在 TableScan Task 多 Driver 中共享(实现在 Connector 中)
+/// 列访问的频繁程度, 在 TableScan Task 多 Driver 中共享(实现在 Connector 中),
+/// 达到一定 比例可以允许去 load 这列.
 class ScanTracker {
  public:
   ScanTracker() : ScanTracker({}, nullptr, 1) {}
@@ -126,8 +127,6 @@ class ScanTracker {
   /// 'unregisterer' is supplied so that the destructor can remove the weak_ptr
   /// from the map of pending trackers. 'loadQuantum' is the largest single IO
   /// size for read.
-  ///
-  ///
   ScanTracker(
       std::string_view id,
       std::function<void(ScanTracker*)> unregisterer,
