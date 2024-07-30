@@ -253,7 +253,9 @@ void SplitReader::createReader(
   if (auto* cacheTTLController = cache::CacheTTLController::getInstance()) {
     cacheTTLController->addOpenFileInfo(fileHandleCachePtr->uuid.id());
   }
-  // 创建 BufferInput, 给读来做处理.
+  // 创建 BufferedInput, 给读来做处理
+  // 这个地方可能是一个 CachedBufferedInput, 也可能是一个 DirectBufferedInput,
+  // 根据是否开启 Cache 来决定这里的行为.
   auto baseFileInput = createBufferedInput(
       *fileHandleCachePtr,
       baseReaderOpts_,
@@ -314,6 +316,8 @@ bool SplitReader::checkIfSplitIsEmpty(
 
 void SplitReader::createRowReader() {
   VELOX_CHECK_NULL(baseRowReader_);
+  // 这个 RowReader 其实是一个两级别的概念, RowReader 之后有一个 Base RowReader,
+  // 但是这里也有个问题是, Base RowReader 只有一个.
   baseRowReader_ = baseReader_->createRowReader(baseRowReaderOpts_);
 }
 

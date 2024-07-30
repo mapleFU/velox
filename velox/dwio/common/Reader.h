@@ -138,6 +138,10 @@ class RowReader {
    * of i.e. calling next and having the main thread load the stripe.
    * @return std::nullopt if the reader implementation does not support
    * prefetching.
+   *
+   * 返回一组 PrefetchUnit, PrefetchUnit 的抽象是对应到 RowCount(这合理吗?), 外部可以根据
+   * 行之类的情况来做 Prefetching 的调度.
+   * NOTE(mwish): 在笔者看这段代码的时候, 还没有一个开源的代码实现了这块的逻辑, 擦.
    */
   virtual std::optional<std::vector<PrefetchUnit>> prefetchUnits() {
     return std::nullopt;

@@ -427,6 +427,9 @@ class RowReaderOptions {
 };
 
 /// Options for creating a Reader.
+///
+/// 包含: MemoryPool, FooterSize, Preload 整个文件的大小的阈值, fileFormat,
+/// fileSchema(预期的?)
 class ReaderOptions : public io::ReaderOptions {
  public:
   static constexpr uint64_t kDefaultFooterEstimatedSize = 1024 * 1024; // 1MB

@@ -44,6 +44,10 @@ class PositionProvider {
  * A subclass of Google's ZeroCopyInputStream that supports seek.
  * By extending Google's class, we get the ability to pass it directly
  * to the protobuf readers.
+ *
+ * 没绷住, 还直接兼容了 Google 的 ZeroCopyInputStream...
+ * 我个人总觉得这种多个类型包装是那种明显组合更好的场景...不过问了一下, 这套还是
+ * Apache ORC 的代码遗毒...
  */
 class SeekableInputStream : public google::protobuf::io::ZeroCopyInputStream {
  public:
@@ -85,6 +89,8 @@ class SeekableArrayInputStream : public SeekableInputStream {
       uint64_t length,
       uint64_t block_size = 0);
 
+  /// 这是一个最特殊的函数, 其他都是正常包装, 这个函数抽了一个 `dataRead`
+  /// 出来, 分发实际的 IO 请求. 通过内部 `loadIfAvailable` 加载.
   explicit SeekableArrayInputStream(
       std::function<std::tuple<const char*, uint64_t>()> dataRead,
       uint64_t block_size = 0);
@@ -120,6 +126,9 @@ class SeekableArrayInputStream : public SeekableInputStream {
 
 /**
  * Create a seekable input stream based on an io stream.
+ *
+ * 这里比较特殊的是还有一层 LogType, 也是个包装器, 把 readFile 包装
+ * 的 `ReadFileInputStream` 再包装成 `SeekableInputStream`.
  */
 class SeekableFileInputStream : public SeekableInputStream {
  public:

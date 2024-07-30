@@ -52,6 +52,7 @@ class HiveTableHandle;
 class HiveColumnHandle;
 class HiveConfig;
 
+/// Iceberg 或者别的种类的 Split 的消费者 ( Reader )
 class SplitReader {
  public:
   static std::unique_ptr<SplitReader> create(
@@ -89,6 +90,8 @@ class SplitReader {
   /// do additional preparations before reading the split, e.g. Open delete
   /// files or log files, and add column adapatations for metadata columns. It
   /// would be called only once per incoming split
+  ///
+  /// 创建 Prepare 来处理一些垃圾
   virtual void prepareSplit(
       std::shared_ptr<common::MetadataFilter> metadataFilter,
       dwio::common::RuntimeStatistics& runtimeStats,

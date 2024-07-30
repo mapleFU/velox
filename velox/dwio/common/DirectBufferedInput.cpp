@@ -91,6 +91,7 @@ int32_t adjustedReadPct(const cache::TrackingData& trackingData) {
 }
 } // namespace
 
+// 把实际的 Prefetch 逻辑做到 Load 里头
 void DirectBufferedInput::load(const LogType /*unused*/) {
   // After load, new requests cannot be merged into pre-load ones.
   auto requests = std::move(requests_);

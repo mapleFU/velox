@@ -42,6 +42,16 @@
 namespace facebook::velox {
 
 // A read-only file.  All methods in this object should be thread safe.
+//
+// 包装了 Velox 的读, 重点是:
+// 1. pread 本身
+// 2. preadv: 把 offset + value read 分发到多个 buffer 中, 是一个 Merged read
+//    下层需要的 API. 他这个 read file 搞法还是一下分发给多个子 Range, arrow
+//    则是 整个 Range 读取, 在这个 Range 内的读就是被 Cached 的.
+// 2.2. preadv 还带了一个多个 folly::IOBuf 的实现, IOBuf 好像好几个类似的:
+//   * https://brpc.apache.org/zh/docs/c++-base/iobuf/
+//   * https://github.com/facebook/folly/blob/main/folly/io/IOBuf.h
+// 3. shouldCoalesce() 推荐上层是否合并 IO 读取
 class ReadFile {
  public:
   virtual ~ReadFile() = default;

@@ -31,6 +31,8 @@ DECLARE_int32(cache_load_quantum);
 
 namespace facebook::velox::dwio::common {
 
+// 单个请求被当成 CacheRequest, 其实我总觉得这个应该是 BufferedInput
+// 的一部分, 在 Cache 里面也蛮奇怪的.
 struct CacheRequest {
   CacheRequest(
       cache::RawFileCacheKey _key,
@@ -127,6 +129,7 @@ class CachedBufferedInput : public BufferedInput {
   /// if shouldPreload() is false.
   bool prefetch(velox::common::Region region);
 
+  // 我日, 这地方为什么是 numPage?
   bool shouldPreload(int32_t numPages = 0) override;
 
   bool shouldPrefetchStripes() const override {
