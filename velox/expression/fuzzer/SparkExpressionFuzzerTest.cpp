@@ -24,6 +24,14 @@
 
 #include "velox/expression/fuzzer/FuzzerRunner.h"
 #include "velox/functions/sparksql/Register.h"
+#include "velox/functions/sparksql/fuzzer/AddSubtractArgGenerator.h"
+#include "velox/functions/sparksql/fuzzer/DivideArgGenerator.h"
+#include "velox/functions/sparksql/fuzzer/MakeTimestampArgGenerator.h"
+#include "velox/functions/sparksql/fuzzer/MultiplyArgGenerator.h"
+#include "velox/functions/sparksql/fuzzer/UnscaledValueArgGenerator.h"
+
+using namespace facebook::velox::functions::sparksql::fuzzer;
+using facebook::velox::fuzzer::ArgGenerator;
 
 DEFINE_int64(
     seed,
@@ -54,11 +62,29 @@ int main(int argc, char** argv) {
       "chr",
       "replace",
       "might_contain",
-      "unix_timestamp"};
+      "unix_timestamp",
+      // from_unixtime throws VeloxRuntimeError when the timestamp is out of the
+      // supported range.
+      "from_unixtime",
+      // timestamp_millis(bigint) can generate timestamps out of the supported
+      // range that make other functions throw VeloxRuntimeErrors.
+      "timestamp_millis(bigint) -> timestamp",
+  };
 
   // Required by spark_partition_id function.
   std::unordered_map<std::string, std::string> queryConfigs = {
-      {facebook::velox::core::QueryConfig::kSparkPartitionId, "123"}};
+      {facebook::velox::core::QueryConfig::kSparkPartitionId, "123"},
+      {facebook::velox::core::QueryConfig::kSessionTimezone,
+       "America/Los_Angeles"}};
 
-  return FuzzerRunner::run(FLAGS_seed, skipFunctions, queryConfigs);
+  std::unordered_map<std::string, std::shared_ptr<ArgGenerator>> argGenerators =
+      {{"add", std::make_shared<AddSubtractArgGenerator>()},
+       {"subtract", std::make_shared<AddSubtractArgGenerator>()},
+       {"multiply", std::make_shared<MultiplyArgGenerator>()},
+       {"divide", std::make_shared<DivideArgGenerator>()},
+       {"unscaled_value", std::make_shared<UnscaledValueArgGenerator>()},
+       {"make_timestamp", std::make_shared<MakeTimestampArgGenerator>()}};
+
+  return FuzzerRunner::run(
+      FLAGS_seed, skipFunctions, queryConfigs, argGenerators);
 }

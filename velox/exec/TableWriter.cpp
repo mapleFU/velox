@@ -119,14 +119,14 @@ void TableWriter::addInput(RowVectorPtr input) {
   if (input->size() == 0) {
     return;
   }
-
+  traceInput(input);
   std::vector<VectorPtr> mappedChildren;
   mappedChildren.reserve(inputMapping_.size());
-  for (auto i : inputMapping_) {
+  for (const auto i : inputMapping_) {
     mappedChildren.emplace_back(input->childAt(i));
   }
 
-  auto mappedInput = std::make_shared<RowVector>(
+  const auto mappedInput = std::make_shared<RowVector>(
       input->pool(),
       mappedType_,
       input->nulls(),
@@ -253,6 +253,10 @@ void TableWriter::updateStats(const connector::DataSink::Stats& stats) {
     }
     lockedStats->addRuntimeStat(
         "numWrittenFiles", RuntimeCounter(stats.numWrittenFiles));
+    lockedStats->addRuntimeStat(
+        "writeIOTime",
+        RuntimeCounter(
+            stats.writeIOTimeUs * 1000, RuntimeCounter::Unit::kNanos));
   }
   if (!stats.spillStats.empty()) {
     *spillStats_.wlock() += stats.spillStats;

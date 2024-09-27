@@ -29,15 +29,17 @@
 
 #include <folly/Synchronized.h>
 
+namespace facebook::velox {
+class Config;
+}
 namespace facebook::velox::wave {
 class WaveDataSource;
 }
 namespace facebook::velox::common {
 class Filter;
 }
-
-namespace facebook::velox {
-class Config;
+namespace facebook::velox::config {
+class ConfigBase;
 }
 
 namespace facebook::velox::connector {
@@ -158,6 +160,7 @@ class DataSink {
   struct Stats {
     uint64_t numWrittenBytes{0};
     uint32_t numWrittenFiles{0};
+    uint64_t writeIOTimeUs{0};
     common::SpillStats spillStats;
 
     bool empty() const;
@@ -273,7 +276,7 @@ class ConnectorQueryCtx {
   ConnectorQueryCtx(
       memory::MemoryPool* operatorPool,
       memory::MemoryPool* connectorPool,
-      const Config* sessionProperties,
+      const config::ConfigBase* sessionProperties,
       const common::SpillConfig* spillConfig,
       common::PrefixSortConfig prefixSortConfig,
       std::unique_ptr<core::ExpressionEvaluator> expressionEvaluator,
@@ -314,7 +317,7 @@ class ConnectorQueryCtx {
     return connectorPool_;
   }
 
-  const Config* sessionProperties() const {
+  const config::ConfigBase* sessionProperties() const {
     return sessionProperties_;
   }
 
@@ -370,10 +373,18 @@ class ConnectorQueryCtx {
     return cancellationToken_;
   }
 
+  bool selectiveNimbleReaderEnabled() const {
+    return selectiveNimbleReaderEnabled_;
+  }
+
+  void setSelectiveNimbleReaderEnabled(bool value) {
+    selectiveNimbleReaderEnabled_ = value;
+  }
+
  private:
   memory::MemoryPool* const operatorPool_;
   memory::MemoryPool* const connectorPool_;
-  const Config* const sessionProperties_;
+  const config::ConfigBase* const sessionProperties_;
   const common::SpillConfig* const spillConfig_;
   const common::PrefixSortConfig prefixSortConfig_;
   std::unique_ptr<core::ExpressionEvaluator> expressionEvaluator_;
@@ -385,6 +396,7 @@ class ConnectorQueryCtx {
   const std::string planNodeId_;
   const std::string sessionTimezone_;
   const folly::CancellationToken cancellationToken_;
+  bool selectiveNimbleReaderEnabled_{false};
 };
 
 class Connector {
@@ -397,7 +409,8 @@ class Connector {
     return id_;
   }
 
-  virtual const std::shared_ptr<const Config>& connectorConfig() const {
+  virtual const std::shared_ptr<const config::ConfigBase>& connectorConfig()
+      const {
     VELOX_NYI("connectorConfig is not supported yet");
   }
 
@@ -470,7 +483,7 @@ class ConnectorFactory {
 
   virtual std::shared_ptr<Connector> newConnector(
       const std::string& id,
-      std::shared_ptr<const Config> config,
+      std::shared_ptr<const config::ConfigBase> config,
       folly::Executor* executor = nullptr) = 0;
 
  private:

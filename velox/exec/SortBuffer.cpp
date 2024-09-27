@@ -77,6 +77,10 @@ SortBuffer::SortBuffer(
       ROW(std::move(sortedSpillColumnNames), std::move(sortedSpillColumnTypes));
 }
 
+SortBuffer::~SortBuffer() {
+  pool_->release();
+}
+
 void SortBuffer::addInput(const VectorPtr& input) {
   VELOX_CHECK(!noMoreInput_);
   ensureInputFits(input);
@@ -90,14 +94,17 @@ void SortBuffer::addInput(const VectorPtr& input) {
   for (const auto& columnProjection : columnMap_) {
     DecodedVector decoded(
         *inputRow->childAt(columnProjection.outputChannel), allRows);
-    for (int i = 0; i < input->size(); ++i) {
-      data_->store(decoded, i, rows[i], columnProjection.inputChannel);
-    }
+    data_->store(
+        decoded,
+        folly::Range(rows.data(), input->size()),
+        columnProjection.inputChannel);
   }
   numInputRows_ += allRows.size();
 }
 
 void SortBuffer::noMoreInput() {
+  velox::common::testutil::TestValue::adjust(
+      "facebook::velox::exec::SortBuffer::noMoreInput", this);
   VELOX_CHECK(!noMoreInput_);
   noMoreInput_ = true;
 
@@ -130,13 +137,18 @@ void SortBuffer::noMoreInput() {
   pool_->release();
 }
 
-RowVectorPtr SortBuffer::getOutput(uint32_t maxOutputRows) {
+RowVectorPtr SortBuffer::getOutput(vector_size_t maxOutputRows) {
+  SCOPE_EXIT {
+    pool_->release();
+  };
+
   VELOX_CHECK(noMoreInput_);
 
   if (numOutputRows_ == numInputRows_) {
     return nullptr;
   }
 
+  ensureOutputFits();
   prepareOutput(maxOutputRows);
   if (spiller_ != nullptr) {
     getOutputWithSpill();
@@ -228,6 +240,37 @@ void SortBuffer::ensureInputFits(const VectorPtr& input) {
                << ", reservation: " << succinctBytes(pool()->reservedBytes());
 }
 
+void SortBuffer::ensureOutputFits() {
+  // Check if spilling is enabled or not.
+  if (spillConfig_ == nullptr) {
+    return;
+  }
+
+  // Test-only spill path.
+  if (testingTriggerSpill(pool_->name())) {
+    spill();
+    return;
+  }
+
+  if (!estimatedOutputRowSize_.has_value()) {
+    return;
+  }
+
+  const uint64_t outputBufferSizeToReserve =
+      estimatedOutputRowSize_.value() * 1.2;
+  {
+    memory::ReclaimableSectionGuard guard(nonReclaimableSection_);
+    if (pool_->maybeReserve(outputBufferSizeToReserve)) {
+      return;
+    }
+  }
+  LOG(WARNING) << "Failed to reserve "
+               << succinctBytes(outputBufferSizeToReserve)
+               << " for memory pool " << pool_->name()
+               << ", usage: " << succinctBytes(pool_->usedBytes())
+               << ", reservation: " << succinctBytes(pool_->reservedBytes());
+}
+
 void SortBuffer::updateEstimatedOutputRowSize() {
   const auto optionalRowSize = data_->estimateRowSize();
   if (!optionalRowSize.has_value() || optionalRowSize.value() == 0) {
@@ -284,12 +327,11 @@ void SortBuffer::spillOutput() {
   finishSpill();
 }
 
-void SortBuffer::prepareOutput(uint32_t maxOutputRows) {
+void SortBuffer::prepareOutput(vector_size_t maxOutputRows) {
   VELOX_CHECK_GT(maxOutputRows, 0);
   VELOX_CHECK_GT(numInputRows_, numOutputRows_);
-
   const vector_size_t batchSize =
-      std::min<vector_size_t>(numInputRows_ - numOutputRows_, maxOutputRows);
+      std::min<uint64_t>(numInputRows_ - numOutputRows_, maxOutputRows);
   if (output_ != nullptr) {
     VectorPtr output = std::move(output_);
     BaseVector::prepareForReuse(output, batchSize);

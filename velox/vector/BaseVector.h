@@ -127,14 +127,22 @@ class BaseVector {
   template <typename T>
   T* asUnchecked() {
     static_assert(std::is_base_of_v<BaseVector, T>);
-    DCHECK(dynamic_cast<const T*>(this) != nullptr);
+    VELOX_DCHECK_NOT_NULL(
+        dynamic_cast<const T*>(this),
+        "Wrong type cast expected {}, but got {}",
+        typeid(T).name(),
+        typeid(*this).name());
     return static_cast<T*>(this);
   }
 
   template <typename T>
   const T* asUnchecked() const {
     static_assert(std::is_base_of_v<BaseVector, T>);
-    DCHECK(dynamic_cast<const T*>(this) != nullptr);
+    VELOX_DCHECK_NOT_NULL(
+        dynamic_cast<const T*>(this),
+        "Wrong type cast expected {}, but got {}",
+        typeid(T).name(),
+        typeid(*this).name());
     return static_cast<const T*>(this);
   }
 
@@ -176,6 +184,10 @@ class BaseVector {
 
   const TypePtr& type() const {
     return type_;
+  }
+
+  bool typeUsesCustomComparison() const {
+    return typeUsesCustomComparison_;
   }
 
   /// Changes vector type. The new type can have a different
@@ -361,30 +373,19 @@ class BaseVector {
     return encoding_ == VectorEncoding::Simple::CONSTANT;
   }
 
-<<<<<<< HEAD
-  // Returns true if this vector has a scalar type. If so, values are
-  // accessed by valueAt after casting the vector to a type()
-  // dependent instantiation of SimpleVector<T>.
-  //
-  // 这个地方是 "类型是否是 Scalar", 而不是 "Type 是否是 Scalar Type".
-=======
   /// Returns true if this vector has a scalar type. If so, values are
   /// accessed by valueAt after casting the vector to a type()
   /// dependent instantiation of SimpleVector<T>.
->>>>>>> main
+  ///
+  /// 这个地方是 "类型是否是 Scalar", 而不是 "Type 是否是 Scalar Type".
   virtual bool isScalar() const {
     return false;
   }
 
-<<<<<<< HEAD
-  // Returns the scalar or complex vector wrapped inside any nesting of
-  // dictionary, sequence or constant vectors.
-  //
-  // Dictionary -> 返回
-=======
   /// Returns the scalar or complex vector wrapped inside any nesting of
   /// dictionary, sequence or constant vectors.
->>>>>>> main
+  ///
+  /// Dictionary -> 返回
   virtual const BaseVector* wrappedVector() const {
     return this;
   }
@@ -484,9 +485,11 @@ class BaseVector {
       const vector_size_t* toSourceRow);
 
   /// Utility for making a deep copy of a whole vector.
-  static VectorPtr copy(const BaseVector& vector) {
-    auto result =
-        BaseVector::create(vector.type(), vector.size(), vector.pool());
+  static VectorPtr copy(
+      const BaseVector& vector,
+      velox::memory::MemoryPool* pool = nullptr) {
+    auto result = BaseVector::create(
+        vector.type(), vector.size(), pool ? pool : vector.pool());
     result->copy(&vector, 0, 0, vector.size());
     return result;
   }
@@ -517,10 +520,11 @@ class BaseVector {
   }
 
   /// This makes a deep copy of the Vector allocating new child Vectors and
-  // Buffers recursively.  Unlike copy, this preserves encodings recursively.
-  virtual VectorPtr copyPreserveEncodings() const = 0;
+  /// Buffers recursively.  Unlike copy, this preserves encodings recursively.
+  virtual VectorPtr copyPreserveEncodings(
+      velox::memory::MemoryPool* pool = nullptr) const = 0;
 
-  // Construct a zero-copy slice of the vector with the indicated offset and
+  /// Construct a zero-copy slice of the vector with the indicated offset and
   /// length.
   virtual VectorPtr slice(vector_size_t offset, vector_size_t length) const = 0;
 
@@ -817,9 +821,7 @@ class BaseVector {
   }
 
   void clearContainingLazyAndWrapped() {
-    if (containsLazyAndIsWrapped_) {
-      containsLazyAndIsWrapped_ = false;
-    }
+    containsLazyAndIsWrapped_ = false;
   }
 
   bool memoDisabled() const {
@@ -895,24 +897,18 @@ class BaseVector {
     ensureNullsCapacity(length_, true);
   }
 
-  // Slice a buffer with specific type.
-  //
-  // For boolean type and if the offset is not multiple of 8, return a shifted
-  // copy; otherwise return a BufferView into the original buffer (with shared
-  // ownership of original buffer).
-  static BufferPtr sliceBuffer(
-      const Type&,
-      const BufferPtr&,
-      vector_size_t offset,
-      vector_size_t length,
-      memory::MemoryPool*);
-
   BufferPtr sliceNulls(vector_size_t offset, vector_size_t length) const {
-    return sliceBuffer(*BOOLEAN(), nulls_, offset, length, pool_);
+    return nulls_ ? Buffer::slice<bool>(nulls_, offset, length, pool_) : nulls_;
   }
 
   TypePtr type_;
   const TypeKind typeKind_;
+  // Whether `type_` is a type that provides custom comparison operations.
+  // We use this instead of calling type_->providesCustomCompare() because
+  // having a constant field helps the compiler to pull this condition up in
+  // loops, and `type_` itself is non-constant (though it can only be modified
+  // logically, so this property is safe to store).
+  const bool typeUsesCustomComparison_;
   const VectorEncoding::Simple encoding_;
   BufferPtr nulls_;
   // Caches raw pointer to 'nulls->as<uint64_t>().
@@ -953,7 +949,7 @@ class BaseVector {
 };
 
 /// Loops over rows in 'ranges' and invokes 'func' for each row.
-/// @param TFunc A void function taking two arguments: targetIndex and
+/// @param func A void function taking two arguments: targetIndex and
 /// sourceIndex.
 template <typename TFunc>
 void applyToEachRow(
@@ -967,7 +963,7 @@ void applyToEachRow(
 }
 
 /// Loops over 'ranges' and invokes 'func' for each range.
-/// @param TFunc A void function taking 3 arguments: targetIndex, sourceIndex
+/// @param func A void function taking 3 arguments: targetIndex, sourceIndex
 /// and count.
 template <typename TFunc>
 void applyToEachRange(

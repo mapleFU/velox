@@ -17,6 +17,7 @@
 #include "velox/exec/Spiller.h"
 #include <folly/ScopeGuard.h>
 #include "velox/common/base/AsyncSource.h"
+#include "velox/common/memory/MemoryArbitrator.h"
 #include "velox/common/testutil/TestValue.h"
 #include "velox/exec/Aggregate.h"
 #include "velox/exec/HashJoinBridge.h"
@@ -305,22 +306,26 @@ int64_t Spiller::extractSpillVector(
     RowVectorPtr& spillVector,
     size_t& nextBatchIndex) {
   VELOX_CHECK_NE(type_, Type::kHashJoinProbe);
-
+  uint64_t extractNs{0};
   auto limit = std::min<size_t>(rows.size() - nextBatchIndex, maxRows);
   VELOX_CHECK(!rows.empty());
   int32_t numRows = 0;
   int64_t bytes = 0;
-  for (; numRows < limit; ++numRows) {
-    bytes += container_->rowSize(rows[nextBatchIndex + numRows]);
-    if (bytes > maxBytes) {
-      // Increment because the row that went over the limit is part
-      // of the result. We must spill at least one row.
-      ++numRows;
-      break;
+  {
+    NanosecondTimer timer(&extractNs);
+    for (; numRows < limit; ++numRows) {
+      bytes += container_->rowSize(rows[nextBatchIndex + numRows]);
+      if (bytes > maxBytes) {
+        // Increment because the row that went over the limit is part
+        // of the result. We must spill at least one row.
+        ++numRows;
+        break;
+      }
     }
+    extractSpill(folly::Range(&rows[nextBatchIndex], numRows), spillVector);
+    nextBatchIndex += numRows;
   }
-  extractSpill(folly::Range(&rows[nextBatchIndex], numRows), spillVector);
-  nextBatchIndex += numRows;
+  updateSpillExtractVectorTime(extractNs);
   return bytes;
 }
 
@@ -413,9 +418,9 @@ void Spiller::ensureSorted(SpillRun& run) {
     return;
   }
 
-  uint64_t sortTimeUs{0};
+  uint64_t sortTimeNs{0};
   {
-    MicrosecondTimer timer(&sortTimeUs);
+    NanosecondTimer timer(&sortTimeNs);
     gfx::timsort(
         run.rows.begin(),
         run.rows.end(),
@@ -428,7 +433,7 @@ void Spiller::ensureSorted(SpillRun& run) {
 
   // NOTE: Always set a non-zero sort time to avoid flakiness in tests which
   // check sort time.
-  updateSpillSortTime(std::max<uint64_t>(1, sortTimeUs));
+  updateSpillSortTime(std::max<uint64_t>(1, sortTimeNs));
 }
 
 std::unique_ptr<Spiller::SpillStatus> Spiller::writeSpill(int32_t partition) {
@@ -476,7 +481,7 @@ void Spiller::runSpill(bool lastRun) {
     if (spillRuns_[partition].rows.empty()) {
       continue;
     }
-    writes.push_back(std::make_shared<AsyncSource<SpillStatus>>(
+    writes.push_back(memory::createAsyncMemoryReclaimTask<SpillStatus>(
         [partition, this]() { return writeSpill(partition); }));
     if ((writes.size() > 1) && executor_ != nullptr) {
       executor_->add([source = writes.back()]() { source->prepare(); });
@@ -525,14 +530,19 @@ void Spiller::runSpill(bool lastRun) {
   }
 }
 
-void Spiller::updateSpillFillTime(uint64_t timeUs) {
-  spillStats_->wlock()->spillFillTimeUs += timeUs;
-  common::updateGlobalSpillFillTime(timeUs);
+void Spiller::updateSpillFillTime(uint64_t timeNs) {
+  spillStats_->wlock()->spillFillTimeNanos += timeNs;
+  common::updateGlobalSpillFillTime(timeNs);
 }
 
-void Spiller::updateSpillSortTime(uint64_t timeUs) {
-  spillStats_->wlock()->spillSortTimeUs += timeUs;
-  common::updateGlobalSpillSortTime(timeUs);
+void Spiller::updateSpillSortTime(uint64_t timeNs) {
+  spillStats_->wlock()->spillSortTimeNanos += timeNs;
+  common::updateGlobalSpillSortTime(timeNs);
+}
+
+void Spiller::updateSpillExtractVectorTime(uint64_t timeNs) {
+  spillStats_->wlock()->spillExtractVectorTimeNanos += timeNs;
+  common::updateGlobalSpillExtractVectorTime(timeNs);
 }
 
 bool Spiller::needSort() const {
@@ -644,9 +654,9 @@ bool Spiller::fillSpillRuns(RowContainerIterator* iterator) {
   checkEmptySpillRuns();
 
   bool lastRun{false};
-  uint64_t execTimeUs{0};
+  uint64_t execTimeNs{0};
   {
-    MicrosecondTimer timer(&execTimeUs);
+    NanosecondTimer timer(&execTimeNs);
 
     // Number of rows to hash and divide into spill partitions at a time.
     constexpr int32_t kHashBatchSize = 4096;
@@ -690,7 +700,7 @@ bool Spiller::fillSpillRuns(RowContainerIterator* iterator) {
       }
     }
   }
-  updateSpillFillTime(execTimeUs);
+  updateSpillFillTime(execTimeNs);
 
   return lastRun;
 }
@@ -698,16 +708,16 @@ bool Spiller::fillSpillRuns(RowContainerIterator* iterator) {
 void Spiller::fillSpillRun(std::vector<char*>& rows) {
   VELOX_CHECK_EQ(bits_.numPartitions(), 1);
   checkEmptySpillRuns();
-  uint64_t execTimeUs{0};
+  uint64_t execTimeNs{0};
   {
-    MicrosecondTimer timer(&execTimeUs);
+    NanosecondTimer timer(&execTimeNs);
     spillRuns_[0].rows =
         SpillRows(rows.begin(), rows.end(), spillRuns_[0].rows.get_allocator());
     for (const auto* row : rows) {
       spillRuns_[0].numBytes += container_->rowSize(row);
     }
   }
-  updateSpillFillTime(execTimeUs);
+  updateSpillFillTime(execTimeNs);
 }
 
 std::string Spiller::toString() const {

@@ -61,8 +61,8 @@ class SelectivityInfo {
 class SelectivityTimer {
  public:
   SelectivityTimer(SelectivityInfo& info, uint64_t numIn)
-      : startClocks_(folly::hardware_timestamp()),
-        totalClocks_(&info.timeClocks_) {
+      : totalClocks_(&info.timeClocks_),
+        startClocks_(folly::hardware_timestamp()) {
     info.numIn_ += numIn;
   }
 
@@ -75,8 +75,8 @@ class SelectivityTimer {
   }
 
  private:
-  uint64_t startClocks_;
   uint64_t* const totalClocks_;
+  uint64_t startClocks_;
 };
 
 } // namespace velox

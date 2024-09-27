@@ -24,6 +24,13 @@
 #include "velox/dwio/common/CachedBufferedInput.h"
 #include "velox/dwio/common/DirectBufferedInput.h"
 #include "velox/dwio/common/Reader.h"
+#include "velox/dwio/dwrf/common/Config.h"
+#include "velox/dwio/dwrf/writer/Writer.h"
+
+#ifdef VELOX_ENABLE_PARQUET
+#include "velox/dwio/parquet/writer/Writer.h" // @manual
+#endif
+
 #include "velox/expression/Expr.h"
 #include "velox/expression/ExprToSubfieldFilter.h"
 #include "velox/type/TimestampConversion.h"
@@ -376,18 +383,17 @@ std::shared_ptr<common::ScanSpec> makeScanSpec(
     }
   }
 
-  int numChildren = 0;
   // Process columns that will be projected out.
   for (int i = 0; i < rowType->size(); ++i) {
     auto& name = rowType->nameOf(i);
     auto& type = rowType->childAt(i);
-    if (isRowIndexColumn(name, rowIndexColumn)) {
-      VELOX_CHECK(type->isBigint());
-      continue;
-    }
     auto it = outputSubfields.find(name);
     if (it == outputSubfields.end()) {
-      auto* fieldSpec = spec->addFieldRecursively(name, *type, numChildren++);
+      auto* fieldSpec = spec->addFieldRecursively(name, *type, i);
+      if (isRowIndexColumn(name, rowIndexColumn)) {
+        VELOX_CHECK(type->isBigint());
+        fieldSpec->setExplicitRowNumber(true);
+      }
       processFieldSpec(dataColumns, type, *fieldSpec);
       filterSubfields.erase(name);
       continue;
@@ -402,7 +408,13 @@ std::shared_ptr<common::ScanSpec> makeScanSpec(
       }
       filterSubfields.erase(it);
     }
-    auto* fieldSpec = spec->addField(name, numChildren++);
+    auto* fieldSpec = spec->addField(name, i);
+    if (isRowIndexColumn(name, rowIndexColumn)) {
+      VELOX_CHECK(type->isBigint());
+      // Set the flag for the case that the row index column only exists in
+      // remaining filters.
+      fieldSpec->setExplicitRowNumber(true);
+    }
     addSubfields(*type, subfieldSpecs, 1, pool, *fieldSpec);
     processFieldSpec(dataColumns, type, *fieldSpec);
     subfieldSpecs.clear();
@@ -416,7 +428,7 @@ std::shared_ptr<common::ScanSpec> makeScanSpec(
         subfieldSpecs.push_back({subfield, true});
       }
       auto& type = dataColumns->findChild(fieldName);
-      auto* fieldSpec = spec->getOrCreateChild(common::Subfield(fieldName));
+      auto* fieldSpec = spec->getOrCreateChild(fieldName);
       addSubfields(*type, subfieldSpecs, 1, pool, *fieldSpec);
       processFieldSpec(dataColumns, type, *fieldSpec);
       subfieldSpecs.clear();
@@ -489,11 +501,20 @@ std::unique_ptr<dwio::common::SerDeOptions> parseSerdeParameters(
     mapKeyDelim = parseDelimiter(mapKeyIt->second);
   }
 
-  uint8_t escapeChar;
-  bool hasEscapeChar = false;
-  if (escapeCharIt != serdeParameters.end() && !escapeCharIt->second.empty()) {
-    hasEscapeChar = true;
-    escapeChar = escapeCharIt->second[0];
+  // If escape character is specified then we use it, unless it is empty - in
+  // which case we default to '\\'.
+  // If escape character is not specified (not in the map) we turn escaping off.
+  // Logic is based on apache hive java code:
+  // https://github.com/apache/hive/blob/3f6f940af3f60cc28834268e5d7f5612e3b13c30/serde/src/java/org/apache/hadoop/hive/serde2/lazy/LazySerDeParameters.java#L105-L108
+  uint8_t escapeChar = '\\';
+  const bool hasEscapeChar = (escapeCharIt != serdeParameters.end());
+  if (hasEscapeChar) {
+    if (!escapeCharIt->second.empty()) {
+      // If delim is convertible to uint8_t then we use it as character code,
+      // otherwise we use the 1st character of the string.
+      escapeChar = folly::tryTo<uint8_t>(escapeCharIt->second)
+                       .value_or(escapeCharIt->second[0]);
+    }
   }
 
   auto serDeOptions = hasEscapeChar
@@ -548,6 +569,8 @@ void configureReaderOptions(
     const auto timezone = tz::locateZone(sessionTzName);
     readerOptions.setSessionTimezone(timezone);
   }
+  readerOptions.setSelectiveNimbleReaderEnabled(
+      connectorQueryCtx->selectiveNimbleReaderEnabled());
 
   if (readerOptions.fileFormat() != dwio::common::FileFormat::UNKNOWN) {
     VELOX_CHECK(
@@ -567,14 +590,14 @@ void configureReaderOptions(
 }
 
 void configureRowReaderOptions(
-    dwio::common::RowReaderOptions& rowReaderOptions,
     const std::unordered_map<std::string, std::string>& tableParameters,
     const std::shared_ptr<common::ScanSpec>& scanSpec,
     std::shared_ptr<common::MetadataFilter> metadataFilter,
     const RowTypePtr& rowType,
     const std::shared_ptr<const HiveConnectorSplit>& hiveSplit,
     const std::shared_ptr<const HiveConfig>& hiveConfig,
-    const Config* sessionProperties) {
+    const config::ConfigBase* sessionProperties,
+    dwio::common::RowReaderOptions& rowReaderOptions) {
   auto skipRowsIt =
       tableParameters.find(dwio::common::TableParameter::kSkipHeaderLineCount);
   if (skipRowsIt != tableParameters.end()) {
@@ -633,22 +656,22 @@ bool testFilters(
     const dwio::common::Reader* reader,
     const std::string& filePath,
     const std::unordered_map<std::string, std::optional<std::string>>&
-        partitionKey,
+        partitionKeys,
     const std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>&
         partitionKeysHandle) {
-  auto totalRows = reader->numberOfRows();
+  const auto totalRows = reader->numberOfRows();
   const auto& fileTypeWithId = reader->typeWithId();
   const auto& rowType = reader->rowType();
   for (const auto& child : scanSpec->children()) {
     if (child->filter()) {
       const auto& name = child->fieldName();
-      auto iter = partitionKey.find(name);
+      auto iter = partitionKeys.find(name);
       // By design, the partition key columns for Iceberg tables are included in
       // the data files to facilitate partition transform and partition
       // evolution, so we need to test both cases.
-      if (!rowType->containsChild(name) || iter != partitionKey.end()) {
-        if (iter != partitionKey.end() && iter->second.has_value()) {
-          auto handlesIter = partitionKeysHandle.find(name);
+      if (!rowType->containsChild(name) || iter != partitionKeys.end()) {
+        if (iter != partitionKeys.end() && iter->second.has_value()) {
+          const auto handlesIter = partitionKeysHandle.find(name);
           VELOX_CHECK(handlesIter != partitionKeysHandle.end());
 
           // This is a non-null partition key
@@ -668,7 +691,7 @@ bool testFilters(
         }
       } else {
         const auto& typeWithId = fileTypeWithId->childByName(name);
-        auto columnStats = reader->columnStatistics(typeWithId->id());
+        const auto columnStats = reader->columnStatistics(typeWithId->id());
         if (columnStats != nullptr &&
             !testFilter(
                 child->filter(),
@@ -847,6 +870,153 @@ core::TypedExprPtr extractFiltersFromRemainingFilter(
     }
   }
   return expr;
+}
+
+namespace {
+
+#ifdef VELOX_ENABLE_PARQUET
+std::optional<TimestampUnit> getTimestampUnit(
+    const config::ConfigBase& config,
+    const char* configKey) {
+  if (const auto unit = config.get<uint8_t>(configKey)) {
+    VELOX_CHECK(
+        unit == 0 /*second*/ || unit == 3 /*milli*/ || unit == 6 /*micro*/ ||
+            unit == 9 /*nano*/,
+        "Invalid timestamp unit: {}",
+        unit.value());
+    return std::optional(static_cast<TimestampUnit>(unit.value()));
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string> getTimestampTimeZone(
+    const config::ConfigBase& config,
+    const char* configKey) {
+  if (const auto timezone = config.get<std::string>(configKey)) {
+    return timezone.value();
+  }
+  return std::nullopt;
+}
+
+void updateParquetWriterOptions(
+    const std::shared_ptr<const HiveConfig>& hiveConfig,
+    const config::ConfigBase* sessionProperties,
+    std::shared_ptr<dwio::common::WriterOptions>& writerOptions) {
+  auto parquetWriterOptions =
+      std::dynamic_pointer_cast<parquet::WriterOptions>(writerOptions);
+  VELOX_CHECK_NOT_NULL(
+      parquetWriterOptions,
+      "Parquet writer expected a Parquet WriterOptions object.");
+
+  if (!parquetWriterOptions->parquetWriteTimestampUnit) {
+    parquetWriterOptions->parquetWriteTimestampUnit =
+        getTimestampUnit(
+            *sessionProperties,
+            parquet::WriterOptions::kParquetSessionWriteTimestampUnit)
+            .has_value()
+        ? getTimestampUnit(
+              *sessionProperties,
+              parquet::WriterOptions::kParquetSessionWriteTimestampUnit)
+        : getTimestampUnit(
+              *hiveConfig->config(),
+              parquet::WriterOptions::kParquetSessionWriteTimestampUnit);
+  }
+
+  if (!parquetWriterOptions->parquetWriteTimestampTimeZone) {
+    parquetWriterOptions->parquetWriteTimestampTimeZone =
+        getTimestampTimeZone(
+            *sessionProperties, core::QueryConfig::kSessionTimezone)
+            .has_value()
+        ? getTimestampTimeZone(
+              *sessionProperties, core::QueryConfig::kSessionTimezone)
+        : getTimestampTimeZone(
+              *hiveConfig->config(), core::QueryConfig::kSessionTimezone);
+  }
+
+  writerOptions = std::move(parquetWriterOptions);
+}
+#endif
+
+void updateDWRFWriterOptions(
+    const std::shared_ptr<const HiveConfig>& hiveConfig,
+    const config::ConfigBase* sessionProperties,
+    std::shared_ptr<dwio::common::WriterOptions>& writerOptions) {
+  auto dwrfWriterOptions =
+      std::dynamic_pointer_cast<dwrf::WriterOptions>(writerOptions);
+  VELOX_CHECK_NOT_NULL(
+      dwrfWriterOptions, "DWRF writer expected a DWRF WriterOptions object.");
+  std::map<std::string, std::string> configs;
+
+  if (writerOptions->compressionKind.has_value()) {
+    configs.emplace(
+        dwrf::Config::COMPRESSION.key,
+        std::to_string(writerOptions->compressionKind.value()));
+  }
+
+  configs.emplace(
+      dwrf::Config::STRIPE_SIZE.key,
+      std::to_string(hiveConfig->orcWriterMaxStripeSize(sessionProperties)));
+
+  configs.emplace(
+      dwrf::Config::MAX_DICTIONARY_SIZE.key,
+      std::to_string(
+          hiveConfig->orcWriterMaxDictionaryMemory(sessionProperties)));
+
+  configs.emplace(
+      dwrf::Config::INTEGER_DICTIONARY_ENCODING_ENABLED.key,
+      std::to_string(hiveConfig->isOrcWriterIntegerDictionaryEncodingEnabled(
+          sessionProperties)));
+  configs.emplace(
+      dwrf::Config::STRING_DICTIONARY_ENCODING_ENABLED.key,
+      std::to_string(hiveConfig->isOrcWriterStringDictionaryEncodingEnabled(
+          sessionProperties)));
+
+  configs.emplace(
+      dwrf::Config::COMPRESSION_BLOCK_SIZE_MIN.key,
+      std::to_string(
+          hiveConfig->orcWriterMinCompressionSize(sessionProperties)));
+
+  configs.emplace(
+      dwrf::Config::LINEAR_STRIPE_SIZE_HEURISTICS.key,
+      std::to_string(
+          hiveConfig->orcWriterLinearStripeSizeHeuristics(sessionProperties)));
+
+  configs.emplace(
+      dwrf::Config::ZLIB_COMPRESSION_LEVEL.key,
+      std::to_string(
+          hiveConfig->orcWriterZLIBCompressionLevel(sessionProperties)));
+
+  configs.emplace(
+      dwrf::Config::ZSTD_COMPRESSION_LEVEL.key,
+      std::to_string(
+          hiveConfig->orcWriterZSTDCompressionLevel(sessionProperties)));
+
+  dwrfWriterOptions->config = dwrf::Config::fromMap(configs);
+  writerOptions = std::move(dwrfWriterOptions);
+}
+
+} // namespace
+
+void updateWriterOptionsFromHiveConfig(
+    dwio::common::FileFormat fileFormat,
+    const std::shared_ptr<const HiveConfig>& hiveConfig,
+    const config::ConfigBase* sessionProperties,
+    std::shared_ptr<dwio::common::WriterOptions>& writerOptions) {
+  switch (fileFormat) {
+    case dwio::common::FileFormat::DWRF:
+      updateDWRFWriterOptions(hiveConfig, sessionProperties, writerOptions);
+      break;
+    case dwio::common::FileFormat::PARQUET:
+#ifdef VELOX_ENABLE_PARQUET
+      updateParquetWriterOptions(hiveConfig, sessionProperties, writerOptions);
+#endif
+      break;
+    case dwio::common::FileFormat::NIMBLE:
+      // No-op for now.
+      break;
+    default:
+      VELOX_UNSUPPORTED("{}", fileFormat);
+  }
 }
 
 } // namespace facebook::velox::connector::hive

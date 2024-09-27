@@ -52,25 +52,6 @@ class CastExprTest : public functions::test::CastBaseTest {
         {"error_on_odd_else_unknown"});
   }
 
-  void setLegacyCast(bool value) {
-    queryCtx_->testingOverrideConfigUnsafe({
-        {core::QueryConfig::kLegacyCast, std::to_string(value)},
-    });
-  }
-
-  void setCastMatchStructByName(bool value) {
-    queryCtx_->testingOverrideConfigUnsafe({
-        {core::QueryConfig::kCastMatchStructByName, std::to_string(value)},
-    });
-  }
-
-  void setTimezone(const std::string& value) {
-    queryCtx_->testingOverrideConfigUnsafe({
-        {core::QueryConfig::kSessionTimezone, value},
-        {core::QueryConfig::kAdjustTimestampToTimezone, "true"},
-    });
-  }
-
   std::shared_ptr<core::ConstantTypedExpr> makeConstantNullExpr(TypeKind kind) {
     return std::make_shared<core::ConstantTypedExpr>(
         createType(kind, {}), variant(kind));
@@ -565,6 +546,8 @@ TEST_F(CastExprTest, stringToTimestamp) {
       "1970-01-01 00:00:00",
       "2000-01-01 12:21:56",
       "1970-01-01 00:00:00-02:00",
+      "1970-01-01 00:00:00 +02",
+      "1970-01-01 00:00:00 -0101",
       std::nullopt,
   };
   std::vector<std::optional<Timestamp>> expected{
@@ -574,6 +557,8 @@ TEST_F(CastExprTest, stringToTimestamp) {
       Timestamp(0, 0),
       Timestamp(946729316, 0),
       Timestamp(7200, 0),
+      Timestamp(-7200, 0),
+      Timestamp(3660, 0),
       std::nullopt,
   };
   testCast<std::string, Timestamp>("timestamp", input, expected);
@@ -596,10 +581,27 @@ TEST_F(CastExprTest, stringToTimestamp) {
   };
   testCast<std::string, Timestamp>("timestamp", input, expected);
 
+  // Test invalid inputs.
   VELOX_ASSERT_THROW(
       (evaluateOnce<Timestamp, std::string>(
           "cast(c0 as timestamp)", "1970-01-01T00:00")),
       "Cannot cast VARCHAR '1970-01-01T00:00' to TIMESTAMP. Unable to parse timestamp value");
+  VELOX_ASSERT_THROW(
+      (evaluateOnce<Timestamp, std::string>(
+          "cast(c0 as timestamp)", "201915-04-23 11:46:00.000")),
+      "Timepoint is outside of supported year range");
+  VELOX_ASSERT_THROW(
+      (evaluateOnce<Timestamp, std::string>(
+          "try_cast(c0 as timestamp)", "201915-04-23 11:46:00.000")),
+      "Timepoint is outside of supported year range");
+  VELOX_ASSERT_THROW(
+      (evaluateOnce<Timestamp, std::string>(
+          "cast(c0 as timestamp)", "2045-12-31 18:00:00")),
+      "Unable to convert timezone 'America/Los_Angeles' past 2037-11-01 09:00:00");
+  VELOX_ASSERT_THROW(
+      (evaluateOnce<Timestamp, std::string>(
+          "try_cast(c0 as timestamp)", "2045-12-31 18:00:00")),
+      "Unable to convert timezone 'America/Los_Angeles' past 2037-11-01 09:00:00");
 
   setLegacyCast(true);
   input = {
@@ -840,10 +842,6 @@ TEST_F(CastExprTest, timestampAdjustToTimezone) {
       });
 }
 
-TEST_F(CastExprTest, timestampAdjustToTimezoneInvalid) {
-  VELOX_ASSERT_USER_THROW(setTimezone("bla"), "Unknown time zone: 'bla'");
-}
-
 TEST_F(CastExprTest, date) {
   testCast<std::string, int32_t>(
       "date",
@@ -1022,6 +1020,12 @@ TEST_F(CastExprTest, primitiveInvalidCornerCases) {
         "bigint", {"infinity"}, "Invalid leading character");
     testInvalidCast<std::string>(
         "bigint", {"nan"}, "Invalid leading character");
+    testInvalidCast<std::string>(
+        "bigint",
+        {"٣"},
+        "Unicode characters are not supported for conversion to integer types",
+        VARCHAR(),
+        true);
   }
 
   // To floating-point.
@@ -1275,7 +1279,8 @@ TEST_F(CastExprTest, mapCast) {
 
     SelectivityVector rows(5);
     rows.setValid(2, false);
-    mapVector->setOffsetAndSize(2, 100, 100);
+    mapVector->setOffsetAndSize(2, 100, 1);
+    mapVector->setOffsetAndSize(51, 2, 1);
     std::vector<VectorPtr> results(1);
 
     auto rowVector = makeRowVector({mapVector});
@@ -1365,7 +1370,8 @@ TEST_F(CastExprTest, arrayCast) {
 
     SelectivityVector rows(5);
     rows.setValid(2, false);
-    arrayVector->setOffsetAndSize(2, 100, 10);
+    arrayVector->setOffsetAndSize(2, 100, 5);
+    arrayVector->setOffsetAndSize(20, 10, 5);
     std::vector<VectorPtr> results(1);
 
     auto rowVector = makeRowVector({arrayVector});

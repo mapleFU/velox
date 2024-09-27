@@ -1093,8 +1093,49 @@ PlanNodePtr HashJoinNode::create(const folly::dynamic& obj, void* context) {
       outputType);
 }
 
+MergeJoinNode::MergeJoinNode(
+    const PlanNodeId& id,
+    JoinType joinType,
+    const std::vector<FieldAccessTypedExprPtr>& leftKeys,
+    const std::vector<FieldAccessTypedExprPtr>& rightKeys,
+    TypedExprPtr filter,
+    PlanNodePtr left,
+    PlanNodePtr right,
+    RowTypePtr outputType)
+    : AbstractJoinNode(
+          id,
+          joinType,
+          leftKeys,
+          rightKeys,
+          std::move(filter),
+          std::move(left),
+          std::move(right),
+          std::move(outputType)) {
+  VELOX_USER_CHECK(
+      isSupported(joinType_),
+      "The join type is not supported by merge join: ",
+      joinTypeName(joinType_));
+}
+
 folly::dynamic MergeJoinNode::serialize() const {
   return serializeBase();
+}
+
+// static
+bool MergeJoinNode::isSupported(core::JoinType joinType) {
+  switch (joinType) {
+    case core::JoinType::kInner:
+    case core::JoinType::kLeft:
+    case core::JoinType::kRight:
+    case core::JoinType::kLeftSemiFilter:
+    case core::JoinType::kRightSemiFilter:
+    case core::JoinType::kAnti:
+    case core::JoinType::kFull:
+      return true;
+
+    default:
+      return false;
+  }
 }
 
 // static
@@ -1136,9 +1177,8 @@ NestedLoopJoinNode::NestedLoopJoinNode(
       sources_({std::move(left), std::move(right)}),
       outputType_(std::move(outputType)) {
   VELOX_USER_CHECK(
-      core::isInnerJoin(joinType_) || core::isLeftJoin(joinType_) ||
-          core::isRightJoin(joinType_) || core::isFullJoin(joinType_),
-      "{} unsupported, NestedLoopJoin only supports inner and outer join",
+      isSupported(joinType_),
+      "The join type is not supported by nested loop join: ",
       joinTypeName(joinType_));
 
   auto leftType = sources_[0]->outputType();
@@ -1169,6 +1209,20 @@ NestedLoopJoinNode::NestedLoopJoinNode(
           left,
           right,
           outputType) {}
+
+// static
+bool NestedLoopJoinNode::isSupported(core::JoinType joinType) {
+  switch (joinType) {
+    case core::JoinType::kInner:
+    case core::JoinType::kLeft:
+    case core::JoinType::kRight:
+    case core::JoinType::kFull:
+      return true;
+
+    default:
+      return false;
+  }
+}
 
 void NestedLoopJoinNode::addDetails(std::stringstream& stream) const {
   stream << joinTypeName(joinType_);
@@ -1553,7 +1607,7 @@ MarkDistinctNode::MarkDistinctNode(
       sources_{std::move(source)},
       outputType_(
           getMarkDistinctOutputType(sources_[0]->outputType(), markerName_)) {
-  VELOX_USER_CHECK_GT(markerName_.size(), 0)
+  VELOX_USER_CHECK_GT(markerName_.size(), 0);
   VELOX_USER_CHECK_GT(distinctKeys_.size(), 0);
 }
 
@@ -1799,6 +1853,7 @@ folly::dynamic TableWriteNode::serialize() const {
   obj["connectorInsertTableHandle"] =
       insertTableHandle_->connectorInsertTableHandle()->serialize();
   obj["hasPartitioningScheme"] = hasPartitioningScheme_;
+  obj["hasBucketProperty"] = hasBucketProperty_;
   obj["outputType"] = outputType_->serialize();
   obj["commitStrategy"] = connector::commitStrategyToString(commitStrategy_);
   return obj;
@@ -1821,6 +1876,7 @@ PlanNodePtr TableWriteNode::create(const folly::dynamic& obj, void* context) {
           ISerializable::deserialize<connector::ConnectorInsertTableHandle>(
               obj["connectorInsertTableHandle"]));
   const bool hasPartitioningScheme = obj["hasPartitioningScheme"].asBool();
+  const bool hasBucketProperty = obj["hasBucketProperty"].asBool();
   auto outputType = deserializeRowType(obj["outputType"]);
   auto commitStrategy =
       connector::stringToCommitStrategy(obj["commitStrategy"].asString());
@@ -1833,6 +1889,7 @@ PlanNodePtr TableWriteNode::create(const folly::dynamic& obj, void* context) {
       std::make_shared<InsertTableHandle>(
           connectorId, connectorInsertTableHandle),
       hasPartitioningScheme,
+      hasBucketProperty,
       outputType,
       commitStrategy,
       source);

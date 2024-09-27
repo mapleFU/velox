@@ -80,7 +80,9 @@ RowVectorPtr wrapChildren(
 ExpressionFuzzerVerifier::ExpressionFuzzerVerifier(
     const FunctionSignatureMap& signatureMap,
     size_t initialSeed,
-    const ExpressionFuzzerVerifier::Options& options)
+    const ExpressionFuzzerVerifier::Options& options,
+    const std::unordered_map<std::string, std::shared_ptr<ArgGenerator>>&
+        argGenerators)
     : options_(options),
       queryCtx_(core::QueryCtx::create(
           nullptr,
@@ -98,7 +100,8 @@ ExpressionFuzzerVerifier::ExpressionFuzzerVerifier(
           signatureMap,
           initialSeed,
           vectorFuzzer_,
-          options.expressionFuzzerOptions) {
+          options.expressionFuzzerOptions,
+          argGenerators) {
   seed(initialSeed);
 
   // Init stats and register listener.
@@ -237,19 +240,17 @@ void ExpressionFuzzerVerifier::retryWithTry(
         plan->type(), std::vector<core::TypedExprPtr>{plan}, "try"));
   }
 
-  RowVectorPtr tryResult;
+  ResultOrError tryResult;
 
-  // The function throws if anything goes wrong.
+  // The function throws if anything goes wrong except
+  // UNSUPPORTED_INPUT_UNCATCHABLE errors.
   try {
-    tryResult =
-        verifier_
-            .verify(
-                tryPlans,
-                rowVector,
-                resultVector ? BaseVector::copy(*resultVector) : nullptr,
-                false, // canThrow
-                columnsToWrapInLazy)
-            .result;
+    tryResult = verifier_.verify(
+        tryPlans,
+        rowVector,
+        resultVector ? BaseVector::copy(*resultVector) : nullptr,
+        false, // canThrow
+        columnsToWrapInLazy);
   } catch (const std::exception&) {
     if (options_.findMinimalSubexpression) {
       test::computeMinimumSubExpression(
@@ -261,10 +262,15 @@ void ExpressionFuzzerVerifier::retryWithTry(
     }
     throw;
   }
+  if (tryResult.unsupportedInputUncatchableError) {
+    LOG(INFO)
+        << "Retry with try fails to find minimal subexpression due to UNSUPPORTED_INPUT_UNCATCHABLE error.";
+    return;
+  }
 
   // Re-evaluate the original expression on rows that didn't produce an
   // error (i.e. returned non-NULL results when evaluated with TRY).
-  BufferPtr noErrorIndices = extractNonNullIndices(tryResult);
+  BufferPtr noErrorIndices = extractNonNullIndices(tryResult.result);
 
   if (noErrorIndices != nullptr) {
     auto noErrorRowVector = wrapChildren(noErrorIndices, rowVector);
@@ -298,16 +304,21 @@ void ExpressionFuzzerVerifier::retryWithTry(
 void ExpressionFuzzerVerifier::go() {
   VELOX_CHECK(
       options_.steps > 0 || options_.durationSeconds > 0,
-      "Either --steps or --duration_sec needs to be greater than zero.")
+      "Either --steps or --duration_sec needs to be greater than zero.");
   VELOX_CHECK_GT(
       options_.maxExpressionTreesPerStep,
       0,
-      "--max_expression_trees_per_step needs to be greater than zero.")
+      "--max_expression_trees_per_step needs to be greater than zero.");
 
   auto startTime = std::chrono::system_clock::now();
   size_t i = 0;
   size_t numFailed = 0;
 
+  // TODO: some expression will throw exception for NaN input, eg: IN predicate
+  // for floating point. remove this constraint once that are fixed
+  auto vectorOptions = vectorFuzzer_->getOptions();
+  vectorOptions.dataSpec = {false, false};
+  vectorFuzzer_->setOptions(vectorOptions);
   while (!isDone(i, startTime)) {
     LOG(INFO) << "==============================> Started iteration " << i
               << " (seed: " << currentSeed_ << ")";
@@ -357,8 +368,10 @@ void ExpressionFuzzerVerifier::go() {
 
     // If both paths threw compatible exceptions, we add a try() function to
     // the expression's root and execute it again. This time the expression
-    // cannot throw.
-    if (result.exceptionPtr && options_.retryWithTry) {
+    // cannot throw. Expressions that throw UNSUPPORTED_INPUT_UNCATCHABLE errors
+    // are not supported.
+    if (result.exceptionPtr && options_.retryWithTry &&
+        !result.unsupportedInputUncatchableError) {
       LOG(INFO)
           << "Both paths failed with compatible exceptions. Retrying expression using try().";
       retryWithTry(plans, rowVector, resultVectors, columnsToWrapInLazy);

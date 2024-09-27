@@ -44,16 +44,6 @@ class ScanSpec {
   static constexpr const char* kMapValuesFieldName = "values";
   static constexpr const char* kArrayElementsFieldName = "elements";
 
-  explicit ScanSpec(const Subfield::PathElement& element) {
-    if (element.kind() == kNestedField) {
-      auto field = reinterpret_cast<const Subfield::NestedField*>(&element);
-      fieldName_ = field->name();
-
-    } else {
-      VELOX_CHECK(false, "Only nested fields are supported");
-    }
-  }
-
   explicit ScanSpec(const std::string& name) : fieldName_(name) {}
 
   // Filter to apply. If 'this' corresponds to a struct/list/map, this
@@ -109,6 +99,14 @@ class ScanSpec {
 
   bool isConstant() const {
     return constantValue_ != nullptr;
+  }
+
+  void setExplicitRowNumber(bool isExplicitRowNumber) {
+    isExplicitRowNumber_ = isExplicitRowNumber;
+  }
+
+  bool isExplicitRowNumber() const {
+    return isExplicitRowNumber_;
   }
 
   // Name of the value in its container, i.e. field name in struct or
@@ -196,6 +194,10 @@ class ScanSpec {
   // each level of struct is mandatory.
   uint64_t newRead();
 
+  /// Returns the ScanSpec corresponding to 'name'. Creates it if needed without
+  /// any intermediate level.
+  ScanSpec* getOrCreateChild(const std::string& name);
+
   // Returns the ScanSpec corresponding to 'subfield'. Creates it if
   // needed, including any intermediate levels. This is used at
   // TableScan initialization to create the ScanSpec tree that
@@ -254,6 +256,12 @@ class ScanSpec {
   //
   // This may change as a result of runtime adaptation.
   bool hasFilter() const;
+
+  /// Assume this field is read as null constant vector (usually due to missing
+  /// field), check if any filter in the struct subtree would make the whole
+  /// vector to be filtered out.  Return false when the whole vector should be
+  /// filtered out.
+  bool testNull() const;
 
   // Resets cached values after this or children were updated, e.g. a new filter
   // was added or existing filter was modified.
@@ -363,6 +371,8 @@ class ScanSpec {
   VectorPtr constantValue_;
   bool projectOut_ = false;
   bool extractValues_ = false;
+
+  bool isExplicitRowNumber_ = false;
   // True if a string dictionary or flat map in this field should be
   // returned as flat.
   bool makeFlat_ = false;

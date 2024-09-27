@@ -20,13 +20,13 @@
 #include "velox/common/memory/MallocAllocator.h"
 #include "velox/common/memory/MmapAllocator.h"
 #include "velox/common/memory/MmapArena.h"
+#include "velox/common/memory/SharedArbitrator.h"
 #include "velox/common/testutil/TestValue.h"
 
 #include <fmt/format.h>
 #include <folly/Random.h>
 #include <folly/Range.h>
 #include <gflags/gflags.h>
-#include <glog/logging.h>
 #include <gmock/gmock-matchers.h>
 #include <gtest/gtest.h>
 
@@ -72,8 +72,10 @@ class MemoryAllocatorTest : public testing::TestWithParam<int> {
       options.useMmapAllocator = true;
       options.allocatorCapacity = kCapacityBytes;
       options.arbitratorCapacity = kCapacityBytes;
-      options.arbitratorReservedCapacity = 128 << 20;
-      options.memoryPoolReservedCapacity = 1 << 20;
+      using ExtraConfig = SharedArbitrator::ExtraConfig;
+      options.extraArbitratorConfigs = {
+          {std::string(ExtraConfig::kReservedCapacity), "128MB"},
+          {std::string(ExtraConfig::kMemoryPoolReservedCapacity), "1MB"}};
       options.smallAllocationReservePct = 4;
       options.maxMallocBytes = maxMallocBytes_;
       memoryManager_ = std::make_unique<MemoryManager>(options);
@@ -87,8 +89,10 @@ class MemoryAllocatorTest : public testing::TestWithParam<int> {
       MemoryManagerOptions options;
       options.allocatorCapacity = kCapacityBytes;
       options.arbitratorCapacity = kCapacityBytes;
-      options.arbitratorReservedCapacity = 128 << 20;
-      options.memoryPoolReservedCapacity = 1 << 20;
+      using ExtraConfig = SharedArbitrator::ExtraConfig;
+      options.extraArbitratorConfigs = {
+          {std::string(ExtraConfig::kReservedCapacity), "128MB"},
+          {std::string(ExtraConfig::kMemoryPoolReservedCapacity), "1MB"}};
       if (!enableReservation_) {
         options.allocationSizeThresholdWithReservation = 0;
       }
@@ -1954,8 +1958,10 @@ class MmapConfigTest : public testing::Test {
     options.allocatorCapacity = kCapacityBytes;
     options.largestSizeClassPages = 4096;
     options.arbitratorCapacity = kCapacityBytes;
-    options.arbitratorReservedCapacity = 128 << 20;
-    options.memoryPoolReservedCapacity = 1 << 20;
+    using ExtraConfig = SharedArbitrator::ExtraConfig;
+    options.extraArbitratorConfigs = {
+        {std::string(ExtraConfig::kReservedCapacity), "128MB"},
+        {std::string(ExtraConfig::kMemoryPoolReservedCapacity), "1MB"}};
     options.smallAllocationReservePct = 4;
     options.maxMallocBytes = 3 * 1024;
     memoryManager_ = std::make_unique<MemoryManager>(options);

@@ -38,9 +38,14 @@ class ArrayJoinTest : public FunctionBaseTest {
   void testArrayJoinNoReplacement(
       std::vector<std::optional<T>> array,
       const StringView& delimiter,
-      const StringView& expected) {
+      const StringView& expected,
+      bool isDate = false) {
     auto arrayVector = makeNullableArrayVector(
         std::vector<std::vector<std::optional<T>>>{array});
+    if (isDate) {
+      arrayVector = makeNullableArrayVector(
+          std::vector<std::vector<std::optional<T>>>{array}, ARRAY(DATE()));
+    }
     auto delimiterVector = makeFlatVector<StringView>({delimiter});
     auto expectedVector = makeFlatVector<StringView>({expected});
     testExpr(
@@ -52,9 +57,14 @@ class ArrayJoinTest : public FunctionBaseTest {
       std::vector<std::optional<T>> array,
       const StringView& delimiter,
       const StringView& replacement,
-      const StringView& expected) {
+      const StringView& expected,
+      bool isDate = false) {
     auto arrayVector = makeNullableArrayVector(
         std::vector<std::vector<std::optional<T>>>{array});
+    if (isDate) {
+      arrayVector = makeNullableArrayVector(
+          std::vector<std::vector<std::optional<T>>>{array}, ARRAY(DATE()));
+    }
     auto delimiterVector = makeFlatVector<StringView>({delimiter});
     auto replacementVector = makeFlatVector<StringView>({replacement});
     auto expectedVector = makeFlatVector<StringView>({expected});
@@ -99,6 +109,55 @@ TEST_F(ArrayJoinTest, boolTest) {
 
   testArrayJoinReplacement<bool>(
       {true, std::nullopt, false}, ","_sv, "apple"_sv, "true,apple,false"_sv);
+}
+
+TEST_F(ArrayJoinTest, timestampTest) {
+  setLegacyCast(false);
+  testArrayJoinNoReplacement<Timestamp>(
+      {Timestamp{333183, 0}, std::nullopt, Timestamp{2925183, 0}},
+      "~"_sv,
+      "1970-01-04 20:33:03.000~1970-02-03 20:33:03.000"_sv);
+  testArrayJoinReplacement<Timestamp>(
+      {Timestamp{333183, 0}, std::nullopt, Timestamp{2925183, 0}},
+      "~"_sv,
+      "<n/a>"_sv,
+      "1970-01-04 20:33:03.000~<n/a>~1970-02-03 20:33:03.000"_sv);
+
+  setLegacyCast(true);
+  testArrayJoinNoReplacement<Timestamp>(
+      {Timestamp{333183, 0}, std::nullopt, Timestamp{2925183, 0}},
+      "~"_sv,
+      "1970-01-04T20:33:03.000~1970-02-03T20:33:03.000"_sv);
+  testArrayJoinReplacement<Timestamp>(
+      {Timestamp{333183, 0}, std::nullopt, Timestamp{2925183, 0}},
+      "~"_sv,
+      "<missing>"_sv,
+      "1970-01-04T20:33:03.000~<missing>~1970-02-03T20:33:03.000"_sv);
+
+  setLegacyCast(false);
+  setTimezone("America/Los_Angeles");
+  testArrayJoinNoReplacement<Timestamp>(
+      {Timestamp{333183, 0}, std::nullopt, Timestamp{2925183, 0}},
+      "~"_sv,
+      "1970-01-04 12:33:03.000~1970-02-03 12:33:03.000"_sv);
+  testArrayJoinReplacement<Timestamp>(
+      {Timestamp{333183, 0}, std::nullopt, Timestamp{2925183, 0}},
+      "~"_sv,
+      "<absent>"_sv,
+      "1970-01-04 12:33:03.000~<absent>~1970-02-03 12:33:03.000"_sv);
+}
+
+TEST_F(ArrayJoinTest, dateTest) {
+  std::cout << std::nextafter(0.67777777, INFINITY);
+  setLegacyCast(false);
+  testArrayJoinNoReplacement<int32_t>(
+      {-7204, std::nullopt, -7203}, ","_sv, "1950-04-12,1950-04-13"_sv, true);
+  testArrayJoinReplacement<int32_t>(
+      {-7204, std::nullopt, -7203},
+      ","_sv,
+      "."_sv,
+      "1950-04-12,.,1950-04-13"_sv,
+      true);
 }
 
 } // namespace

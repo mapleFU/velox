@@ -81,7 +81,11 @@ struct MemoryManagerOptions {
   /// Terminates the process and generates a core file on an allocation failure
   bool coreOnAllocationFailureEnabled{false};
 
+  /// Disables the memory manager's tracking on memory pools.
+  bool disableMemoryPoolTracking{false};
+
   /// ================== 'MemoryAllocator' settings ==================
+
   /// Specifies the max memory allocation capacity in bytes enforced by
   /// MemoryAllocator, default unlimited.
   int64_t allocatorCapacity{kMaxMemory};
@@ -92,7 +96,7 @@ struct MemoryManagerOptions {
   /// std::malloc.
   bool useMmapAllocator{false};
 
-  // Number of pages in the largest size class in MmapAllocator.
+  /// Number of pages in the largest size class in MmapAllocator.
   int32_t largestSizeClassPages{256};
 
   /// If true, allocations larger than largest size class size will be delegated
@@ -148,41 +152,11 @@ struct MemoryManagerOptions {
   /// reservation capacity for system usage.
   int64_t arbitratorCapacity{kMaxMemory};
 
-  /// Memory capacity reserved to ensure that a query has minimal memory
-  /// capacity to run. This capacity should be less than 'arbitratorCapacity'.
-  /// A query's minimal memory capacity is defined by
-  /// 'memoryPoolReservedCapacity'.
-  int64_t arbitratorReservedCapacity{0};
-
   /// The string kind of memory arbitrator used in the memory manager.
   ///
   /// NOTE: the arbitrator will only be created if its kind is set explicitly.
   /// Otherwise MemoryArbitrator::create returns a nullptr.
   std::string arbitratorKind{};
-
-  /// The initial memory capacity to reserve for a newly created query memory
-  /// pool.
-  uint64_t memoryPoolInitCapacity{256 << 20};
-
-  /// The minimal query memory pool capacity that is ensured during arbitration.
-  /// During arbitration, memory arbitrator ensures the participants' memory
-  /// pool capacity to be no less than this value on a best-effort basis, for
-  /// more smooth executions of the queries, to avoid frequent arbitration
-  /// requests.
-  uint64_t memoryPoolReservedCapacity{0};
-
-  /// The minimal memory capacity to transfer out of or into a memory pool
-  /// during the memory arbitration.
-  uint64_t memoryPoolTransferCapacity{128 << 20};
-
-  /// Specifies the max time to wait for memory reclaim by arbitration. The
-  /// memory reclaim might fail if the max wait time has exceeded. If it is
-  /// zero, then there is no timeout. The default is 5 mins.
-  uint64_t memoryReclaimWaitMs{300'000};
-
-  /// If true, it allows memory arbitrator to reclaim used memory cross query
-  /// memory pools.
-  bool globalArbitrationEnabled{false};
 
   /// Provided by the query system to validate the state after a memory pool
   /// enters arbitration if not null. For instance, Prestissimo provides
@@ -191,6 +165,9 @@ struct MemoryManagerOptions {
   /// potential deadlock when reclaim memory from the task of the request memory
   /// pool.
   MemoryArbitrationStateCheckCB arbitrationStateCheckCb{nullptr};
+
+  /// Additional configs that are arbitrator implementation specific.
+  std::unordered_map<std::string, std::string> extraArbitratorConfigs{};
 };
 
 /// 'MemoryManager' is responsible for creating allocator, arbitrator and
@@ -294,39 +271,44 @@ class MemoryManager {
     return spillPool_.get();
   }
 
+  /// Returns the process wide leaf memory pool used for query tracing.
+  MemoryPool* tracePool() const {
+    return tracePool_.get();
+  }
+
   const std::vector<std::shared_ptr<MemoryPool>>& testingSharedLeafPools() {
     return sharedLeafPools_;
   }
 
  private:
-  void dropPool(MemoryPool* pool);
+  std::shared_ptr<MemoryPoolImpl> createRootPool(
+      std::string poolName,
+      std::unique_ptr<MemoryReclaimer>& reclaimer,
+      MemoryPool::Options& options);
 
-  // Invoked to grow a memory pool's free capacity with at least
-  // 'incrementBytes'. The function returns true on success, otherwise false.
-  bool growPool(MemoryPool* pool, uint64_t incrementBytes);
+  void dropPool(MemoryPool* pool);
 
   //  Returns the shared references to all the alive memory pools in 'pools_'.
   std::vector<std::shared_ptr<MemoryPool>> getAlivePools() const;
 
   const std::shared_ptr<MemoryAllocator> allocator_;
-  // Specifies the capacity to allocate from 'arbitrator_' for a newly created
-  // root memory pool.
-  const uint64_t poolInitCapacity_;
+
   // If not null, used to arbitrate the memory capacity among 'pools_'.
   const std::unique_ptr<MemoryArbitrator> arbitrator_;
   const uint16_t alignment_;
   const bool checkUsageLeak_;
   const bool debugEnabled_;
   const bool coreOnAllocationFailureEnabled_;
+  const bool disableMemoryPoolTracking_;
+
   // The destruction callback set for the allocated root memory pools which are
   // tracked by 'pools_'. It is invoked on the root pool destruction and removes
   // the pool from 'pools_'.
   const MemoryPoolImpl::DestructionCallback poolDestructionCb_;
-  // Callback invoked by the root memory pool to request memory capacity growth.
-  const MemoryPoolImpl::GrowCapacityCallback poolGrowCb_;
 
   const std::shared_ptr<MemoryPool> sysRoot_;
   const std::shared_ptr<MemoryPool> spillPool_;
+  const std::shared_ptr<MemoryPool> tracePool_;
   const std::vector<std::shared_ptr<MemoryPool>> sharedLeafPools_;
 
   mutable folly::SharedMutex mutex_;
@@ -372,6 +354,9 @@ memory::MemoryPool* spillMemoryPool();
 
 /// Returns true if the provided 'pool' is the spilling memory pool.
 bool isSpillMemoryPool(memory::MemoryPool* pool);
+
+/// Returns the system-wide memory pool for tracing memory usage.
+memory::MemoryPool* traceMemoryPool();
 
 FOLLY_ALWAYS_INLINE int32_t alignmentPadding(void* address, int32_t alignment) {
   auto extra = reinterpret_cast<uintptr_t>(address) % alignment;

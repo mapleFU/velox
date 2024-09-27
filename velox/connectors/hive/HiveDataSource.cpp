@@ -16,6 +16,7 @@
 
 #include "velox/connectors/hive/HiveDataSource.h"
 
+#include <fmt/ranges.h>
 #include <string>
 #include <unordered_map>
 
@@ -32,6 +33,30 @@ namespace facebook::velox::connector::hive {
 class HiveTableHandle;
 class HiveColumnHandle;
 
+namespace {
+
+bool isMember(
+    const std::vector<exec::FieldReference*>& fields,
+    const exec::FieldReference& field) {
+  return std::find(fields.begin(), fields.end(), &field) != fields.end();
+}
+
+bool shouldEagerlyMaterialize(
+    const exec::Expr& remainingFilter,
+    const exec::FieldReference& field) {
+  if (!remainingFilter.evaluatesArgumentsOnNonIncreasingSelection()) {
+    return true;
+  }
+  for (auto& input : remainingFilter.inputs()) {
+    if (isMember(input->distinctFields(), field) && input->hasConditionals()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+} // namespace
+
 HiveDataSource::HiveDataSource(
     const RowTypePtr& outputType,
     const std::shared_ptr<connector::ConnectorTableHandle>& tableHandle,
@@ -42,11 +67,11 @@ HiveDataSource::HiveDataSource(
     folly::Executor* executor,
     const ConnectorQueryCtx* connectorQueryCtx,
     const std::shared_ptr<HiveConfig>& hiveConfig)
-    : pool_(connectorQueryCtx->memoryPool()),
-      fileHandleFactory_(fileHandleFactory),
+    : fileHandleFactory_(fileHandleFactory),
       executor_(executor),
       connectorQueryCtx_(connectorQueryCtx),
       hiveConfig_(hiveConfig),
+      pool_(connectorQueryCtx->memoryPool()),
       outputType_(outputType),
       expressionEvaluator_(connectorQueryCtx->expressionEvaluator()) {
   // Column handled keyed on the column alias, the name used in the query.
@@ -136,7 +161,9 @@ HiveDataSource::HiveDataSource(
     for (auto& input : remainingFilterExpr->distinctFields()) {
       auto it = columnNames.find(input->field());
       if (it != columnNames.end()) {
-        multiReferencedFields_.push_back(it->second);
+        if (shouldEagerlyMaterialize(*remainingFilterExpr, *input)) {
+          multiReferencedFields_.push_back(it->second);
+        }
         continue;
       }
       // Remaining filter may reference columns that are not used otherwise,
@@ -284,6 +311,7 @@ vector_size_t HiveDataSource::applyBucketConversion(
   for (vector_size_t i = 0; i < rowVector->size(); ++i) {
     VELOX_CHECK_EQ((partitions_[i] - bucketToKeep) % partitionBucketCount, 0);
   }
+
   if (remainingFilterExprSet_) {
     for (vector_size_t i = 0; i < rowVector->size(); ++i) {
       if (partitions_[i] != bucketToKeep) {
@@ -330,76 +358,76 @@ std::optional<RowVectorPtr> HiveDataSource::next(
     output_ = BaseVector::create(readerOutputType_, 0, pool_);
   }
 
-  auto rowsScanned = splitReader_->next(size, output_);
+  const auto rowsScanned = splitReader_->next(size, output_);
   completedRows_ += rowsScanned;
+  if (rowsScanned == 0) {
+    splitReader_->updateRuntimeStats(runtimeStats_);
+    resetSplit();
+    return nullptr;
+  }
 
-  if (rowsScanned) {
-    VELOX_CHECK(
-        !output_->mayHaveNulls(), "Top-level row vector cannot have nulls");
-    auto rowsRemaining = output_->size();
+  VELOX_CHECK(
+      !output_->mayHaveNulls(), "Top-level row vector cannot have nulls");
+  auto rowsRemaining = output_->size();
+  if (rowsRemaining == 0) {
+    // no rows passed the pushed down filters.
+    return getEmptyOutput();
+  }
+
+  auto rowVector = std::dynamic_pointer_cast<RowVector>(output_);
+
+  // In case there is a remaining filter that excludes some but not all
+  // rows, collect the indices of the passing rows. If there is no filter,
+  // or it passes on all rows, leave this as null and let exec::wrap skip
+  // wrapping the results.
+  BufferPtr remainingIndices;
+  if (remainingFilterExprSet_) {
+    if (numBucketConversion_ > 0) {
+      filterRows_.resizeFill(rowVector->size());
+    } else {
+      filterRows_.resize(rowVector->size());
+    }
+  }
+  if (partitionFunction_) {
+    rowsRemaining = applyBucketConversion(rowVector, remainingIndices);
     if (rowsRemaining == 0) {
-      // no rows passed the pushed down filters.
+      return getEmptyOutput();
+    }
+  }
+
+  if (remainingFilterExprSet_) {
+    rowsRemaining = evaluateRemainingFilter(rowVector);
+    VELOX_CHECK_LE(rowsRemaining, rowsScanned);
+    if (rowsRemaining == 0) {
+      // No rows passed the remaining filter.
       return getEmptyOutput();
     }
 
-    auto rowVector = std::dynamic_pointer_cast<RowVector>(output_);
-
-    // In case there is a remaining filter that excludes some but not all
-    // rows, collect the indices of the passing rows. If there is no filter,
-    // or it passes on all rows, leave this as null and let exec::wrap skip
-    // wrapping the results.
-    BufferPtr remainingIndices;
-    if (remainingFilterExprSet_) {
-      if (numBucketConversion_ > 0) {
-        filterRows_.resizeFill(rowVector->size());
-      } else {
-        filterRows_.resize(rowVector->size());
-      }
+    if (rowsRemaining < rowVector->size()) {
+      // Some, but not all rows passed the remaining filter.
+      remainingIndices = filterEvalCtx_.selectedIndices;
     }
-    if (partitionFunction_) {
-      rowsRemaining = applyBucketConversion(rowVector, remainingIndices);
-      if (rowsRemaining == 0) {
-        return getEmptyOutput();
-      }
-    }
-    if (remainingFilterExprSet_) {
-      rowsRemaining = evaluateRemainingFilter(rowVector);
-      VELOX_CHECK_LE(rowsRemaining, rowsScanned);
-      if (rowsRemaining == 0) {
-        // No rows passed the remaining filter.
-        return getEmptyOutput();
-      }
-
-      if (rowsRemaining < rowVector->size()) {
-        // Some, but not all rows passed the remaining filter.
-        remainingIndices = filterEvalCtx_.selectedIndices;
-      }
-    }
-
-    if (outputType_->size() == 0) {
-      return exec::wrap(rowsRemaining, remainingIndices, rowVector);
-    }
-
-    std::vector<VectorPtr> outputColumns;
-    outputColumns.reserve(outputType_->size());
-    for (int i = 0; i < outputType_->size(); i++) {
-      auto& child = rowVector->childAt(i);
-      if (remainingIndices) {
-        // Disable dictionary values caching in expression eval so that we
-        // don't need to reallocate the result for every batch.
-        child->disableMemo();
-      }
-      outputColumns.emplace_back(
-          exec::wrapChild(rowsRemaining, remainingIndices, child));
-    }
-
-    return std::make_shared<RowVector>(
-        pool_, outputType_, BufferPtr(nullptr), rowsRemaining, outputColumns);
   }
 
-  splitReader_->updateRuntimeStats(runtimeStats_);
-  resetSplit();
-  return nullptr;
+  if (outputType_->size() == 0) {
+    return exec::wrap(rowsRemaining, remainingIndices, rowVector);
+  }
+
+  std::vector<VectorPtr> outputColumns;
+  outputColumns.reserve(outputType_->size());
+  for (int i = 0; i < outputType_->size(); ++i) {
+    auto& child = rowVector->childAt(i);
+    if (remainingIndices) {
+      // Disable dictionary values caching in expression eval so that we
+      // don't need to reallocate the result for every batch.
+      child->disableMemo();
+    }
+    outputColumns.emplace_back(
+        exec::wrapChild(rowsRemaining, remainingIndices, child));
+  }
+
+  return std::make_shared<RowVector>(
+      pool_, outputType_, BufferPtr(nullptr), rowsRemaining, outputColumns);
 }
 
 void HiveDataSource::addDynamicFilter(
@@ -492,15 +520,18 @@ vector_size_t HiveDataSource::evaluateRemainingFilter(RowVectorPtr& rowVector) {
         filterLazyDecoded_,
         filterLazyBaseRows_);
   }
-  auto filterStartMicros = getCurrentTimeMicro();
-  expressionEvaluator_->evaluate(
-      remainingFilterExprSet_.get(), filterRows_, *rowVector, filterResult_);
-  auto res = exec::processFilterResults(
-      filterResult_, filterRows_, filterEvalCtx_, pool_);
+  uint64_t filterTimeUs{0};
+  vector_size_t rowsRemaining{0};
+  {
+    MicrosecondTimer timer(&filterTimeUs);
+    expressionEvaluator_->evaluate(
+        remainingFilterExprSet_.get(), filterRows_, *rowVector, filterResult_);
+    rowsRemaining = exec::processFilterResults(
+        filterResult_, filterRows_, filterEvalCtx_, pool_);
+  }
   totalRemainingFilterTime_.fetch_add(
-      (getCurrentTimeMicro() - filterStartMicros) * 1000,
-      std::memory_order_relaxed);
-  return res;
+      filterTimeUs * 1000, std::memory_order_relaxed);
+  return rowsRemaining;
 }
 
 void HiveDataSource::resetSplit() {

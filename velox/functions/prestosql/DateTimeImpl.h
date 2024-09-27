@@ -199,6 +199,24 @@ FOLLY_ALWAYS_INLINE Timestamp addToTimestamp(
           timestamp.getNanos() % kNanosecondsInMillisecond);
 }
 
+// If time zone is provided, use it for the arithmetic operation (convert to it,
+// apply operation, then convert back to UTC).
+FOLLY_ALWAYS_INLINE Timestamp addToTimestamp(
+    const Timestamp& timestamp,
+    const DateTimeUnit unit,
+    const int32_t value,
+    const tz::TimeZone* timeZone) {
+  if (timeZone == nullptr) {
+    return addToTimestamp(timestamp, unit, value);
+  } else {
+    Timestamp zonedTimestamp = timestamp;
+    zonedTimestamp.toTimezone(*timeZone);
+    auto resultTimestamp = addToTimestamp(zonedTimestamp, unit, value);
+    resultTimestamp.toGMT(*timeZone);
+    return resultTimestamp;
+  }
+}
+
 FOLLY_ALWAYS_INLINE int64_t addToTimestampWithTimezone(
     int64_t timestampWithTimezone,
     const DateTimeUnit unit,
@@ -282,10 +300,25 @@ FOLLY_ALWAYS_INLINE int64_t diffTimestamp(
       std::chrono::duration_cast<std::chrono::milliseconds>(
           fromTimepoint - fromDaysTimepoint)
           .count();
-  const uint64_t toTimeInstantOfDay =
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          toTimepoint - toDaysTimepoint)
-          .count();
+
+  uint64_t toTimeInstantOfDay = 0;
+  uint64_t toTimePointMillis = toTimepoint.time_since_epoch().count();
+  uint64_t toDaysTimepointMillis =
+      std::chrono::
+          time_point<std::chrono::system_clock, std::chrono::milliseconds>(
+              toDaysTimepoint)
+              .time_since_epoch()
+              .count();
+  bool overflow = __builtin_sub_overflow(
+      toTimePointMillis, toDaysTimepointMillis, &toTimeInstantOfDay);
+  VELOX_USER_CHECK_EQ(
+      overflow,
+      false,
+      "{} - {} Causes arithmetic overflow: {} - {}",
+      fromTimestamp.toString(),
+      toTimestamp.toString(),
+      toTimePointMillis,
+      toDaysTimepointMillis);
   const uint8_t fromDay = static_cast<unsigned>(fromCalDate.day()),
                 fromMonth = static_cast<unsigned>(fromCalDate.month());
   const uint8_t toDay = static_cast<unsigned>(toCalDate.day()),

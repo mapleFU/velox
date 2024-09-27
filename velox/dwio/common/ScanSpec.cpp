@@ -19,28 +19,31 @@
 
 namespace facebook::velox::common {
 
+ScanSpec* ScanSpec::getOrCreateChild(const std::string& name) {
+  if (auto it = this->childByFieldName_.find(name);
+      it != this->childByFieldName_.end()) {
+    return it->second;
+  }
+  this->children_.push_back(std::make_unique<ScanSpec>(name));
+  auto* child = this->children_.back().get();
+  this->childByFieldName_[child->fieldName()] = child;
+  return child;
+}
+
 ScanSpec* ScanSpec::getOrCreateChild(const Subfield& subfield) {
-  auto container = this;
-  auto& path = subfield.path();
+  auto* container = this;
+  const auto& path = subfield.path();
   for (size_t depth = 0; depth < path.size(); ++depth) {
-    auto element = path[depth].get();
+    const auto element = path[depth].get();
     VELOX_CHECK_EQ(element->kind(), kNestedField);
     auto* nestedField = static_cast<const Subfield::NestedField*>(element);
-    auto it = container->childByFieldName_.find(nestedField->name());
-    if (it != container->childByFieldName_.end()) {
-      container = it->second;
-    } else {
-      container->children_.push_back(std::make_unique<ScanSpec>(*element));
-      auto* child = container->children_.back().get();
-      container->childByFieldName_[child->fieldName()] = child;
-      container = child;
-    }
+    container = container->getOrCreateChild(nestedField->name());
   }
   return container;
 }
 
 uint64_t ScanSpec::newRead() {
-  if (!numReads_) {
+  if (numReads_ == 0) {
     reorder();
   } else if (enableFilterReorder_) {
     for (auto i = 1; i < children_.size(); ++i) {
@@ -54,13 +57,14 @@ uint64_t ScanSpec::newRead() {
       }
     }
   }
-  return numReads_++;
+  return ++numReads_;
 }
 
 void ScanSpec::reorder() {
   if (children_.empty()) {
     return;
   }
+
   // Make sure 'stableChildren_' is initialized.
   stableChildren();
   std::sort(
@@ -127,6 +131,18 @@ bool ScanSpec::hasFilter() const {
   }
   hasFilter_ = false;
   return false;
+}
+
+bool ScanSpec::testNull() const {
+  if (filter_ && !filter_->testNull()) {
+    return false;
+  }
+  for (auto& child : children_) {
+    if (!child->isArrayElementOrMapEntry_ && !child->testNull()) {
+      return false;
+    }
+  }
+  return true;
 }
 
 void ScanSpec::moveAdaptationFrom(ScanSpec& other) {
@@ -252,8 +268,8 @@ bool testStringFilter(
 bool testBoolFilter(
     common::Filter* filter,
     dwio::common::BooleanColumnStatistics* boolStats) {
-  auto trueCount = boolStats->getTrueCount();
-  auto falseCount = boolStats->getFalseCount();
+  const auto trueCount = boolStats->getTrueCount();
+  const auto falseCount = boolStats->getFalseCount();
   if (trueCount.has_value() && falseCount.has_value()) {
     if (trueCount.value() == 0) {
       if (!filter->testBool(false)) {
@@ -275,7 +291,7 @@ bool testFilter(
     dwio::common::ColumnStatistics* stats,
     uint64_t totalRows,
     const TypePtr& type) {
-  bool mayHaveNull = true;
+  bool mayHaveNull{true};
 
   // Has-null statistics is often not set. Hence, we supplement it with
   // number-of-values statistic to detect no-null columns more often.
@@ -293,6 +309,7 @@ bool testFilter(
     // IS NULL filter cannot pass.
     return false;
   }
+
   if (mayHaveNull && filter->testNull()) {
     return true;
   }
@@ -304,23 +321,23 @@ bool testFilter(
     case TypeKind::INTEGER:
     case TypeKind::SMALLINT:
     case TypeKind::TINYINT: {
-      auto intStats =
+      auto* intStats =
           dynamic_cast<dwio::common::IntegerColumnStatistics*>(stats);
       return testIntFilter(filter, intStats, mayHaveNull);
     }
     case TypeKind::REAL:
     case TypeKind::DOUBLE: {
-      auto doubleStats =
+      auto* doubleStats =
           dynamic_cast<dwio::common::DoubleColumnStatistics*>(stats);
       return testDoubleFilter(filter, doubleStats, mayHaveNull);
     }
     case TypeKind::BOOLEAN: {
-      auto boolStats =
+      auto* boolStats =
           dynamic_cast<dwio::common::BooleanColumnStatistics*>(stats);
       return testBoolFilter(filter, boolStats);
     }
     case TypeKind::VARCHAR: {
-      auto stringStats =
+      auto* stringStats =
           dynamic_cast<dwio::common::StringColumnStatistics*>(stats);
       return testStringFilter(filter, stringStats, mayHaveNull);
     }
@@ -369,7 +386,7 @@ void ScanSpec::addFilter(const Filter& filter) {
 }
 
 ScanSpec* ScanSpec::addField(const std::string& name, column_index_t channel) {
-  auto child = getOrCreateChild(Subfield(name));
+  auto child = getOrCreateChild(name);
   child->setProjectOut(true);
   child->setChannel(channel);
   return child;

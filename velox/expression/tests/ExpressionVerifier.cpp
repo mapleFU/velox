@@ -107,6 +107,7 @@ fuzzer::ResultOrError ExpressionVerifier::verify(
 
   // Execute with common expression eval path. Some columns of the input row
   // vector will be wrapped in lazy as specified in 'columnsToWrapInLazy'.
+  bool unsupportedInputUncatchableError = false;
   try {
     exec::ExprSet exprSetCommon(
         plans, execCtx_, !options_.disableConstantFolding);
@@ -133,10 +134,17 @@ fuzzer::ResultOrError ExpressionVerifier::verify(
           "Copy of original input",
           "Input after common");
     }
-  } catch (const VeloxUserError&) {
-    if (!canThrow) {
-      LOG(ERROR)
-          << "Common eval wasn't supposed to throw, but it did. Aborting.";
+  } catch (const VeloxException& e) {
+    if (e.errorCode() == error_code::kUnsupportedInputUncatchable) {
+      unsupportedInputUncatchableError = true;
+    } else if (!(canThrow && e.isUserError())) {
+      if (!canThrow) {
+        LOG(ERROR)
+            << "Common eval wasn't supposed to throw, but it did. Aborting.";
+      } else if (!e.isUserError()) {
+        LOG(ERROR)
+            << "Common eval: VeloxRuntimeErrors other than UNSUPPORTED_INPUT_UNCATCHABLE error are not allowed.";
+      }
       persistReproInfoIfNeeded(
           rowVector, columnsToWrapInLazy, copiedResult, sql, complexConstants);
       throw;
@@ -144,7 +152,7 @@ fuzzer::ResultOrError ExpressionVerifier::verify(
     exceptionCommonPtr = std::current_exception();
   } catch (...) {
     LOG(ERROR)
-        << "Common eval: Exceptions other than VeloxUserError are not allowed.";
+        << "Common eval: Exceptions other than VeloxUserError or VeloxRuntimeError of UNSUPPORTED_INPUT_UNCATCHABLE are not allowed.";
     persistReproInfoIfNeeded(
         rowVector, columnsToWrapInLazy, copiedResult, sql, complexConstants);
     throw;
@@ -168,11 +176,20 @@ fuzzer::ResultOrError ExpressionVerifier::verify(
         "Copy of original input",
         "Input after simplified");
 
-  } catch (const VeloxUserError&) {
+  } catch (const VeloxException& e) {
+    if (e.errorCode() == error_code::kUnsupportedInputUncatchable) {
+      unsupportedInputUncatchableError = true;
+    } else if (!e.isUserError()) {
+      LOG(ERROR)
+          << "Simplified eval: VeloxRuntimeErrors other than UNSUPPORTED_INPUT_UNCATCHABLE error are not allowed.";
+      persistReproInfoIfNeeded(
+          rowVector, columnsToWrapInLazy, copiedResult, sql, complexConstants);
+      throw;
+    }
     exceptionSimplifiedPtr = std::current_exception();
   } catch (...) {
     LOG(ERROR)
-        << "Simplified eval: Exceptions other than VeloxUserError are not allowed.";
+        << "Simplified eval: Exceptions other than VeloxUserError or VeloxRuntimeError with UNSUPPORTED_INPUT are not allowed.";
     persistReproInfoIfNeeded(
         rowVector, columnsToWrapInLazy, copiedResult, sql, complexConstants);
     throw;
@@ -181,10 +198,19 @@ fuzzer::ResultOrError ExpressionVerifier::verify(
   try {
     // Compare results or exceptions (if any). Fail if anything is different.
     if (exceptionCommonPtr || exceptionSimplifiedPtr) {
-      // Throws in case exceptions are not compatible. If they are compatible,
-      // return false to signal that the expression failed.
-      fuzzer::compareExceptions(exceptionCommonPtr, exceptionSimplifiedPtr);
-      return {nullptr, exceptionCommonPtr};
+      // UNSUPPORTED_INPUT_UNCATCHABLE errors are VeloxRuntimeErrors that cannot
+      // be suppressed by default NULLs. So it may happen that only one of the
+      // common and simplified path throws this error. In this case, we do not
+      // compare the exceptions.
+      if (!unsupportedInputUncatchableError) {
+        // Throws in case exceptions are not compatible. If they are compatible,
+        // return false to signal that the expression failed.
+        fuzzer::compareExceptions(exceptionCommonPtr, exceptionSimplifiedPtr);
+      }
+      return {
+          nullptr,
+          exceptionCommonPtr ? exceptionCommonPtr : exceptionSimplifiedPtr,
+          unsupportedInputUncatchableError};
     } else {
       // Throws in case output is different.
       VELOX_CHECK_EQ(commonEvalResult.size(), plans.size());
@@ -217,7 +243,8 @@ fuzzer::ResultOrError ExpressionVerifier::verify(
 
   return {
       VectorMaker(commonEvalResult[0]->pool()).rowVector(commonEvalResult),
-      nullptr};
+      nullptr,
+      unsupportedInputUncatchableError};
 }
 
 void ExpressionVerifier::persistReproInfoIfNeeded(

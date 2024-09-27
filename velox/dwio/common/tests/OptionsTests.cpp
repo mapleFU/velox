@@ -22,7 +22,7 @@ using namespace facebook::velox::dwio::common;
 TEST(OptionsTests, defaultRowNumberColumnInfoTest) {
   // appendRowNumberColumn flag should be false by default
   RowReaderOptions rowReaderOptions;
-  ASSERT_EQ(std::nullopt, rowReaderOptions.getRowNumberColumnInfo());
+  ASSERT_EQ(std::nullopt, rowReaderOptions.rowNumberColumnInfo());
 }
 
 TEST(OptionsTests, setRowNumberColumnInfoTest) {
@@ -30,16 +30,18 @@ TEST(OptionsTests, setRowNumberColumnInfoTest) {
   RowNumberColumnInfo rowNumberColumnInfo;
   rowNumberColumnInfo.insertPosition = 0;
   rowNumberColumnInfo.name = "test";
+  rowNumberColumnInfo.isExplicit = true;
   rowReaderOptions.setRowNumberColumnInfo(rowNumberColumnInfo);
-  auto rowNumberColumn = rowReaderOptions.getRowNumberColumnInfo().value();
+  auto rowNumberColumn = rowReaderOptions.rowNumberColumnInfo().value();
   ASSERT_EQ(rowNumberColumnInfo.insertPosition, rowNumberColumn.insertPosition);
   ASSERT_EQ(rowNumberColumnInfo.name, rowNumberColumn.name);
+  ASSERT_EQ(rowNumberColumnInfo.isExplicit, rowNumberColumn.isExplicit);
 }
 
 TEST(OptionsTests, testRowNumberColumnInfoInCopy) {
   RowReaderOptions rowReaderOptions;
   RowReaderOptions rowReaderOptionsCopy{rowReaderOptions};
-  ASSERT_EQ(std::nullopt, rowReaderOptionsCopy.getRowNumberColumnInfo());
+  ASSERT_EQ(std::nullopt, rowReaderOptionsCopy.rowNumberColumnInfo());
 
   RowNumberColumnInfo rowNumberColumnInfo;
   rowNumberColumnInfo.insertPosition = 0;
@@ -47,7 +49,7 @@ TEST(OptionsTests, testRowNumberColumnInfoInCopy) {
   rowReaderOptions.setRowNumberColumnInfo(rowNumberColumnInfo);
   RowReaderOptions rowReaderOptionsSecondCopy{rowReaderOptions};
   auto rowNumberColumn =
-      rowReaderOptionsSecondCopy.getRowNumberColumnInfo().value();
+      rowReaderOptionsSecondCopy.rowNumberColumnInfo().value();
   ASSERT_EQ(rowNumberColumnInfo.insertPosition, rowNumberColumn.insertPosition);
   ASSERT_EQ(rowNumberColumnInfo.name, rowNumberColumn.name);
 }

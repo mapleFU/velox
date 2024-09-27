@@ -63,20 +63,25 @@ class AggregationFuzzerBase {
           customInputGenerators,
       VectorFuzzer::Options::TimestampPrecision timestampPrecision,
       const std::unordered_map<std::string, std::string>& queryConfigs,
+      const std::unordered_map<std::string, std::string>& hiveConfigs,
+      bool orderableGroupKeys,
       std::unique_ptr<ReferenceQueryRunner> referenceQueryRunner)
       : customVerificationFunctions_{customVerificationFunctions},
         customInputGenerators_{customInputGenerators},
         queryConfigs_{queryConfigs},
+        orderableGroupKeys_{orderableGroupKeys},
         persistAndRunOnce_{FLAGS_persist_and_run_once},
         reproPersistPath_{FLAGS_repro_persist_path},
         referenceQueryRunner_{std::move(referenceQueryRunner)},
         vectorFuzzer_{getFuzzerOptions(timestampPrecision), pool_.get()} {
     filesystems::registerLocalFileSystem();
+    auto configs = hiveConfigs;
     auto hiveConnector =
         connector::getConnectorFactory(
             connector::hive::HiveConnectorFactory::kHiveConnectorName)
             ->newConnector(
-                kHiveConnectorId, std::make_shared<core::MemConfig>());
+                kHiveConnectorId,
+                std::make_shared<config::ConfigBase>(std::move(configs)));
     connector::registerConnector(hiveConnector);
 
     seed(initialSeed);
@@ -243,6 +248,9 @@ class AggregationFuzzerBase {
   const std::unordered_map<std::string, std::shared_ptr<InputGenerator>>
       customInputGenerators_;
   const std::unordered_map<std::string, std::string> queryConfigs_;
+
+  // Whether group keys must be orderable or be just comparable.
+  bool orderableGroupKeys_;
   const bool persistAndRunOnce_;
   const std::string reproPersistPath_;
 
@@ -307,6 +315,7 @@ void persistReproInfo(
 // returns a DuckQueryRunner instance and set disabled aggregation functions
 // properly.
 std::unique_ptr<ReferenceQueryRunner> setupReferenceQueryRunner(
+    memory::MemoryPool* aggregatePool,
     const std::string& prestoUrl,
     const std::string& runnerName,
     const uint32_t& reqTimeoutMs);

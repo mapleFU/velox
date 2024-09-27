@@ -15,9 +15,32 @@
  */
 
 #include "velox/experimental/wave/exec/Wave.h"
+#include <iostream>
 #include "velox/experimental/wave/exec/Vectors.h"
 
+DEFINE_bool(wave_timing, true, "Enable Wave perf timers");
+DEFINE_bool(
+    wave_print_time,
+    false,
+    "Enables printing times inside PrinTime guard.");
+
+DEFINE_bool(
+    wave_transfer_timing,
+    false,
+    "Enables measuring host to device transfer latency separet "
+    "from wait time for compute");
+
 namespace facebook::velox::wave {
+
+PrintTime::PrintTime(const char* title)
+    : title_(title),
+      start_(FLAGS_wave_print_time ? getCurrentTimeMicro() : 0) {}
+
+PrintTime::~PrintTime() {
+  if (FLAGS_wave_print_time) {
+    std::cout << title_ << "=" << getCurrentTimeMicro() - start_ << std::endl;
+  }
+}
 
 std::string WaveTime::toString() const {
   if (micros < 20) {
@@ -38,6 +61,8 @@ void WaveStats::add(const WaveStats& other) {
   hostOnlyTime += other.hostOnlyTime;
   hostParallelTime += other.hostParallelTime;
   waitTime += other.waitTime;
+  transferWaitTime += other.transferWaitTime;
+  stagingTime += other.stagingTime;
 }
 
 void WaveStats::clear() {
@@ -178,6 +203,28 @@ std::mutex WaveStream::reserveMutex_;
 std::vector<std::unique_ptr<Stream>> WaveStream::streamsForReuse_;
 std::vector<std::unique_ptr<Event>> WaveStream::eventsForReuse_;
 bool WaveStream::exitInited_{false};
+std::unique_ptr<folly::CPUThreadPoolExecutor> WaveStream::copyExecutor_;
+std::unique_ptr<folly::CPUThreadPoolExecutor> WaveStream::syncExecutor_;
+
+folly::CPUThreadPoolExecutor* WaveStream::copyExecutor() {
+  return getExecutor(copyExecutor_);
+}
+
+folly::CPUThreadPoolExecutor* WaveStream::syncExecutor() {
+  return getExecutor(syncExecutor_);
+}
+
+folly::CPUThreadPoolExecutor* WaveStream::getExecutor(
+    std::unique_ptr<folly::CPUThreadPoolExecutor>& ptr) {
+  if (ptr) {
+    return ptr.get();
+  }
+  std::lock_guard<std::mutex> l(reserveMutex_);
+  if (!ptr) {
+    ptr = std::make_unique<folly::CPUThreadPoolExecutor>(32);
+  }
+  return ptr.get();
+}
 
 Stream* WaveStream::newStream() {
   auto stream = streamFromReserve();
@@ -271,20 +318,31 @@ void WaveStream::setReturnData(bool needStatus) {
 }
 
 void WaveStream::resultToHost() {
-  if (streams_.size() == 1) {
-    if (hostReturnDataUsed_ > 0) {
-      streams_[0]->deviceToHostAsync(
-          hostReturnData_->as<char>(),
-          deviceReturnData_->as<char>(),
-          hostReturnDataUsed_);
-    }
-    if (!hostReturnEvent_) {
-      hostReturnEvent_ = newEvent();
-    }
-    hostReturnEvent_->record(*streams_[0]);
-  } else {
-    VELOX_NYI();
+  if (!hostReturnEvent_) {
+    hostReturnEvent_ = newEvent();
   }
+  auto numBlocks = bits::roundUp(numRows_, kBlockSize) / kBlockSize;
+  int32_t statusBytes = bits::roundUp(sizeof(BlockStatus) * numBlocks, 8) +
+      instructionStatusSize(instructionStatus_, numBlocks);
+  if (!hostBlockStatus_ || hostBlockStatus_->size() < statusBytes) {
+    hostBlockStatus_ = getSmallTransferArena().allocate<char>(statusBytes);
+  }
+  Stream* transferStream = streams_[0].get();
+  if (streams_.size() > 1) {
+    // If many events, queue up the transfer on the first after
+    for (auto i = 1; i < streams_.size(); ++i) {
+      lastEvent_[i]->wait(*transferStream);
+    }
+  }
+  if (hostReturnDataUsed_ > 0) {
+    transferStream->deviceToHostAsync(
+        hostReturnData_->as<char>(),
+        deviceReturnData_->as<char>(),
+        hostReturnDataUsed_);
+  }
+  transferStream->deviceToHostAsync(
+      hostBlockStatus_->as<char>(), deviceBlockStatus_, statusBytes);
+  hostReturnEvent_->record(*transferStream);
 }
 
 namespace {
@@ -638,6 +696,20 @@ WaveStream::fillOperands(Executable& exe, char* start, ExeLaunchInfo& info) {
   return addBytes<Operand**>(start, 0);
 }
 
+void WaveStream::setLaunchControl(
+    int32_t key,
+    int32_t nth,
+    std::unique_ptr<LaunchControl> control) {
+  if (key == 0 && nth == 0) {
+    deviceBlockStatus_ = control->params.status;
+  }
+  auto& controls = launchControl_[key];
+  if (controls.size() <= nth) {
+    controls.resize(nth + 1);
+  }
+  controls[nth] = std::move(control);
+}
+
 LaunchControl* WaveStream::prepareProgramLaunch(
     int32_t key,
     int32_t nthLaunch,
@@ -702,11 +774,18 @@ LaunchControl* WaveStream::prepareProgramLaunch(
     statusOffset = size;
     //  Pointer to return block for each tB.
     size += bits::roundUp(blocksPerExe * sizeof(BlockStatus), 8);
+    size += bits::roundUp(
+        instructionStatus_.gridStateSize +
+            instructionStatus_.blockState * numBlocks,
+        8);
   }
   // 1 pointer per exe and an exe-dependent data area.
   int32_t operatorStateOffset = size;
   size += exes.size() * sizeof(void*) + operatorStateBytes;
   auto buffer = arena_.allocate<char>(size);
+  if (stream) {
+    stream->prefetch(nullptr, buffer->as<char>(), buffer->size());
+  }
   // Zero initialization is expected, for example for operands and arrays in
   // Operand::indices.
   memset(buffer->as<char>(), 0, size);
@@ -736,6 +815,7 @@ LaunchControl* WaveStream::prepareProgramLaunch(
     // Memory is already set to all 0.
     for (auto i = 0; i < blocksPerExe; ++i) {
       auto status = &control.params.status[i];
+      deviceBlockStatus_ = status;
       status->numRows =
           i == blocksPerExe - 1 ? inputRows % kBlockSize : kBlockSize;
     }
@@ -887,13 +967,19 @@ AdvanceResult Program::canAdvance(
     WaveStream& stream,
     LaunchControl* control,
     int32_t programIdx) {
-  AbstractInstruction* source = instructions_.front().get();
-  OperatorState* state = nullptr;
-  auto stateId = source->stateId();
-  if (stateId.has_value()) {
-    state = stream.operatorState(stateId.value());
+  for (int32_t i = instructions_.size() - 1; i >= 0; --i) {
+    auto* instruction = instructions_[i].get();
+    OperatorState* state = nullptr;
+    auto stateId = instruction->stateId();
+    if (stateId.has_value()) {
+      state = stream.operatorState(stateId.value());
+    }
+    auto result = instruction->canAdvance(stream, control, state, programIdx);
+    if (!result.empty()) {
+      return result;
+    }
   }
-  return source->canAdvance(stream, control, state, programIdx);
+  return {};
 }
 
 #define IN_HEAD(abstract, physical, _op)             \
@@ -1058,6 +1144,7 @@ void Program::prepareForDevice(GpuArena& arena) {
           return newState;
         };
         operatorStates_.push_back(std::move(programState));
+        physicalInst->status = abstractInst->instructionStatus;
         physicalInst->aggregates = reinterpret_cast<IUpdateAgg*>(
             deviceLiterals_ + abstractInst->literalOffset);
         // the literal is copied when making the reader for aggregates.
@@ -1092,6 +1179,7 @@ void Program::prepareForDevice(GpuArena& arena) {
         auto programState = std::make_unique<ProgramState>();
         programState->stateId = agg.state->id;
         programState->isGlobal = true;
+        physicalInst->serial = agg.serial;
         physicalInst->stateIndex = operatorStates_.size();
         operatorStates_.push_back(std::move(programState));
         memcpy(physicalInst->aggregates, agg.literal, agg.literalBytes);

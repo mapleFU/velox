@@ -102,9 +102,14 @@ class HiveDataSource : public DataSource {
  protected:
   virtual std::unique_ptr<SplitReader> createSplitReader();
 
+  FileHandleFactory* const fileHandleFactory_;
+  folly::Executor* const executor_;
+  const ConnectorQueryCtx* const connectorQueryCtx_;
+  const std::shared_ptr<HiveConfig> hiveConfig_;
+  memory::MemoryPool* const pool_;
+
   std::shared_ptr<HiveConnectorSplit> split_;
   std::shared_ptr<HiveTableHandle> hiveTableHandle_;
-  memory::MemoryPool* pool_;
   std::shared_ptr<common::ScanSpec> scanSpec_;
   VectorPtr output_;
   // Split 内部实际的 split 消费者, 可以是普通的 SplitReader, 也可以是
@@ -123,11 +128,6 @@ class HiveDataSource : public DataSource {
   std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>
       partitionKeys_;
 
-  FileHandleFactory* const fileHandleFactory_;
-  folly::Executor* const executor_;
-  const ConnectorQueryCtx* const connectorQueryCtx_;
-  const std::shared_ptr<HiveConfig> hiveConfig_;
-  // Statistics.
   std::shared_ptr<io::IoStatistics> ioStats_;
   // RowId 虚拟列
   std::shared_ptr<HiveColumnHandle> rowIndexColumn_;

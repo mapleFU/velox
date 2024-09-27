@@ -182,6 +182,7 @@ with a benchmark.
    * Describe the function semantics and edge cases clearly.
 
 3. Use Presto or Spark to check the function semantics. 
+   * When implementing a Spark function, check the function semantics using Spark 3.5 with ANSI OFF.
    * Try different edge cases to check whether the function returns null, or
    throws, etc. 
    * Make sure to replicate the exact semantics.
@@ -205,11 +206,11 @@ with a benchmark.
    ```
    # Test the new function in isolation. Use --only flag to restrict the set of functions
    # and run for 60 seconds or longer.
-   velox_expression_fuzzer_test --only <my-new-function-name> --duration_sec 60 --logtostderr=1 --enable_variadic_signatures --velox_fuzzer_enable_complex_types --lazy_vector_generation_ratio 0.2 --velox_fuzzer_enable_column_reuse --velox_fuzzer_enable_expression_reuse
+   velox_expression_fuzzer_test --only <my-new-function-name> --duration_sec 60 --logtostderr=1 --enable_variadic_signatures --velox_fuzzer_enable_complex_types --velox_fuzzer_enable_decimal_type --lazy_vector_generation_ratio 0.2 --velox_fuzzer_enable_column_reuse --velox_fuzzer_enable_expression_reuse
 
    # Test the new function in combination with other functions. Do not restrict the set
    # of functions and run for 10 minutes (600 seconds) or longer.
-   velox_expression_fuzzer_test --duration_sec 600 --logtostderr=1 --enable_variadic_signatures --velox_fuzzer_enable_complex_types --lazy_vector_generation_ratio 0.2 --velox_fuzzer_enable_column_reuse --velox_fuzzer_enable_expression_reuse
+   velox_expression_fuzzer_test --duration_sec 600 --logtostderr=1 --enable_variadic_signatures --velox_fuzzer_enable_complex_types --velox_fuzzer_enable_decimal_type --lazy_vector_generation_ratio 0.2 --velox_fuzzer_enable_column_reuse --velox_fuzzer_enable_expression_reuse
    ```
 
 Here are example PRs:

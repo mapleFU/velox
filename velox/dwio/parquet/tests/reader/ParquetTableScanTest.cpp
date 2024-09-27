@@ -17,18 +17,19 @@
 #include <folly/init/Init.h>
 
 #include "velox/common/base/tests/GTestUtils.h"
-#include "velox/connectors/hive/HiveConfig.h"
-#include "velox/dwio/common/tests/utils/DataFiles.h"
-#include "velox/dwio/parquet/RegisterParquetReader.h"
-#include "velox/dwio/parquet/reader/PageReader.h"
-#include "velox/dwio/parquet/reader/ParquetReader.h"
-#include "velox/dwio/parquet/writer/Writer.h"
+#include "velox/dwio/common/tests/utils/DataFiles.h" // @manual
+#include "velox/dwio/parquet/RegisterParquetReader.h" // @manual
+#include "velox/dwio/parquet/reader/PageReader.h" // @manual
+#include "velox/dwio/parquet/reader/ParquetReader.h" // @manual=//velox/connectors/hive:velox_hive_connector_parquet
 #include "velox/exec/tests/utils/AssertQueryBuilder.h"
-#include "velox/exec/tests/utils/HiveConnectorTestBase.h"
+#include "velox/exec/tests/utils/HiveConnectorTestBase.h" // @manual
 #include "velox/exec/tests/utils/PlanBuilder.h"
 #include "velox/external/date/tz.h"
 #include "velox/type/tests/SubfieldFiltersBuilder.h"
 #include "velox/type/tz/TimeZoneMap.h"
+
+#include "velox/connectors/hive/HiveConfig.h" // @manual=//velox/connectors/hive:velox_hive_connector_parquet
+#include "velox/dwio/parquet/writer/Writer.h" // @manual
 
 using namespace facebook::velox;
 using namespace facebook::velox::exec;
@@ -48,7 +49,9 @@ class ParquetTableScanTest : public HiveConnectorTestBase {
         connector::getConnectorFactory(
             connector::hive::HiveConnectorFactory::kHiveConnectorName)
             ->newConnector(
-                kHiveConnectorId, std::make_shared<core::MemConfig>());
+                kHiveConnectorId,
+                std::make_shared<config::ConfigBase>(
+                    std::unordered_map<std::string, std::string>()));
     connector::registerConnector(hiveConnector);
   }
 
@@ -59,6 +62,16 @@ class ParquetTableScanTest : public HiveConnectorTestBase {
 
     auto plan = PlanBuilder().tableScan(rowType).planNode();
 
+    assertQuery(plan, splits_, sql);
+  }
+
+  void assertSelectWithDataColumns(
+      std::vector<std::string>&& outputColumnNames,
+      const RowTypePtr& dataColumns,
+      const std::string& sql) {
+    auto rowType = getRowType(std::move(outputColumnNames));
+    auto plan =
+        PlanBuilder().tableScan(rowType, {}, "", dataColumns).planNode();
     assertQuery(plan, splits_, sql);
   }
 
@@ -309,6 +322,26 @@ TEST_F(ParquetTableScanTest, basic) {
       "SELECT max(b), a FROM tmp WHERE a < 3 GROUP BY a");
 }
 
+TEST_F(ParquetTableScanTest, lazy) {
+  auto filePath = getExampleFilePath("sample.parquet");
+  auto schema = ROW({"a", "b"}, {BIGINT(), DOUBLE()});
+  CursorParameters params;
+  params.copyResult = false;
+  params.planNode = PlanBuilder().tableScan(schema).planNode();
+  auto cursor = TaskCursor::create(params);
+  cursor->task()->addSplit("0", exec::Split(makeSplit(filePath)));
+  cursor->task()->noMoreSplits("0");
+  int rows = 0;
+  while (cursor->moveNext()) {
+    auto* result = cursor->current()->asUnchecked<RowVector>();
+    ASSERT_TRUE(result->childAt(0)->isLazy());
+    ASSERT_TRUE(result->childAt(1)->isLazy());
+    rows += result->size();
+  }
+  ASSERT_EQ(rows, 20);
+  ASSERT_TRUE(waitForTaskCompletion(cursor->task().get()));
+}
+
 TEST_F(ParquetTableScanTest, countStar) {
   // sample.parquet holds two columns (a: BIGINT, b: DOUBLE) and
   // 20 rows.
@@ -367,7 +400,6 @@ TEST_F(ParquetTableScanTest, decimalSubfieldFilter) {
       "Scalar function signature is not supported: eq(DECIMAL(5, 2), DECIMAL(5, 1))");
 }
 
-// Core dump is fixed.
 TEST_F(ParquetTableScanTest, map) {
   auto vector = makeMapVector<StringView, StringView>({{{"name", "gluten"}}});
 
@@ -383,7 +415,19 @@ TEST_F(ParquetTableScanTest, map) {
   assertSelectWithFilter({"map"}, {}, "", "SELECT map FROM tmp");
 }
 
-// Core dump is fixed.
+TEST_F(ParquetTableScanTest, nullMap) {
+  auto path = getExampleFilePath("null_map.parquet");
+  loadData(
+      path,
+      ROW({"i", "c"}, {VARCHAR(), MAP(VARCHAR(), VARCHAR())}),
+      makeRowVector(
+          {"i", "c"},
+          {makeConstant<std::string>("1", 1),
+           makeNullableMapVector<std::string, std::string>({std::nullopt})}));
+
+  assertSelectWithFilter({"i", "c"}, {}, "", "SELECT i, c FROM tmp");
+}
+
 TEST_F(ParquetTableScanTest, singleRowStruct) {
   auto vector = makeArrayVector<int32_t>({{}});
   loadData(
@@ -398,7 +442,6 @@ TEST_F(ParquetTableScanTest, singleRowStruct) {
   assertSelectWithFilter({"s"}, {}, "", "SELECT (0, 1)");
 }
 
-// Core dump and incorrect result are fixed.
 TEST_F(ParquetTableScanTest, array) {
   auto vector = makeArrayVector<int32_t>({});
   loadData(
@@ -510,6 +553,21 @@ TEST_F(ParquetTableScanTest, reqArrayLegacy) {
       {},
       "",
       "SELECT UNNEST(array[array['a', 'b'], array[], array['c', 'd']])");
+}
+
+TEST_F(ParquetTableScanTest, filterOnNestedArray) {
+  loadData(
+      getExampleFilePath("struct_of_array.parquet"),
+      ROW({"struct"},
+          {ROW({"a0", "a1"}, {ARRAY(VARCHAR()), ARRAY(INTEGER())})}),
+      makeRowVector(
+          {"unused"},
+          {
+              makeFlatVector<int32_t>({}),
+          }));
+
+  assertSelectWithFilter(
+      {"struct"}, {}, "struct.a0 is null", "SELECT ROW(NULL, NULL)");
 }
 
 TEST_F(ParquetTableScanTest, readAsLowerCase) {
@@ -818,6 +876,34 @@ TEST_F(ParquetTableScanTest, timestampPrecisionMicrosecond) {
           kSize, [](auto i) { return Timestamp(i, i * 1'001'000); }),
   });
   assertEqualResults({expected}, result.second);
+}
+
+TEST_F(ParquetTableScanTest, testColumnNotExists) {
+  auto rowType =
+      ROW({"a", "b", "not_exists", "not_exists_array", "not_exists_map"},
+          {BIGINT(),
+           DOUBLE(),
+           BIGINT(),
+           ARRAY(VARBINARY()),
+           MAP(VARCHAR(), BIGINT())});
+  // message schema {
+  //  optional int64 a;
+  //  optional double b;
+  // }
+  loadData(
+      getExampleFilePath("sample.parquet"),
+      rowType,
+      makeRowVector(
+          {"a", "b"},
+          {
+              makeFlatVector<int64_t>(20, [](auto row) { return row + 1; }),
+              makeFlatVector<double>(20, [](auto row) { return row + 1; }),
+          }));
+
+  assertSelectWithDataColumns(
+      {"a", "b", "not_exists", "not_exists_array", "not_exists_map"},
+      rowType,
+      "SELECT a, b, NULL, NULL, NULL FROM tmp");
 }
 
 int main(int argc, char** argv) {

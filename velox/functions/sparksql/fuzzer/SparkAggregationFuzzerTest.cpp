@@ -79,6 +79,9 @@ int main(int argc, char** argv) {
           {"first_ignore_null", nullptr},
           {"max_by", nullptr},
           {"min_by", nullptr},
+          // If multiple values have the same greatest frequency, the return
+          // value is indeterminate.
+          {"mode", nullptr},
           {"skewness", nullptr},
           {"kurtosis", nullptr},
           {"collect_list", makeArrayVerifier()},
@@ -90,21 +93,41 @@ int main(int argc, char** argv) {
       };
 
   size_t initialSeed = FLAGS_seed == 0 ? std::time(nullptr) : FLAGS_seed;
+  std::shared_ptr<facebook::velox::memory::MemoryPool> rootPool{
+      facebook::velox::memory::memoryManager()->addRootPool()};
   auto duckQueryRunner =
-      std::make_unique<facebook::velox::exec::test::DuckQueryRunner>();
-  duckQueryRunner->disableAggregateFunctions({
-      // https://github.com/facebookincubator/velox/issues/7677
-      "max_by",
-      "min_by",
-      // The skewness functions of Velox and DuckDB use different
-      // algorithms.
-      // https://github.com/facebookincubator/velox/issues/4845
-      "skewness",
-      // Spark's kurtosis uses Pearson's formula for calculating the kurtosis
-      // coefficient. Meanwhile, DuckDB employs the sample kurtosis calculation
-      // formula. The results from the two methods are completely different.
-      "kurtosis",
-  });
+      std::make_unique<facebook::velox::exec::test::DuckQueryRunner>(
+          rootPool.get());
+  duckQueryRunner->disableAggregateFunctions(
+      {// https://github.com/facebookincubator/velox/issues/7677
+       "max_by",
+       "min_by",
+       // The skewness functions of Velox and DuckDB use different
+       // algorithms.
+       // https://github.com/facebookincubator/velox/issues/4845
+       "skewness",
+       // Spark's kurtosis uses Pearson's formula for calculating the kurtosis
+       // coefficient. Meanwhile, DuckDB employs the sample kurtosis calculation
+       // formula. The results from the two methods are completely different.
+       "kurtosis"});
+
+  using facebook::velox::DataSpec;
+  // For some functions, velox supports NaN, Infinity better than presto query
+  // runner, which makes the comparison impossible.
+  // Add data spec in vector fuzzer to enforce to not generate such data
+  // for those functions before they are fixed in presto query runner
+  static const std::unordered_map<std::string, DataSpec> functionDataSpec = {
+      {"regr_avgx", DataSpec{false, false}},
+      {"regr_avgy", DataSpec{false, false}},
+      {"regr_r2", DataSpec{false, false}},
+      {"regr_sxx", DataSpec{false, false}},
+      {"regr_syy", DataSpec{false, false}},
+      {"regr_sxy", DataSpec{false, false}},
+      {"regr_slope", DataSpec{false, false}},
+      {"regr_replacement", DataSpec{false, false}},
+      {"covar_pop", DataSpec{true, false}},
+      {"covar_samp", DataSpec{true, false}},
+  };
 
   using Runner = facebook::velox::exec::test::AggregationFuzzerRunner;
   using Options = facebook::velox::exec::test::AggregationFuzzerOptions;
@@ -113,5 +136,7 @@ int main(int argc, char** argv) {
   options.onlyFunctions = FLAGS_only;
   options.skipFunctions = skipFunctions;
   options.customVerificationFunctions = customVerificationFunctions;
+  options.orderableGroupKeys = true;
+  options.functionDataSpec = functionDataSpec;
   return Runner::run(initialSeed, std::move(duckQueryRunner), options);
 }

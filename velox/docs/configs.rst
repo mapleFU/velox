@@ -168,6 +168,22 @@ Expression Evaluation Configuration
      - bool
      - false
      - This flag makes the Row conversion to by applied in a way that the casting row field are matched by name instead of position.
+   * - debug_disable_expression_with_peeling
+     - bool
+     - false
+     - Disable optimization in expression evaluation to peel common dictionary layer from inputs. Should only be used for debugging.
+   * - debug_disable_common_sub_expressions
+     - bool
+     - false
+     - Disable optimization in expression evaluation to re-use cached results for common sub-expressions. Should only be used for debugging.
+   * - debug_disable_expression_with_memoization
+     - bool
+     - false
+     - Disable optimization in expression evaluation to re-use cached results between subsequent input batches that are dictionary encoded and have the same alphabet(underlying flat vector). Should only be used for debugging.
+   * - debug_disable_expression_with_lazy_inputs
+     - bool
+     - false
+     - Disable optimization in expression evaluation to delay loading of lazy inputs unless required. Should only be used for debugging.
 
 Memory Management
 -----------------
@@ -368,6 +384,10 @@ Table Writer
    * - task_partitioned_writer_count
      - integer
      - task_writer_count
+     - The number of parallel table writer threads per task for partitioned table writes. If not set, use 'task_writer_count' as default.
+   * - task_bucketed_writer_count
+     - integer
+     - task_writer_count
      - The number of parallel table writer threads per task for bucketed table writes. If not set, use 'task_writer_count' as default.
 
 Hive Connector
@@ -414,6 +434,14 @@ Each query can override the config by setting corresponding query session proper
      - bool
      - true
      - If true, the partition directory will be converted to lowercase when executing a table write operation.
+   * - allow-null-partition-keys
+     - allow_null_partition_keys
+     - bool
+     - true
+     - Determines whether null values for partition keys are allowed or not. If not, fails with "Partition key must
+       not be null" error message when writing data with null partition key.
+       Null check for partitioning key should be used only when partitions are generated dynamically during query execution.
+       For queries that write to fixed partitions, this check should happen much earlier before the Velox execution even starts.
    * - ignore_missing_files
      -
      - bool
@@ -517,6 +545,7 @@ Each query can override the config by setting corresponding query session proper
        and also skip staging to the ssd cache. This helps to prevent the cache space pollution
        from the one-time table scan by large batch query when mixed running with interactive
        query which has high data locality.
+
 
 ``Amazon S3 Configuration``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -686,4 +715,44 @@ Spark-specific Configuration
        the value of this config can not exceed the default value.
    * - spark.partition_id
      - integer
+     -
      - The current task's Spark partition ID. It's set by the query engine (Spark) prior to task execution.
+   * - spark.legacy_date_formatter
+     - bool
+     - false
+     - If true, `Simple <https://docs.oracle.com/javase/8/docs/api/java/text/SimpleDateFormat.html>` date formatter is used for time formatting and parsing. Joda date formatter is used by default.
+     - Joda date formatter performs strict checking of its input and uses different pattern string.
+     - For example, the 2015-07-22 10:00:00 timestamp cannot be parse if pattern is yyyy-MM-dd because the parser does not consume whole input.
+     - Another example is that the 'W' pattern, which means week in month, is not supported. For more differences, see :issue:`10354`.
+
+Tracing
+--------
+.. list-table::
+   :widths: 30 10 10 70
+   :header-rows: 1
+
+   * - Property Name
+     - Type
+     - Default Value
+     - Description
+   * - query_trace_enabled
+     - bool
+     - true
+     - If true, enable query tracing.
+   * - query_trace_dir
+     - string
+     -
+     - The root directory to store the tracing data and metadata for a query.
+   * - query_trace_node_ids
+     - string
+     -
+     - A comma-separated list of plan node ids whose input data will be trace. If it is empty, then we only trace the
+       query metadata which includes the query plan and configs etc.
+   * - query_trace_task_reg_exp
+     - string
+     -
+     - The regexp of traced task id. We only enable trace on a task if its id matches.
+   * - query_trace_max_bytes
+     - integer
+     - 0
+     - The max trace bytes limit. Tracing is disabled if zero.

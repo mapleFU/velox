@@ -27,9 +27,7 @@ namespace facebook::velox::core {
 
 typedef std::string PlanNodeId;
 
-/**
- * Generic representation of InsertTable
- */
+/// Generic representation of InsertTable
 struct InsertTableHandle {
  public:
   InsertTableHandle(
@@ -673,6 +671,7 @@ class TableWriteNode : public PlanNode {
       std::shared_ptr<AggregationNode> aggregationNode,
       std::shared_ptr<InsertTableHandle> insertTableHandle,
       bool hasPartitioningScheme,
+      bool hasBucketProperty,
       RowTypePtr outputType,
       connector::CommitStrategy commitStrategy,
       const PlanNodePtr& source)
@@ -683,6 +682,7 @@ class TableWriteNode : public PlanNode {
         aggregationNode_(std::move(aggregationNode)),
         insertTableHandle_(std::move(insertTableHandle)),
         hasPartitioningScheme_(hasPartitioningScheme),
+        hasBucketProperty_(hasBucketProperty),
         outputType_(std::move(outputType)),
         commitStrategy_(commitStrategy) {
     VELOX_USER_CHECK_EQ(columns->size(), columnNames.size());
@@ -694,6 +694,30 @@ class TableWriteNode : public PlanNode {
           source->outputType()->toString());
     }
   }
+
+#ifdef VELOX_ENABLE_BACKWARD_COMPATIBILITY
+  TableWriteNode(
+      const PlanNodeId& id,
+      const RowTypePtr& columns,
+      const std::vector<std::string>& columnNames,
+      std::shared_ptr<AggregationNode> aggregationNode,
+      std::shared_ptr<InsertTableHandle> insertTableHandle,
+      bool hasPartitioningScheme,
+      RowTypePtr outputType,
+      connector::CommitStrategy commitStrategy,
+      const PlanNodePtr& source)
+      : TableWriteNode(
+            id,
+            columns,
+            columnNames,
+            std::move(aggregationNode),
+            std::move(insertTableHandle),
+            hasPartitioningScheme,
+            false,
+            std::move(outputType),
+            commitStrategy,
+            source) {}
+#endif
 
   const std::vector<PlanNodePtr>& sources() const override {
     return sources_;
@@ -722,10 +746,18 @@ class TableWriteNode : public PlanNode {
   /// Indicates if this table write has specified partitioning scheme. If true,
   /// the task creates a number of table write operators based on the query
   /// config 'task_partitioned_writer_count', otherwise based on
-  /// 'task__writer_count'. As for now, this is only true for hive bucketed
-  /// table write.
+  /// 'task_writer_count'.
   bool hasPartitioningScheme() const {
     return hasPartitioningScheme_;
+  }
+
+  /// Indicates if this table write has specified bucket property. If true, the
+  /// task creates a number of table write operators based on the query config
+  /// 'task_partitioned_bucket_writer_count', otherwise based on
+  /// 'task_partitioned_writer_count' or 'task__writer_count' depending on
+  /// whether paritition scheme is specified or not.
+  bool hasBucketProperty() const {
+    return hasBucketProperty_;
   }
 
   connector::CommitStrategy commitStrategy() const {
@@ -758,6 +790,7 @@ class TableWriteNode : public PlanNode {
   const std::shared_ptr<AggregationNode> aggregationNode_;
   const std::shared_ptr<InsertTableHandle> insertTableHandle_;
   const bool hasPartitioningScheme_;
+  const bool hasBucketProperty_;
   const RowTypePtr outputType_;
   const connector::CommitStrategy commitStrategy_;
 };
@@ -1528,6 +1561,10 @@ class AbstractJoinNode : public PlanNode {
     return joinType_ == JoinType::kAnti;
   }
 
+  bool isPreservingProbeOrder() const {
+    return isInnerJoin() || isLeftJoin() || isAntiJoin();
+  }
+
   const std::vector<FieldAccessTypedExprPtr>& leftKeys() const {
     return leftKeys_;
   }
@@ -1643,22 +1680,16 @@ class MergeJoinNode : public AbstractJoinNode {
       TypedExprPtr filter,
       PlanNodePtr left,
       PlanNodePtr right,
-      RowTypePtr outputType)
-      : AbstractJoinNode(
-            id,
-            joinType,
-            leftKeys,
-            rightKeys,
-            std::move(filter),
-            std::move(left),
-            std::move(right),
-            std::move(outputType)) {}
+      RowTypePtr outputType);
 
   std::string_view name() const override {
     return "MergeJoin";
   }
 
   folly::dynamic serialize() const override;
+
+  /// If merge join supports this join type.
+  static bool isSupported(core::JoinType joinType);
 
   static PlanNodePtr create(const folly::dynamic& obj, void* context);
 };
@@ -1667,9 +1698,10 @@ class MergeJoinNode : public AbstractJoinNode {
 /// exec::NestedLoopJoinProbe and exec::NestedLoopJoinBuild. A separate pipeline
 /// is produced for the build side when generating exec::Operators.
 ///
-/// Nested loop join supports both equal and non-equal joins. Expressions
+/// Nested loop join (NLJ) supports both equal and non-equal joins. Expressions
 /// specified in joinCondition are evaluated on every combination of left/right
-/// tuple, to emit result.
+/// tuple, to emit result. Results are emitted following the same input order of
+/// probe rows for inner and left joins, for each thread of execution.
 ///
 /// To create Cartesian product of the left/right's output, use the constructor
 /// without `joinType` and `joinCondition` parameter.
@@ -1710,6 +1742,9 @@ class NestedLoopJoinNode : public PlanNode {
   }
 
   folly::dynamic serialize() const override;
+
+  /// If nested loop join supports this join type.
+  static bool isSupported(core::JoinType joinType);
 
   static PlanNodePtr create(const folly::dynamic& obj, void* context);
 
@@ -2402,7 +2437,7 @@ struct fmt::formatter<facebook::velox::core::PartitionedOutputNode::Kind>
     : formatter<std::string> {
   auto format(
       facebook::velox::core::PartitionedOutputNode::Kind s,
-      format_context& ctx) {
+      format_context& ctx) const {
     return formatter<std::string>::format(
         facebook::velox::core::PartitionedOutputNode::kindString(s), ctx);
   }
@@ -2410,7 +2445,7 @@ struct fmt::formatter<facebook::velox::core::PartitionedOutputNode::Kind>
 
 template <>
 struct fmt::formatter<facebook::velox::core::JoinType> : formatter<int> {
-  auto format(facebook::velox::core::JoinType s, format_context& ctx) {
+  auto format(facebook::velox::core::JoinType s, format_context& ctx) const {
     return formatter<int>::format(static_cast<int>(s), ctx);
   }
 };

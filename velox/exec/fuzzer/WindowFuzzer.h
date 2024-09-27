@@ -38,11 +38,15 @@ class WindowFuzzer : public AggregationFuzzerBase {
       const std::unordered_map<std::string, std::shared_ptr<InputGenerator>>&
           customInputGenerators,
       const std::unordered_set<std::string>& orderDependentFunctions,
+      const std::unordered_map<std::string, DataSpec>& functionDataSpec,
       VectorFuzzer::Options::TimestampPrecision timestampPrecision,
       const std::unordered_map<std::string, std::string>& queryConfigs,
+      const std::unordered_map<std::string, std::string>& hiveConfigs,
+      bool orderableGroupKeys,
       std::unique_ptr<ReferenceQueryRunner> referenceQueryRunner)
-      : AggregationFuzzerBase{seed, customVerificationFunctions, customInputGenerators, timestampPrecision, queryConfigs, std::move(referenceQueryRunner)},
-        orderDependentFunctions_{orderDependentFunctions} {
+      : AggregationFuzzerBase{seed, customVerificationFunctions, customInputGenerators, timestampPrecision, queryConfigs, hiveConfigs, orderableGroupKeys, std::move(referenceQueryRunner)},
+        orderDependentFunctions_{orderDependentFunctions},
+        functionDataSpec_{functionDataSpec} {
     VELOX_CHECK(
         !aggregationSignatureMap.empty() || !windowSignatureMap.empty(),
         "No function signatures available.");
@@ -81,7 +85,10 @@ class WindowFuzzer : public AggregationFuzzerBase {
 
   // Return a randomly generated frame clause string together with a boolean
   // flag indicating whether it is a ROWS frame.
-  std::tuple<std::string, bool> generateFrameClause();
+  std::string generateFrameClause(
+      std::vector<std::string>& argNames,
+      std::vector<TypePtr>& argTypes,
+      bool& isRowsFrame);
 
   std::string generateOrderByClause(
       const std::vector<SortingKeyAndOrder>& sortingKeysAndOrders);
@@ -118,6 +125,7 @@ class WindowFuzzer : public AggregationFuzzerBase {
       const velox::fuzzer::ResultOrError& expected);
 
   const std::unordered_set<std::string> orderDependentFunctions_;
+  const std::unordered_map<std::string, DataSpec> functionDataSpec_;
 
   struct Stats : public AggregationFuzzerBase::Stats {
     std::unordered_set<std::string> verifiedFunctionNames;
@@ -145,8 +153,11 @@ void windowFuzzer(
     const std::unordered_map<std::string, std::shared_ptr<InputGenerator>>&
         customInputGenerators,
     const std::unordered_set<std::string>& orderDependentFunctions,
+    const std::unordered_map<std::string, DataSpec>& functionDataSpec,
     VectorFuzzer::Options::TimestampPrecision timestampPrecision,
     const std::unordered_map<std::string, std::string>& queryConfigs,
+    const std::unordered_map<std::string, std::string>& hiveConfigs,
+    bool orderableGroupKeys,
     const std::optional<std::string>& planPath,
     std::unique_ptr<ReferenceQueryRunner> referenceQueryRunner);
 

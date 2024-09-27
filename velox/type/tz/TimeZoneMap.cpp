@@ -21,7 +21,10 @@
 #include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
 #include "velox/common/base/Exceptions.h"
+#include "velox/common/testutil/TestValue.h"
 #include "velox/external/date/tz.h"
+
+using facebook::velox::common::testutil::TestValue;
 
 namespace facebook::velox::tz {
 
@@ -39,6 +42,12 @@ inline std::chrono::minutes getTimeZoneOffset(int16_t tzID) {
   return std::chrono::minutes{(tzID <= 840) ? (tzID - 841) : (tzID - 840)};
 }
 
+const date::time_zone* locateZoneImpl(std::string_view tz_name) {
+  TestValue::adjust("facebook::velox::tz::locateZoneImpl", &tz_name);
+  const date::time_zone* zone = date::locate_zone(tz_name);
+  return zone;
+}
+
 // Flattens the input vector of pairs into a vector, assuming that the
 // timezoneIDs are (mostly) sequential. Note that since they are "mostly"
 // senquential, the vector can have holes. But it is still more efficient than
@@ -52,8 +61,8 @@ TTimeZoneDatabase buildTimeZoneDatabase(
     std::unique_ptr<TimeZone> timeZonePtr;
 
     if (entry.first == 0) {
-      timeZonePtr = std::make_unique<TimeZone>(
-          "UTC", entry.first, date::locate_zone("UTC"));
+      timeZonePtr =
+          std::make_unique<TimeZone>("UTC", entry.first, locateZoneImpl("UTC"));
     } else if (entry.first <= 1680) {
       std::chrono::minutes offset = getTimeZoneOffset(entry.first);
       timeZonePtr =
@@ -62,8 +71,22 @@ TTimeZoneDatabase buildTimeZoneDatabase(
     // Every single other time zone entry (outside of offsets) needs to be
     // available in external/date or this will throw.
     else {
-      timeZonePtr = std::make_unique<TimeZone>(
-          entry.second, entry.first, date::locate_zone(entry.second));
+      const date::time_zone* zone;
+      try {
+        zone = locateZoneImpl(entry.second);
+      } catch (date::invalid_timezone& err) {
+        // When this exception is thrown, it typically means the time zone name
+        // we are trying to locate cannot be found from OS's time zone database.
+        // Thus, we just command a "continue;" to skip the creation of the
+        // corresponding TimeZone object.
+        //
+        // Then, once this time zone is requested at runtime, a runtime error
+        // will be thrown and caller is expected to handle that error in code.
+        LOG(WARNING) << "Unable to load [" << entry.second
+                     << "] from local timezone database: " << err.what();
+        continue;
+      }
+      timeZonePtr = std::make_unique<TimeZone>(entry.second, entry.first, zone);
     }
     tzDatabase[entry.first] = std::move(timeZonePtr);
   }
@@ -110,6 +133,10 @@ inline bool startsWith(std::string_view str, const char* prefix) {
   return str.rfind(prefix, 0) == 0;
 }
 
+inline bool isTimeZoneOffset(std::string_view str) {
+  return str.size() >= 3 && (str[0] == '+' || str[0] == '-');
+}
+
 // The timezone parsing logic follows what is defined here:
 //   https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
 inline bool isUtcEquivalentName(std::string_view zone) {
@@ -118,7 +145,36 @@ inline bool isUtcEquivalentName(std::string_view zone) {
   return utcSet.find(zone) != utcSet.end();
 }
 
+// This function tries to apply two normalization rules to time zone offsets:
+//
+// 1. If the offset only defines the hours portion, assume minutes are zeroed
+// out (e.g. "+00" -> "+00:00")
+//
+// 2. Check if the ':' in between in missing; if so, correct the offset string
+// (e.g. "+0000" -> "+00:00").
+//
+// This function assumes the first character is either '+' or '-'.
+std::string normalizeTimeZoneOffset(const std::string& zoneOffset) {
+  if (zoneOffset.size() == 3 && isDigit(zoneOffset[1]) &&
+      isDigit(zoneOffset[2])) {
+    return zoneOffset + ":00";
+  } else if (
+      zoneOffset.size() == 5 && isDigit(zoneOffset[1]) &&
+      isDigit(zoneOffset[2]) && isDigit(zoneOffset[3]) &&
+      isDigit(zoneOffset[4])) {
+    return zoneOffset.substr(0, 3) + ':' + zoneOffset.substr(3, 2);
+  }
+  return zoneOffset;
+}
+
 std::string normalizeTimeZone(const std::string& originalZoneId) {
+  // If this is an offset that hasn't matched, check if this is an incomplete
+  // offset.
+  if (isTimeZoneOffset(originalZoneId)) {
+    return normalizeTimeZoneOffset(originalZoneId);
+  }
+
+  // Otherwise, try other time zone name normalizations.
   std::string_view zoneId = originalZoneId;
   const bool startsWithEtc = startsWith(zoneId, "etc/");
 
@@ -167,23 +223,52 @@ std::string normalizeTimeZone(const std::string& originalZoneId) {
   return originalZoneId;
 }
 
+template <typename TDuration>
+void validateRangeImpl(time_point<TDuration> timePoint) {
+  using namespace velox::date;
+  static constexpr auto kMinYear = date::year::min();
+  static constexpr auto kMaxYear = date::year::max();
+
+  auto year = year_month_day(floor<days>(timePoint)).year();
+
+  if (year < kMinYear || year > kMaxYear) {
+    // This is a special case where we intentionally throw
+    // VeloxRuntimeError to avoid it being suppressed by TRY().
+    VELOX_FAIL_UNSUPPORTED_INPUT_UNCATCHABLE(
+        "Timepoint is outside of supported year range: [{}, {}], got {}",
+        (int)kMinYear,
+        (int)kMaxYear,
+        (int)year);
+  }
+}
+
 } // namespace
 
+void validateRange(time_point<std::chrono::seconds> timePoint) {
+  validateRangeImpl(timePoint);
+}
+
+void validateRange(time_point<std::chrono::milliseconds> timePoint) {
+  validateRangeImpl(timePoint);
+}
+
 std::string getTimeZoneName(int64_t timeZoneID) {
+  return locateZone(timeZoneID, true)->name();
+}
+
+const TimeZone* locateZone(int16_t timeZoneID, bool failOnError) {
   const auto& timeZoneDatabase = getTimeZoneDatabase();
 
-  VELOX_CHECK_LT(
-      timeZoneID,
-      timeZoneDatabase.size(),
-      "Unable to resolve timeZoneID '{}'",
-      timeZoneID);
-
-  // Check if timeZoneID is not one of the "holes".
-  VELOX_CHECK_NOT_NULL(
-      timeZoneDatabase[timeZoneID],
-      "Unable to resolve timeZoneID '{}'",
-      timeZoneID);
-  return timeZoneDatabase[timeZoneID]->name();
+  // Check if timeZoneID does not exceed the vector size or is one of the
+  // "holes".
+  if (timeZoneID > timeZoneDatabase.size() ||
+      timeZoneDatabase[timeZoneID] == nullptr) {
+    if (failOnError) {
+      VELOX_FAIL("Unable to resolve timeZoneID '{}'", timeZoneID);
+    }
+    return nullptr;
+  }
+  return timeZoneDatabase[timeZoneID].get();
 }
 
 const TimeZone* locateZone(std::string_view timeZone, bool failOnError) {
@@ -245,6 +330,7 @@ TimeZone::seconds TimeZone::to_sys(
     TimeZone::seconds timestamp,
     TimeZone::TChoose choose) const {
   date::local_seconds timePoint{timestamp};
+  validateRange(date::sys_seconds{timestamp});
 
   if (tz_ == nullptr) {
     // We can ignore `choose` as time offset conversions are always linear.
@@ -266,6 +352,7 @@ TimeZone::seconds TimeZone::to_sys(
 
 TimeZone::seconds TimeZone::to_local(TimeZone::seconds timestamp) const {
   date::sys_seconds timePoint{timestamp};
+  validateRange(timePoint);
 
   // If this is an offset time zone.
   if (tz_ == nullptr) {

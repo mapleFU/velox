@@ -227,7 +227,12 @@ std::vector<std::string> AggregationFuzzerBase::generateKeys(
     keys.push_back(fmt::format("{}{}", prefix, i));
 
     // Pick random, possibly complex, type.
-    types.push_back(vectorFuzzer_.randType(kNonFloatingPointTypes, 2));
+    if (orderableGroupKeys_) {
+      types.push_back(
+          vectorFuzzer_.randOrderableType(kNonFloatingPointTypes, 2));
+    } else {
+      types.push_back(vectorFuzzer_.randType(kNonFloatingPointTypes, 2));
+    }
     names.push_back(keys.back());
   }
   return keys;
@@ -726,11 +731,12 @@ void persistReproInfo(
 }
 
 std::unique_ptr<ReferenceQueryRunner> setupReferenceQueryRunner(
+    memory::MemoryPool* aggregatePool,
     const std::string& prestoUrl,
     const std::string& runnerName,
     const uint32_t& reqTimeoutMs) {
   if (prestoUrl.empty()) {
-    auto duckQueryRunner = std::make_unique<DuckQueryRunner>();
+    auto duckQueryRunner = std::make_unique<DuckQueryRunner>(aggregatePool);
     duckQueryRunner->disableAggregateFunctions({
         "skewness",
         // DuckDB results on constant inputs are incorrect. Should be NaN,
@@ -744,6 +750,7 @@ std::unique_ptr<ReferenceQueryRunner> setupReferenceQueryRunner(
     return duckQueryRunner;
   } else {
     return std::make_unique<PrestoQueryRunner>(
+        aggregatePool,
         prestoUrl,
         runnerName,
         static_cast<std::chrono::milliseconds>(reqTimeoutMs));

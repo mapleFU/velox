@@ -32,6 +32,13 @@ class SelectiveStringDictionaryColumnReader
       DwrfParams& params,
       common::ScanSpec& scanSpec);
 
+  bool hasBulkPath() const override {
+    // Only ORC uses RLEv2 encoding. Currently, ORC string data does not
+    // support fastpath reads. When reading RLEv2-encoded string data
+    // with null, the query will fail.
+    return version_ != velox::dwrf::RleVersion_2;
+  }
+
   void seekToRowGroup(uint32_t index) override {
     SelectiveColumnReader::seekToRowGroup(index);
     auto positionsProvider = formatData_->as<DwrfData>().seekToRowGroup(index);
@@ -53,26 +60,19 @@ class SelectiveStringDictionaryColumnReader
 
   uint64_t skip(uint64_t numValues) override;
 
-  void read(vector_size_t offset, RowSet rows, const uint64_t* incomingNulls)
-      override;
+  void read(
+      vector_size_t offset,
+      const RowSet& rows,
+      const uint64_t* incomingNulls) override;
 
-  void getValues(RowSet rows, VectorPtr* result) override;
+  void getValues(const RowSet& rows, VectorPtr* result) override;
 
  private:
   void loadStrideDictionary();
   void makeDictionaryBaseVector();
 
   template <typename TVisitor>
-  void readWithVisitor(RowSet rows, TVisitor visitor);
-
-  template <typename TFilter, bool isDense, typename ExtractValues>
-  void readHelper(common::Filter* filter, RowSet rows, ExtractValues values);
-
-  template <bool isDense, typename ExtractValues>
-  void processFilter(
-      common::Filter* filter,
-      RowSet rows,
-      ExtractValues extractValues);
+  void readWithVisitor(TVisitor visitor);
 
   // Fills 'values' from 'data' and 'lengthDecoder'. The count of
   // values is in 'values.numValues'.
@@ -108,75 +108,13 @@ class SelectiveStringDictionaryColumnReader
 };
 
 template <typename TVisitor>
-void SelectiveStringDictionaryColumnReader::readWithVisitor(
-    RowSet rows,
-    TVisitor visitor) {
+void SelectiveStringDictionaryColumnReader::readWithVisitor(TVisitor visitor) {
   if (version_ == velox::dwrf::RleVersion_1) {
     decodeWithVisitor<velox::dwrf::RleDecoderV1<false>>(
         dictIndex_.get(), visitor);
   } else {
     decodeWithVisitor<velox::dwrf::RleDecoderV2<false>>(
         dictIndex_.get(), visitor);
-  }
-}
-
-template <typename TFilter, bool isDense, typename ExtractValues>
-void SelectiveStringDictionaryColumnReader::readHelper(
-    common::Filter* filter,
-    RowSet rows,
-    ExtractValues values) {
-  readWithVisitor(
-      rows,
-      dwio::common::
-          StringDictionaryColumnVisitor<TFilter, ExtractValues, isDense>(
-              *reinterpret_cast<TFilter*>(filter), this, rows, values));
-}
-
-template <bool isDense, typename ExtractValues>
-void SelectiveStringDictionaryColumnReader::processFilter(
-    common::Filter* filter,
-    RowSet rows,
-    ExtractValues extractValues) {
-  if (filter == nullptr) {
-    readHelper<common::AlwaysTrue, isDense>(
-        &dwio::common::alwaysTrue(), rows, extractValues);
-    return;
-  }
-
-  switch (filter->kind()) {
-    case common::FilterKind::kAlwaysTrue:
-      readHelper<common::AlwaysTrue, isDense>(filter, rows, extractValues);
-      break;
-    case common::FilterKind::kIsNull:
-      filterNulls<int32_t>(
-          rows,
-          true,
-          !std::is_same_v<decltype(extractValues), dwio::common::DropValues>);
-      break;
-    case common::FilterKind::kIsNotNull:
-      if (std::is_same_v<decltype(extractValues), dwio::common::DropValues>) {
-        filterNulls<int32_t>(rows, false, false);
-      } else {
-        readHelper<common::IsNotNull, isDense>(filter, rows, extractValues);
-      }
-      break;
-    case common::FilterKind::kBytesRange:
-      readHelper<common::BytesRange, isDense>(filter, rows, extractValues);
-      break;
-    case common::FilterKind::kNegatedBytesRange:
-      readHelper<common::NegatedBytesRange, isDense>(
-          filter, rows, extractValues);
-      break;
-    case common::FilterKind::kBytesValues:
-      readHelper<common::BytesValues, isDense>(filter, rows, extractValues);
-      break;
-    case common::FilterKind::kNegatedBytesValues:
-      readHelper<common::NegatedBytesValues, isDense>(
-          filter, rows, extractValues);
-      break;
-    default:
-      readHelper<common::Filter, isDense>(filter, rows, extractValues);
-      break;
   }
 }
 

@@ -907,29 +907,18 @@ class UDFHolder {
     }
   }
 
-<<<<<<< HEAD
   // (我去, 原来 call 也是包装出来的.)
   // 包装了 call/callNullable.
-  FOLLY_ALWAYS_INLINE bool call(
-=======
   FOLLY_ALWAYS_INLINE Status call(
->>>>>>> main
       exec_return_type& out,
       bool& notNull,
       const typename exec_resolver<TArgs>::in_type&... args) {
     if constexpr (udf_has_call) {
-<<<<<<< HEAD
       // 包装了用户的 `call`. 这个地方包装了返回的否是 nullable
       // (即 UDF 是否返回一个 bool, 这个 bool 会映射到 nullable).
-      return callImpl(out, args...);
-    } else if constexpr (udf_has_callNullable) {
-      // 同上
-      return callNullableImpl(out, (&args)...);
-=======
       return callImpl(out, notNull, args...);
     } else if constexpr (udf_has_callNullable) {
       return callNullableImpl(out, notNull, (&args)...);
->>>>>>> main
     } else {
       VELOX_UNREACHABLE(
           "call should never be called if the UDF does not "

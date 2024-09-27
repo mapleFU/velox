@@ -666,7 +666,7 @@ void PageReader::makeDecoder() {
               pageData_, pageData_ + encodedDataSize_);
           break;
         case thrift::Type::FIXED_LEN_BYTE_ARRAY:
-          if (type_->type()->isVarbinary()) {
+          if (type_->type()->isVarbinary() || type_->type()->isVarchar()) {
             stringDecoder_ = std::make_unique<StringDecoder>(
                 pageData_, pageData_ + encodedDataSize_, type_->typeLength_);
           } else {
@@ -719,8 +719,14 @@ void PageReader::skip(int64_t numRows) {
   }
   firstUnvisited_ += numRows;
 
+  if (toSkip == 0) {
+    return;
+  }
   // Skip nulls
   toSkip = skipNulls(toSkip);
+  if (toSkip == 0) {
+    return;
+  }
 
   // Skip the decoder
   if (isDictionary()) {

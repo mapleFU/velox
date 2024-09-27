@@ -29,6 +29,7 @@ class Writer;
 }
 
 namespace facebook::velox::connector::hive {
+
 class HiveColumnHandle;
 
 class LocationHandle;
@@ -47,13 +48,19 @@ class LocationHandle : public ISerializable {
   LocationHandle(
       std::string targetPath,
       std::string writePath,
-      TableType tableType)
+      TableType tableType,
+      std::string targetFileName = "")
       : targetPath_(std::move(targetPath)),
+        targetFileName_(std::move(targetFileName)),
         writePath_(std::move(writePath)),
         tableType_(tableType) {}
 
   const std::string& targetPath() const {
     return targetPath_;
+  }
+
+  const std::string& targetFileName() const {
+    return targetFileName_;
   }
 
   const std::string& writePath() const {
@@ -79,6 +86,8 @@ class LocationHandle : public ISerializable {
  private:
   // Target directory path.
   const std::string targetPath_;
+  // If non-empty, use this name instead of generating our own.
+  const std::string targetFileName_;
   // Staging directory path.
   const std::string writePath_;
   // Whether the table to be written is new, already existing or temporary.
@@ -209,7 +218,7 @@ class HiveInsertTableHandle : public ConnectorInsertTableHandle {
     if (compressionKind.has_value()) {
       VELOX_CHECK(
           compressionKind.value() != common::CompressionKind_MAX,
-          "Unsupported compression type: CompressionKind_MAX")
+          "Unsupported compression type: CompressionKind_MAX");
     }
   }
 
@@ -617,7 +626,7 @@ struct fmt::formatter<facebook::velox::connector::hive::HiveDataSink::State>
     : formatter<int> {
   auto format(
       facebook::velox::connector::hive::HiveDataSink::State s,
-      format_context& ctx) {
+      format_context& ctx) const {
     return formatter<int>::format(static_cast<int>(s), ctx);
   }
 };
@@ -628,7 +637,7 @@ struct fmt::formatter<
     : formatter<int> {
   auto format(
       facebook::velox::connector::hive::LocationHandle::TableType s,
-      format_context& ctx) {
+      format_context& ctx) const {
     return formatter<int>::format(static_cast<int>(s), ctx);
   }
 };

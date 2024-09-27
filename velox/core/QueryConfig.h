@@ -15,29 +15,12 @@
  */
 #pragma once
 
-#include "velox/core/Config.h"
+#include "velox/common/config/Config.h"
+#include "velox/vector/TypeAliases.h"
 
 namespace facebook::velox::core {
-enum class CapacityUnit {
-  BYTE,
-  KILOBYTE,
-  MEGABYTE,
-  GIGABYTE,
-  TERABYTE,
-  PETABYTE
-};
 
-double toBytesPerCapacityUnit(CapacityUnit unit);
-
-CapacityUnit valueOfCapacityUnit(const std::string& unitStr);
-
-/// Convert capacity string with unit to the capacity number in the specified
-/// units
-uint64_t toCapacity(const std::string& from, CapacityUnit to);
-
-std::chrono::duration<double> toDuration(const std::string& str);
-
-/// A simple wrapper around velox::Config. Defines constants for query
+/// A simple wrapper around velox::ConfigBase. Defines constants for query
 /// config properties and accessor methods.
 /// Create per query context. Does not have a singleton instance.
 /// Does not allow altering properties on the fly. Only at creation time.
@@ -304,6 +287,11 @@ class QueryConfig {
   /// The current spark partition id.
   static constexpr const char* kSparkPartitionId = "spark.partition_id";
 
+  /// If true, simple date formatter is used for time formatting and parsing.
+  /// Joda date formatter is used by default.
+  static constexpr const char* kSparkLegacyDateFormatter =
+      "spark.legacy_date_formatter";
+
   /// The number of local parallel table writer operators per task.
   static constexpr const char* kTaskWriterCount = "task_writer_count";
 
@@ -311,6 +299,11 @@ class QueryConfig {
   /// partitioned writes. If not set, use "task_writer_count".
   static constexpr const char* kTaskPartitionedWriterCount =
       "task_partitioned_writer_count";
+
+  /// The number of local parallel table writer operators per task for
+  /// bucketed writes. If not set, use "task_writer_count".
+  static constexpr const char* kTaskBucketedWriterCount =
+      "task_bucketed_writer_count";
 
   /// If true, finish the hash probe on an empty build table for a specific set
   /// of hash joins.
@@ -364,9 +357,75 @@ class QueryConfig {
   /// derived using micro-benchmarking.
   static constexpr const char* kPrefixSortMinRows = "prefixsort_min_rows";
 
+  /// Enable query tracing flag.
+  static constexpr const char* kQueryTraceEnabled = "query_trace_enabled";
+
+  /// Base dir of a query to store tracing data.
+  static constexpr const char* kQueryTraceDir = "query_trace_dir";
+
+  /// A comma-separated list of plan node ids whose input data will be traced.
+  /// Empty string if only want to trace the query metadata.
+  static constexpr const char* kQueryTraceNodeIds = "query_trace_node_ids";
+
+  /// The max trace bytes limit. Tracing is disabled if zero.
+  static constexpr const char* kQueryTraceMaxBytes = "query_trace_max_bytes";
+
+  /// The regexp of traced task id. We only enable trace on a task if its id
+  /// matches.
+  static constexpr const char* kQueryTraceTaskRegExp =
+      "query_trace_task_reg_exp";
+
+  /// Disable optimization in expression evaluation to peel common dictionary
+  /// layer from inputs.
+  static constexpr const char* kDebugDisableExpressionWithPeeling =
+      "debug_disable_expression_with_peeling";
+
+  /// Disable optimization in expression evaluation to re-use cached results for
+  /// common sub-expressions.
+  static constexpr const char* kDebugDisableCommonSubExpressions =
+      "debug_disable_common_sub_expressions";
+
+  /// Disable optimization in expression evaluation to re-use cached results
+  /// between subsequent input batches that are dictionary encoded and have the
+  /// same alphabet(underlying flat vector).
+  static constexpr const char* kDebugDisableExpressionWithMemoization =
+      "debug_disable_expression_with_memoization";
+
+  /// Disable optimization in expression evaluation to delay loading of lazy
+  /// inputs unless required.
+  static constexpr const char* kDebugDisableExpressionWithLazyInputs =
+      "debug_disable_expression_with_lazy_inputs";
+
+  /// Temporary flag to control whether selective Nimble reader should be used
+  /// in this query or not.  Will be removed after the selective Nimble reader
+  /// is fully rolled out.
+  static constexpr const char* kSelectiveNimbleReaderEnabled =
+      "selective_nimble_reader_enabled";
+
+  bool selectiveNimbleReaderEnabled() const {
+    return get<bool>(kSelectiveNimbleReaderEnabled, false);
+  }
+
+  bool debugDisableExpressionsWithPeeling() const {
+    return get<bool>(kDebugDisableExpressionWithPeeling, false);
+  }
+
+  bool debugDisableCommonSubExpressions() const {
+    return get<bool>(kDebugDisableCommonSubExpressions, false);
+  }
+
+  bool debugDisableExpressionsWithMemoization() const {
+    return get<bool>(kDebugDisableExpressionWithMemoization, false);
+  }
+
+  bool debugDisableExpressionsWithLazyInputs() const {
+    return get<bool>(kDebugDisableExpressionWithLazyInputs, false);
+  }
+
   uint64_t queryMaxMemoryPerNode() const {
-    return toCapacity(
-        get<std::string>(kQueryMaxMemoryPerNode, "0B"), CapacityUnit::BYTE);
+    return config::toCapacity(
+        get<std::string>(kQueryMaxMemoryPerNode, "0B"),
+        config::CapacityUnit::BYTE);
   }
 
   uint64_t maxPartialAggregationMemoryUsage() const {
@@ -446,12 +505,17 @@ class QueryConfig {
     return get<uint64_t>(kPreferredOutputBatchBytes, kDefault);
   }
 
-  uint32_t preferredOutputBatchRows() const {
-    return get<uint32_t>(kPreferredOutputBatchRows, 1024);
+  vector_size_t preferredOutputBatchRows() const {
+    const uint32_t batchRows = get<uint32_t>(kPreferredOutputBatchRows, 1024);
+    VELOX_USER_CHECK_LE(batchRows, std::numeric_limits<vector_size_t>::max());
+    return batchRows;
   }
 
-  uint32_t maxOutputBatchRows() const {
-    return get<uint32_t>(kMaxOutputBatchRows, 10'000);
+  vector_size_t maxOutputBatchRows() const {
+    const uint32_t maxBatchRows = get<uint32_t>(kMaxOutputBatchRows, 10'000);
+    VELOX_USER_CHECK_LE(
+        maxBatchRows, std::numeric_limits<vector_size_t>::max());
+    return maxBatchRows;
   }
 
   uint32_t tableScanGetOutputTimeLimitMs() const {
@@ -628,6 +692,30 @@ class QueryConfig {
     return get<int32_t>(kSpillableReservationGrowthPct, kDefaultPct);
   }
 
+  /// Returns true if query tracing is enabled.
+  bool queryTraceEnabled() const {
+    return get<bool>(kQueryTraceEnabled, false);
+  }
+
+  std::string queryTraceDir() const {
+    // The default query trace dir, empty by default.
+    return get<std::string>(kQueryTraceDir, "");
+  }
+
+  std::string queryTraceNodeIds() const {
+    // The default query trace nodes, empty by default.
+    return get<std::string>(kQueryTraceNodeIds, "");
+  }
+
+  uint64_t queryTraceMaxBytes() const {
+    return get<uint64_t>(kQueryTraceMaxBytes, 0);
+  }
+
+  std::string queryTraceTaskRegExp() const {
+    // The default query trace task regexp, empty by default.
+    return get<std::string>(kQueryTraceTaskRegExp, "");
+  }
+
   bool prestoArrayAggIgnoreNulls() const {
     return get<bool>(kPrestoArrayAggIgnoreNulls, false);
   }
@@ -663,6 +751,10 @@ class QueryConfig {
     return value;
   }
 
+  bool sparkLegacyDateFormatter() const {
+    return get<bool>(kSparkLegacyDateFormatter, false);
+  }
+
   bool exprTrackCpuUsage() const {
     return get<bool>(kExprTrackCpuUsage, false);
   }
@@ -680,8 +772,12 @@ class QueryConfig {
         .value_or(taskWriterCount());
   }
 
+  uint32_t taskBucketedWriterCount() const {
+    return get<uint32_t>(kTaskBucketedWriterCount).value_or(taskWriterCount());
+  }
+
   bool hashProbeFinishEarlyOnEmptyBuild() const {
-    return get<bool>(kHashProbeFinishEarlyOnEmptyBuild, true);
+    return get<bool>(kHashProbeFinishEarlyOnEmptyBuild, false);
   }
 
   uint32_t minTableRowsForParallelJoinBuild() const {
@@ -742,7 +838,11 @@ class QueryConfig {
   void testingOverrideConfigUnsafe(
       std::unordered_map<std::string, std::string>&& values);
 
+  std::unordered_map<std::string, std::string> rawConfigsCopy() const;
+
  private:
-  std::unique_ptr<velox::Config> config_;
+  void validateConfig();
+
+  std::unique_ptr<velox::config::ConfigBase> config_;
 };
 } // namespace facebook::velox::core
