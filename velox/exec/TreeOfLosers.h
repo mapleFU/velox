@@ -59,6 +59,8 @@ class MergeStream {
 /// it returns the Stream that has the lowest value as first value from the set
 /// of Streams. It returns nullptr when all Streams are at end. The order is
 /// determined by Stream::operator<.
+///
+/// 本质上应该是一个没有第零层的 Tree.
 template <typename Stream, typename TIndex = uint16_t>
 class TreeOfLosers {
  public:
@@ -80,8 +82,11 @@ class TreeOfLosers {
 
     if (numStreams == bits::nextPowerOfTwo(numStreams)) {
       // All leaves are on last level.
+      // 不需要给 LastLevel 做额外的处理
       firstStream_ = size;
     } else {
+      // 把有些节点调整到前面的 Level.
+      //
       // Some of the streams are on the last level and some on the level before.
       // The first stream follows the last inner node in the node numbering.
 
@@ -94,6 +99,8 @@ class TreeOfLosers {
       // level and 8 nodes on the last level. The streams at the left
       // of the second last level become inner nodes and their streams
       // move to the level below.
+      //
+      // Fill 出剩下的 Stream, 算出 firstStream offset
       firstStream_ = (size - secondLastSize) + overflow;
     }
     values_.resize(firstStream_, kEmpty);
@@ -114,8 +121,10 @@ class TreeOfLosers {
         // Only one stream. We handle this off the common path.
         return streams_[0]->hasData() ? streams_[0].get() : nullptr;
       }
+      // 初次计算
       lastIndex_ = first(0);
     } else {
+      // 再次计算, 从上次的 Index 父级下降, 并给出旧的 lastIndex_ 的 slot
       lastIndex_ = propagate(
           parent(firstStream_ + lastIndex_),
           streams_[lastIndex_]->hasData() ? lastIndex_ : kEmpty);
@@ -158,6 +167,14 @@ class TreeOfLosers {
     return std::pair<TIndex, bool>{index, flag};
   }
 
+  // 从 Node 下降, 来递归处理左右的 index, 并且胜者留在本地, 败者的
+  // index 当成返回值. 计算的结果被留在 values_ 中.
+  //
+  // 返回的值是 Data Index.
+  //
+  // 如果 index 越界或者 stream 消费完成, 则返回 kEmpty
+  //
+  // 这个函数叫 first 因为是第一次计算, 之后的计算都是 propagate.
   TIndex first(TIndex node) {
     if (node >= firstStream_) {
       return streams_[node - firstStream_]->hasData() ? node - firstStream_
@@ -179,12 +196,15 @@ class TreeOfLosers {
   }
 
   FOLLY_ALWAYS_INLINE TIndex propagate(TIndex node, TIndex value) {
+    // 找到第一个非 Empty 的 Parent Node 的值
     while (UNLIKELY(values_[node] == kEmpty)) {
       if (UNLIKELY(node == 0)) {
         return value;
       }
       node = parent(node);
     }
+    // 循环比较, 一直到根节点.
+    // node 与 `value` 比较, 胜者留在本地, 败者的 index 存在 `value` 中.
     for (;;) {
       if (UNLIKELY(values_[node] == kEmpty)) {
         // The value goes past the node and the node stays empty.
@@ -299,8 +319,12 @@ class TreeOfLosers {
   // 'true' if the corresponding element of 'values_' has met an equal
   // element on its way to its present position. Used only in nextWithEquals().
   // A byte vector is in this case faster than one of bool.
+  //
+  // 额外判定一个 Equal
   std::vector<uint8_t> equals_;
+  // 最后一个数据的 Index, 初始化为 kEmpty
   TIndex lastIndex_ = kEmpty;
+  // First Data Stream offset
   int32_t firstStream_;
 };
 
