@@ -60,7 +60,8 @@ class MergeStream {
 /// of Streams. It returns nullptr when all Streams are at end. The order is
 /// determined by Stream::operator<.
 ///
-/// 本质上应该是一个没有第零层的 Tree.
+/// 本质上应该是一个没有第零层的 Tree, caller 负责接收返回的 Stream 然后消费 Stream
+/// value.
 template <typename Stream, typename TIndex = uint16_t>
 class TreeOfLosers {
  public:
@@ -139,6 +140,8 @@ class TreeOfLosers {
   /// each stream.  The caller is expected to pop off the first element of the
   /// stream before calling this again. Returns {nullptr, false} when all
   /// streams are at end.
+  ///
+  /// 这里的 Equal 指的是 Equal value from other stream, 本 Stream 的 Equal 不受理.
   std::pair<Stream*, bool> nextWithEquals() {
     IndexAndFlag result;
     if (UNLIKELY(lastIndex_ == kEmpty)) {
@@ -274,6 +277,8 @@ class TreeOfLosers {
       } else if (UNLIKELY(value.first == kEmpty)) {
         value = indexAndFlag(values_[node], equals_[node]);
         values_[node] = kEmpty;
+        // 额外给一个 Equal, 因为 value 是空的, 所以这里本轮不 Equal,
+        // 然后 propagate 另一个节点上的值, 本 Empty 留下来作为败者.
         equals_[node] = false;
       } else {
         auto comparison =
@@ -329,7 +334,7 @@ class TreeOfLosers {
 };
 
 // Array-based merging structure implementing the same interface as
-// TreOfLosers. The streams are sorted on their first value. The
+// TreeOfLosers. The streams are sorted on their first value. The
 // first stream is returned and then reinserted in the array at the
 // position corresponding to the new element after the caller has
 // popped off the previous first value.
@@ -354,6 +359,7 @@ class MergeArray {
   // calling this again. Returns nullptr when all streams are at end.
   Stream* next() {
     if (UNLIKELY(isFirst_)) {
+      // 第一次直接拿第一条流
       isFirst_ = false;
       if (streams_.empty()) {
         return nullptr;
@@ -361,6 +367,7 @@ class MergeArray {
       // stream has data, else it would not be here after construction.
       return streams_[0].get();
     }
+    // 如果流被消费光了, 就开始 Pop 掉.
     if (!streams_[0]->hasData()) {
       streams_.erase(streams_.begin());
       return streams_.empty() ? nullptr : streams_[0].get();

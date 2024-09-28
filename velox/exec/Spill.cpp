@@ -34,6 +34,7 @@ int32_t SpillMergeStream::compare(const MergeStream& other) const {
   auto& children = rowVector_->children();
   auto& otherChildren = otherStream.current().children();
   int32_t key = 0;
+  // 逐个 Key 比较, 看着没有采用 Normalized Key?
   if (sortCompareFlags().empty()) {
     do {
       auto result = children[key]
