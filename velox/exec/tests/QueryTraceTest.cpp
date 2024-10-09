@@ -21,14 +21,14 @@
 
 #include "velox/common/file/FileSystems.h"
 #include "velox/exec/PartitionFunction.h"
+#include "velox/exec/QueryDataReader.h"
+#include "velox/exec/QueryDataWriter.h"
+#include "velox/exec/QueryMetadataReader.h"
+#include "velox/exec/QueryMetadataWriter.h"
+#include "velox/exec/QueryTraceUtil.h"
 #include "velox/exec/tests/utils/ArbitratorTestUtil.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 #include "velox/exec/tests/utils/TempDirectoryPath.h"
-#include "velox/exec/trace/QueryDataReader.h"
-#include "velox/exec/trace/QueryDataWriter.h"
-#include "velox/exec/trace/QueryMetadataReader.h"
-#include "velox/exec/trace/QueryMetadataWriter.h"
-#include "velox/exec/trace/QueryTraceUtil.h"
 #include "velox/serializers/PrestoSerializer.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
@@ -158,7 +158,7 @@ TEST_F(QueryTracerTest, traceData) {
       continue;
     }
 
-    const auto reader = QueryDataReader(outputDir->getPath(), pool());
+    const auto reader = QueryDataReader(outputDir->getPath(), rowType, pool());
     RowVectorPtr actual;
     size_t numOutputVectors{0};
     while (reader.read(actual)) {
@@ -278,8 +278,17 @@ TEST_F(QueryTracerTest, task) {
   const auto expectedResult =
       AssertQueryBuilder(planNode).maxDrivers(1).copyResults(pool());
 
-  for (const auto* taceTaskRegExp :
-       {".*", "test_cursor [12345]", "xxx_yyy \\d+"}) {
+  struct {
+    std::string taskRegExpr;
+    uint8_t expectedNumDirs;
+
+    std::string debugString() const {
+      return fmt::format(
+          "taskRegExpr: {}, expectedNumDirs: ", taskRegExpr, expectedNumDirs);
+    }
+  } testSettings[]{{".*", 1}, {"test_cursor .*", 1}, {"xxx_yyy \\d+", 0}};
+  for (const auto& testData : testSettings) {
+    SCOPED_TRACE(testData.debugString());
     const auto outputDir = TempDirectoryPath::create();
     const auto expectedQueryConfigs =
         std::unordered_map<std::string, std::string>{
@@ -287,7 +296,7 @@ TEST_F(QueryTracerTest, task) {
             {core::QueryConfig::kSpillNumPartitionBits, "17"},
             {core::QueryConfig::kQueryTraceEnabled, "true"},
             {core::QueryConfig::kQueryTraceDir, outputDir->getPath()},
-            {core::QueryConfig::kQueryTraceTaskRegExp, taceTaskRegExp},
+            {core::QueryConfig::kQueryTraceTaskRegExp, testData.taskRegExpr},
             {core::QueryConfig::kQueryTraceNodeIds, "1,2"},
             {"key1", "value1"},
         };
@@ -315,14 +324,14 @@ TEST_F(QueryTracerTest, task) {
     const auto fs = filesystems::getFileSystem(expectedDir, nullptr);
     const auto actaulDirs = fs->list(outputDir->getPath());
 
-    if (std::strcmp(taceTaskRegExp, "xxx_yyy \\d+") == 0) {
-      ASSERT_EQ(actaulDirs.size(), 0);
+    if (testData.taskRegExpr == "xxx_yyy \\d+") {
+      ASSERT_EQ(actaulDirs.size(), testData.expectedNumDirs);
       continue;
     }
-    ASSERT_EQ(actaulDirs.size(), 1);
+    ASSERT_EQ(actaulDirs.size(), testData.expectedNumDirs);
     ASSERT_EQ(actaulDirs.at(0), expectedDir);
     const auto taskIds = getTaskIds(outputDir->getPath(), fs);
-    ASSERT_EQ(taskIds.size(), 1);
+    ASSERT_EQ(taskIds.size(), testData.expectedNumDirs);
     ASSERT_EQ(taskIds.at(0), task->taskId());
 
     std::unordered_map<std::string, std::string> acutalQueryConfigs;
@@ -502,7 +511,7 @@ TEST_F(QueryTracerTest, traceTableWriter) {
         obj[QueryTraceTraits::kTraceLimitExceededKey].asBool(),
         testData.limitExceeded);
 
-    const auto reader = trace::QueryDataReader(dataDir, pool());
+    const auto reader = trace::QueryDataReader(dataDir, rowType, pool());
     RowVectorPtr actual;
     size_t numOutputVectors{0};
     while (reader.read(actual)) {
@@ -518,12 +527,3 @@ TEST_F(QueryTracerTest, traceTableWriter) {
   }
 }
 } // namespace facebook::velox::exec::trace::test
-
-// This main is needed for some tests on linux.
-int main(int argc, char** argv) {
-  testing::InitGoogleTest(&argc, argv);
-  // Signal handler required for ThreadDebugInfoTest
-  facebook::velox::process::addDefaultFatalSignalHandler();
-  folly::Init init(&argc, &argv, false);
-  return RUN_ALL_TESTS();
-}

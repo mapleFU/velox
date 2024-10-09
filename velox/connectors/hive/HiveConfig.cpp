@@ -143,8 +143,8 @@ std::string HiveConfig::gcsScheme() const {
   return config_->get<std::string>(kGCSScheme, std::string("https"));
 }
 
-std::string HiveConfig::gcsCredentials() const {
-  return config_->get<std::string>(kGCSCredentials, std::string(""));
+std::string HiveConfig::gcsCredentialsPath() const {
+  return config_->get<std::string>(kGCSCredentialsPath, std::string(""));
 }
 
 std::optional<int> HiveConfig::gcsMaxRetryCount() const {
@@ -159,6 +159,13 @@ std::optional<std::string> HiveConfig::gcsMaxRetryTime() const {
 bool HiveConfig::isOrcUseColumnNames(const config::ConfigBase* session) const {
   return session->get<bool>(
       kOrcUseColumnNamesSession, config_->get<bool>(kOrcUseColumnNames, false));
+}
+
+bool HiveConfig::isParquetUseColumnNames(
+    const config::ConfigBase* session) const {
+  return session->get<bool>(
+      kParquetUseColumnNamesSession,
+      config_->get<bool>(kParquetUseColumnNames, false));
 }
 
 bool HiveConfig::isFileColumnNamesReadAsLowerCase(

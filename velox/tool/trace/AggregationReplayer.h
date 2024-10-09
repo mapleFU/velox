@@ -16,27 +16,30 @@
 
 #pragma once
 
-#include <gflags/gflags.h>
-
-DECLARE_bool(usage);
-DECLARE_string(root);
-DECLARE_bool(summary);
-DECLARE_bool(short_summary);
-DECLARE_bool(pretty);
-DECLARE_string(task_id);
+#include "velox/core/PlanNode.h"
+#include "velox/tool/trace/OperatorReplayerBase.h"
 
 namespace facebook::velox::tool::trace {
-/// The tool used to print or replay the traced query metadata and operations.
-class QueryTraceReplayer {
+/// The replayer to replay the traced 'HashAggregation' operator.
+class AggregationReplayer : public OperatorReplayerBase {
  public:
-  QueryTraceReplayer();
-
-  void printSummary() const;
-  static std::string usage();
+  AggregationReplayer(
+      const std::string& rootDir,
+      const std::string& taskId,
+      const std::string& nodeId,
+      const int32_t pipelineId,
+      const std::string& operatorType)
+      : OperatorReplayerBase(
+            rootDir,
+            taskId,
+            nodeId,
+            pipelineId,
+            operatorType) {}
 
  private:
-  const std::string rootDir_;
-  const std::string taskId_;
+  core::PlanNodePtr createPlanNode(
+      const core::PlanNode* node,
+      const core::PlanNodeId& nodeId,
+      const core::PlanNodePtr& source) const override;
 };
-
 } // namespace facebook::velox::tool::trace

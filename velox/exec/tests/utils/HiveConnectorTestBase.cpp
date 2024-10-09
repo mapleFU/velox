@@ -165,7 +165,7 @@ HiveConnectorTestBase::makeHiveConnectorSplits(
       filesystems::getFileSystem(filePath, nullptr)->openFileForRead(filePath);
   const int64_t fileSize = file->size();
   // Take the upper bound.
-  const int splitSize = std::ceil((fileSize) / splitCount);
+  const int64_t splitSize = std::ceil((fileSize) / splitCount);
   std::vector<std::shared_ptr<connector::hive::HiveConnectorSplit>> splits;
   // Add all the splits.
   for (int i = 0; i < splitCount; i++) {
@@ -276,6 +276,7 @@ HiveConnectorTestBase::makeHiveInsertTableHandle(
       std::move(locationHandle),
       tableStorageFormat,
       compressionKind,
+      {},
       writerOptions);
 }
 
@@ -289,6 +290,7 @@ HiveConnectorTestBase::makeHiveInsertTableHandle(
     std::shared_ptr<connector::hive::LocationHandle> locationHandle,
     const dwio::common::FileFormat tableStorageFormat,
     const std::optional<common::CompressionKind> compressionKind,
+    const std::unordered_map<std::string, std::string>& serdeParameters,
     const std::shared_ptr<dwio::common::WriterOptions>& writerOptions) {
   std::vector<std::shared_ptr<const connector::hive::HiveColumnHandle>>
       columnHandles;
@@ -345,7 +347,7 @@ HiveConnectorTestBase::makeHiveInsertTableHandle(
       tableStorageFormat,
       bucketProperty,
       compressionKind,
-      std::unordered_map<std::string, std::string>{},
+      serdeParameters,
       writerOptions);
 }
 

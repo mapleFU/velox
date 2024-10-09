@@ -6837,6 +6837,18 @@ DEBUG_ONLY_TEST_F(HashJoinTest, exceededMaxSpillLevel) {
   const int exceededMaxSpillLevelCount =
       common::globalSpillStats().spillMaxLevelExceededCount;
   SCOPED_TESTVALUE_SET(
+      "facebook::velox::exec::HashBuild::reclaim",
+      std::function<void(exec::Operator*)>(([&](exec::Operator* op) {
+        HashBuild* hashBuild = static_cast<HashBuild*>(op);
+        ASSERT_FALSE(hashBuild->testingExceededMaxSpillLevelLimit());
+      })));
+  SCOPED_TESTVALUE_SET(
+      "facebook::velox::exec::HashProbe::reclaim",
+      std::function<void(exec::HashBuild*)>(([&](exec::Operator* op) {
+        HashProbe* hashProbe = static_cast<HashProbe*>(op);
+        ASSERT_FALSE(hashProbe->testingExceededMaxSpillLevelLimit());
+      })));
+  SCOPED_TESTVALUE_SET(
       "facebook::velox::exec::HashBuild::addInput",
       std::function<void(exec::HashBuild*)>(([&](exec::HashBuild* hashBuild) {
         Operator::ReclaimableSectionGuard guard(hashBuild);
@@ -7040,7 +7052,7 @@ TEST_F(HashJoinTest, reclaimFromJoinBuilderWithMultiDrivers) {
   // the scope
   waitForAllTasksToBeDeleted();
   ASSERT_GT(arbitrator->stats().numRequests, 0);
-  ASSERT_GT(arbitrator->stats().numReclaimedBytes, 0);
+  ASSERT_GT(arbitrator->stats().reclaimedUsedBytes, 0);
 }
 
 DEBUG_ONLY_TEST_F(
@@ -7677,7 +7689,7 @@ DEBUG_ONLY_TEST_F(HashJoinTest, hashProbeSpill) {
 
           const auto* arbitrator = memory::memoryManager()->arbitrator();
           ASSERT_GT(arbitrator->stats().numRequests, 0);
-          ASSERT_GT(arbitrator->stats().numReclaimedBytes, 0);
+          ASSERT_GT(arbitrator->stats().reclaimedUsedBytes, 0);
         })
         .run();
   }
@@ -7882,7 +7894,13 @@ DEBUG_ONLY_TEST_F(HashJoinTest, hashProbeSpillExceedLimit) {
 
     fuzzerOpts_.vectorSize = 128;
     auto probeVectors = createVectors(32, probeType_, fuzzerOpts_);
-    auto buildVectors = createVectors(32, buildType_, fuzzerOpts_);
+    auto buildVectors = createVectors(64, buildType_, fuzzerOpts_);
+    for (int i = 0; i < probeVectors.size(); ++i) {
+      const auto probeKeyChannel = probeType_->getChildIdx("t_k1");
+      const auto buildKeyChannle = buildType_->getChildIdx("u_k1");
+      probeVectors[i]->childAt(probeKeyChannel) =
+          buildVectors[i]->childAt(buildKeyChannle);
+    }
 
     const auto spillDirectory = exec::test::TempDirectoryPath::create();
     HashJoinBuilder(*pool_, duckDbQueryRunner_, driverExecutor_.get())
@@ -8137,6 +8155,56 @@ DEBUG_ONLY_TEST_F(HashJoinTest, spillCheckOnLeftSemiFilterWithDynamicFilters) {
         auto taskStats = exec::toPlanStats(task->taskStats());
         auto& planStats = taskStats.at(joinNodeId);
         ASSERT_GT(planStats.spilledBytes, 0);
+      })
+      .run();
+}
+
+// This test is to verify there is no memory reservation made before hash probe
+// start processing. This can cause unnecessary spill and query OOM under some
+// real workload with many stages as each hash probe might reserve non-trivial
+// amount of memory.
+DEBUG_ONLY_TEST_F(
+    HashJoinTest,
+    hashProbeMemoryReservationCheckBeforeProbeStartWithSpillEnabled) {
+  fuzzerOpts_.vectorSize = 128;
+  auto probeVectors = createVectors(10, probeType_, fuzzerOpts_);
+  auto buildVectors = createVectors(20, buildType_, fuzzerOpts_);
+
+  std::atomic_bool checkOnce{true};
+  SCOPED_TESTVALUE_SET(
+      "facebook::velox::exec::Driver::runInternal::addInput",
+      std::function<void(Operator*)>(([&](Operator* op) {
+        if (op->operatorType() != "HashProbe") {
+          return;
+        }
+        if (!checkOnce.exchange(false)) {
+          return;
+        }
+        ASSERT_EQ(op->pool()->usedBytes(), 0);
+        ASSERT_EQ(op->pool()->reservedBytes(), 0);
+      })));
+
+  const auto spillDirectory = exec::test::TempDirectoryPath::create();
+  HashJoinBuilder(*pool_, duckDbQueryRunner_, driverExecutor_.get())
+      .numDrivers(1)
+      .spillDirectory(spillDirectory->getPath())
+      .probeKeys({"t_k1"})
+      .probeVectors(std::move(probeVectors))
+      .buildKeys({"u_k1"})
+      .buildVectors(std::move(buildVectors))
+      .config(core::QueryConfig::kJoinSpillEnabled, "true")
+      .joinType(core::JoinType::kInner)
+      .joinOutputLayout({"t_k1", "t_k2", "u_k1", "t_v1"})
+      .referenceQuery(
+          "SELECT t.t_k1, t.t_k2, u.u_k1, t.t_v1 FROM t JOIN u ON t.t_k1 = u.u_k1")
+      .injectSpill(true)
+      .verifier([&](const std::shared_ptr<Task>& task, bool injectSpill) {
+        if (!injectSpill) {
+          return;
+        }
+        auto opStats = toOperatorStats(task->taskStats());
+        ASSERT_GT(opStats.at("HashProbe").spilledBytes, 0);
+        ASSERT_GE(opStats.at("HashProbe").spilledPartitions, 1);
       })
       .run();
 }

@@ -772,6 +772,7 @@ void RowContainer::extractString(
   values->setNoCopy(index, StringView(rawBuffer, value.size()));
 }
 
+
 void RowContainer::storeComplexType(
     const DecodedVector& decoded,
     vector_size_t index,

@@ -51,7 +51,7 @@ class DataSource;
 ///
 /// Connector 设置的需要 Load 的 Split, 基本上是 Connector 去 load
 /// 的时候设置的吧.
-struct ConnectorSplit {
+struct ConnectorSplit : public ISerializable {
   const std::string connectorId;
   const int64_t splitWeight{0};
 
@@ -61,6 +61,11 @@ struct ConnectorSplit {
       const std::string& _connectorId,
       int64_t _splitWeight = 0)
       : connectorId(_connectorId), splitWeight(_splitWeight) {}
+
+  folly::dynamic serialize() const override {
+    VELOX_UNSUPPORTED();
+    return nullptr;
+  }
 
   virtual ~ConnectorSplit() {}
 

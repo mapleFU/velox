@@ -112,8 +112,9 @@ class HiveConfig {
   /// The GCS storage scheme, https for default credentials.
   static constexpr const char* kGCSScheme = "hive.gcs.scheme";
 
-  /// The GCS service account configuration as json string
-  static constexpr const char* kGCSCredentials = "hive.gcs.credentials";
+  /// The GCS service account configuration JSON key file.
+  static constexpr const char* kGCSCredentialsPath =
+      "hive.gcs.json-key-file-path";
 
   /// The GCS maximum retry counter of transient errors.
   static constexpr const char* kGCSMaxRetryCount = "hive.gcs.max-retry-count";
@@ -127,6 +128,12 @@ class HiveConfig {
   static constexpr const char* kOrcUseColumnNames = "hive.orc.use-column-names";
   static constexpr const char* kOrcUseColumnNamesSession =
       "hive_orc_use_column_names";
+
+  /// Maps table field names to file field names using names, not indices.
+  static constexpr const char* kParquetUseColumnNames =
+      "hive.parquet.use-column-names";
+  static constexpr const char* kParquetUseColumnNamesSession =
+      "parquet_use_column_names";
 
   /// Reads the source file column name as lower case.
   static constexpr const char* kFileColumnNamesReadAsLowerCase =
@@ -286,13 +293,15 @@ class HiveConfig {
 
   std::string gcsScheme() const;
 
-  std::string gcsCredentials() const;
+  std::string gcsCredentialsPath() const;
 
   std::optional<int> gcsMaxRetryCount() const;
 
   std::optional<std::string> gcsMaxRetryTime() const;
 
   bool isOrcUseColumnNames(const config::ConfigBase* session) const;
+
+  bool isParquetUseColumnNames(const config::ConfigBase* session) const;
 
   bool isFileColumnNamesReadAsLowerCase(
       const config::ConfigBase* session) const;

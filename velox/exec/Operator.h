@@ -15,14 +15,13 @@
  */
 #pragma once
 
-#include "velox/exec/trace/QueryDataWriter.h"
-
 #include <folly/Synchronized.h>
 #include "velox/common/base/RuntimeMetrics.h"
 #include "velox/common/time/CpuWallTimer.h"
 #include "velox/core/PlanNode.h"
 #include "velox/exec/Driver.h"
 #include "velox/exec/JoinBridge.h"
+#include "velox/exec/QueryDataWriter.h"
 #include "velox/exec/Spiller.h"
 #include "velox/type/Filter.h"
 
@@ -123,6 +122,8 @@ struct OperatorStats {
   /// read.
   int64_t numSplits{0};
 
+  CpuWallTiming isBlockedTiming;
+
   /// Bytes read from raw source, e.g. compressed file or network connection.
   uint64_t rawInputBytes = 0;
   uint64_t rawInputPositions = 0;
@@ -181,6 +182,7 @@ struct OperatorStats {
   // Last recorded values for lazy loading times for loads triggered by 'this'.
   int64_t lastLazyCpuNanos{0};
   int64_t lastLazyWallNanos{0};
+  int64_t lastLazyInputBytes{0};
 
   // Total null keys processed by the operator.
   // Currently populated only by HashJoin/HashBuild.
@@ -339,6 +341,11 @@ class Operator : public BaseRuntimeStatWriter {
 
   /// The name of the runtime spill stats collected and reported by operators
   /// that support spilling.
+
+  /// This indicates the spill not supported for a spillable operator when the
+  /// spill config is enabled. This is due to the spill limitation in certain
+  /// plan node config such as unpartition window operator.
+  static inline const std::string kSpillNotSupported{"spillNotSupported"};
   /// The spill write stats.
   static inline const std::string kSpillFillTime{"spillFillWallNanos"};
   static inline const std::string kSpillSortTime{"spillSortWallNanos"};
@@ -736,7 +743,7 @@ class Operator : public BaseRuntimeStatWriter {
   void maybeSetReclaimer();
 
   /// Returns true if this is a spillable operator and has configured spilling.
-  FOLLY_ALWAYS_INLINE bool canSpill() const {
+  FOLLY_ALWAYS_INLINE virtual bool canSpill() const {
     return spillConfig_.has_value();
   }
 

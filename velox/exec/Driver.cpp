@@ -362,7 +362,7 @@ void Driver::enqueueInternal() {
   queueTimeStartUs_ = getCurrentTimeMicro();
 }
 
-// Call an Oprator method. record silenced throws, but not a query
+// Call an Operator method. record silenced throws, but not a query
 // terminating throw. Annotate exceptions with Operator info.
 #define CALL_OPERATOR(call, operatorPtr, operatorId, operatorMethod)       \
   try {                                                                    \
@@ -409,20 +409,22 @@ size_t OpCallStatusRaw::callDuration() const {
       : fmt::format("null::{}", operatorMethod);
 }
 
-CpuWallTiming Driver::processLazyTiming(
+CpuWallTiming Driver::processLazyIoStats(
     Operator& op,
     const CpuWallTiming& timing) {
   if (&op == operators_[0].get()) {
     return timing;
   }
   auto lockStats = op.stats().wlock();
+
+  // Checks and tries to update cpu time from lazy loads.
   auto it = lockStats->runtimeStats.find(LazyVector::kCpuNanos);
   if (it == lockStats->runtimeStats.end()) {
     // Return early if no lazy activity.  Lazy CPU and wall times are recorded
     // together, checking one is enough.
     return timing;
   }
-  int64_t cpu = it->second.sum;
+  const int64_t cpu = it->second.sum;
   auto cpuDelta = std::max<int64_t>(0, cpu - lockStats->lastLazyCpuNanos);
   if (cpuDelta == 0) {
     // Return early if no change.  Checking one counter is enough.  If this did
@@ -431,15 +433,29 @@ CpuWallTiming Driver::processLazyTiming(
     return timing;
   }
   lockStats->lastLazyCpuNanos = cpu;
+
+  // Checks and tries to update wall time from lazy loads.
   int64_t wallDelta = 0;
   it = lockStats->runtimeStats.find(LazyVector::kWallNanos);
   if (it != lockStats->runtimeStats.end()) {
-    int64_t wall = it->second.sum;
+    const int64_t wall = it->second.sum;
     wallDelta = std::max<int64_t>(0, wall - lockStats->lastLazyWallNanos);
     if (wallDelta > 0) {
       lockStats->lastLazyWallNanos = wall;
     }
   }
+
+  // Checks and tries to update input bytes from lazy loads.
+  int64_t inputBytesDelta = 0;
+  it = lockStats->runtimeStats.find(LazyVector::kInputBytes);
+  if (it != lockStats->runtimeStats.end()) {
+    const int64_t inputBytes = it->second.sum;
+    inputBytesDelta = inputBytes - lockStats->lastLazyInputBytes;
+    if (inputBytesDelta > 0) {
+      lockStats->lastLazyInputBytes = inputBytes;
+    }
+  }
+
   lockStats.unlock();
   cpuDelta = std::min<int64_t>(cpuDelta, timing.cpuNanos);
   wallDelta = std::min<int64_t>(wallDelta, timing.wallNanos);
@@ -449,6 +465,8 @@ CpuWallTiming Driver::processLazyTiming(
       static_cast<uint64_t>(wallDelta),
       static_cast<uint64_t>(cpuDelta),
   });
+  lockStats->inputBytes += inputBytesDelta;
+  lockStats->outputBytes += inputBytesDelta;
   return CpuWallTiming{
       1,
       timing.wallNanos - wallDelta,
@@ -555,11 +573,14 @@ StopReason Driver::runInternal(
         }
 
         // 在 Output 之前, 检查 Operator 是否 Blocked.
-        CALL_OPERATOR(
-            blockingReason_ = op->isBlocked(&future),
-            op,
-            curOperatorId_,
-            kOpMethodIsBlocked);
+        withDeltaCpuWallTimer(op, &OperatorStats::isBlockedTiming, [&]() {
+          CALL_OPERATOR(
+              blockingReason_ = op->isBlocked(&future),
+              op,
+              curOperatorId_,
+              kOpMethodIsBlocked);
+        });
+
         if (blockingReason_ != BlockingReason::kNotBlocked) {
           return blockDriver(self, i, std::move(future), blockingState, guard);
         }
@@ -569,11 +590,13 @@ StopReason Driver::runInternal(
           // 然后喂给下一个 Operator.
           Operator* nextOp = operators_[i + 1].get();
 
-          CALL_OPERATOR(
-              blockingReason_ = nextOp->isBlocked(&future),
-              nextOp,
-              curOperatorId_ + 1,
-              kOpMethodIsBlocked);
+          withDeltaCpuWallTimer(op, &OperatorStats::isBlockedTiming, [&]() {
+            CALL_OPERATOR(
+                blockingReason_ = nextOp->isBlocked(&future),
+                nextOp,
+                curOperatorId_ + 1,
+                kOpMethodIsBlocked);
+          });
           if (blockingReason_ != BlockingReason::kNotBlocked) {
             return blockDriver(
                 self, i + 1, std::move(future), blockingState, guard);
@@ -592,28 +615,30 @@ StopReason Driver::runInternal(
             // 去 Pull 本节点的数据.
             uint64_t resultBytes = 0;
             RowVectorPtr intermediateResult;
-            {
-              withDeltaCpuWallTimer(op, &OperatorStats::getOutputTiming, [&]() {
-                TestValue::adjust(
-                    "facebook::velox::exec::Driver::runInternal::getOutput",
-                    op);
-                CALL_OPERATOR(
-                    intermediateResult = op->getOutput(),
-                    op,
-                    curOperatorId_,
-                    kOpMethodGetOutput);
-                if (intermediateResult) {
-                  validateOperatorOutputResult(intermediateResult, *op);
-                  resultBytes = intermediateResult->estimateFlatSize();
-                  {
-                    auto lockedStats = op->stats().wlock();
-                    lockedStats->addOutputVector(
-                        resultBytes, intermediateResult->size());
-                  }
+            withDeltaCpuWallTimer(op, &OperatorStats::getOutputTiming, [&]() {
+              TestValue::adjust(
+                  "facebook::velox::exec::Driver::runInternal::getOutput", op);
+              CALL_OPERATOR(
+                  intermediateResult = op->getOutput(),
+                  op,
+                  curOperatorId_,
+                  kOpMethodGetOutput);
+              if (intermediateResult) {
+                validateOperatorOutputResult(intermediateResult, *op);
+                resultBytes = intermediateResult->estimateFlatSize();
+                {
+                  auto lockedStats = op->stats().wlock();
+                  lockedStats->addOutputVector(
+                      resultBytes, intermediateResult->size());
                 }
+<<<<<<< HEAD
               });
             }
             // TODO(mwish): 计算玩 Input 之后, 尝试 PushDown Filter?
+=======
+              }
+            });
+>>>>>>> main
             pushdownFilters(i);
             if (intermediateResult) {
               withDeltaCpuWallTimer(op, &OperatorStats::addInputTiming, [&]() {
@@ -650,22 +675,35 @@ StopReason Driver::runInternal(
               // is not blocked and empty, this is finished. If this is
               // not the source, just try to get output from the one
               // before.
-              CALL_OPERATOR(
-                  blockingReason_ = op->isBlocked(&future),
-                  op,
-                  curOperatorId_,
-                  kOpMethodIsBlocked);
+              withDeltaCpuWallTimer(op, &OperatorStats::isBlockedTiming, [&]() {
+                CALL_OPERATOR(
+                    blockingReason_ = op->isBlocked(&future),
+                    op,
+                    curOperatorId_,
+                    kOpMethodIsBlocked);
+              });
               if (blockingReason_ != BlockingReason::kNotBlocked) {
                 return blockDriver(
                     self, i, std::move(future), blockingState, guard);
               }
+
               bool finished{false};
+<<<<<<< HEAD
               CALL_OPERATOR(
                   finished = op->isFinished(),
                   op,
                   curOperatorId_,
                   kOpMethodIsFinished);
               // 推进 Op, 设置没有更多 Input 了.
+=======
+              withDeltaCpuWallTimer(op, &OperatorStats::finishTiming, [&]() {
+                CALL_OPERATOR(
+                    finished = op->isFinished(),
+                    op,
+                    curOperatorId_,
+                    kOpMethodIsFinished);
+              });
+>>>>>>> main
               if (finished) {
                 withDeltaCpuWallTimer(
                     op, &OperatorStats::finishTiming, [this, &nextOp]() {
@@ -712,11 +750,13 @@ StopReason Driver::runInternal(
           }
 
           bool finished{false};
-          CALL_OPERATOR(
-              finished = op->isFinished(),
-              op,
-              curOperatorId_,
-              kOpMethodIsFinished);
+          withDeltaCpuWallTimer(op, &OperatorStats::finishTiming, [&]() {
+            CALL_OPERATOR(
+                finished = op->isFinished(),
+                op,
+                curOperatorId_,
+                kOpMethodIsFinished);
+          });
           if (finished) {
             guard.notThrown();
             close();
@@ -1047,7 +1087,7 @@ void Driver::withDeltaCpuWallTimer(
   // opTimingMember upon destruction of the timer when withDeltaCpuWallTimer
   // ends. The timer is created on the stack to avoid heap allocation
   auto f = [op, opTimingMember, this](const CpuWallTiming& elapsedTime) {
-    auto elapsedSelfTime = processLazyTiming(*op, elapsedTime);
+    auto elapsedSelfTime = processLazyIoStats(*op, elapsedTime);
     op->stats().withWLock([&](auto& lockedStats) {
       (lockedStats.*opTimingMember).add(elapsedSelfTime);
     });

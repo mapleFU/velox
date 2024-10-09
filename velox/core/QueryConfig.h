@@ -300,11 +300,6 @@ class QueryConfig {
   static constexpr const char* kTaskPartitionedWriterCount =
       "task_partitioned_writer_count";
 
-  /// The number of local parallel table writer operators per task for
-  /// bucketed writes. If not set, use "task_writer_count".
-  static constexpr const char* kTaskBucketedWriterCount =
-      "task_bucketed_writer_count";
-
   /// If true, finish the hash probe on an empty build table for a specific set
   /// of hash joins.
   static constexpr const char* kHashProbeFinishEarlyOnEmptyBuild =
@@ -635,7 +630,7 @@ class QueryConfig {
 
   /// Returns the number of bits used to calculate the spill partition number
   /// for hash join and RowNumber. The number of spill partitions will be power
-  /// of tow.
+  /// of two.
   /// NOTE: as for now, we only support up to 8-way spill partitioning.
   uint8_t spillNumPartitionBits() const {
     constexpr uint8_t kDefaultBits = 3;
@@ -770,10 +765,6 @@ class QueryConfig {
   uint32_t taskPartitionedWriterCount() const {
     return get<uint32_t>(kTaskPartitionedWriterCount)
         .value_or(taskWriterCount());
-  }
-
-  uint32_t taskBucketedWriterCount() const {
-    return get<uint32_t>(kTaskBucketedWriterCount).value_or(taskWriterCount());
   }
 
   bool hashProbeFinishEarlyOnEmptyBuild() const {

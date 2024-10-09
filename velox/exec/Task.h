@@ -21,11 +21,11 @@
 #include "velox/exec/LocalPartition.h"
 #include "velox/exec/MemoryReclaimer.h"
 #include "velox/exec/MergeSource.h"
+#include "velox/exec/QueryMetadataWriter.h"
+#include "velox/exec/QueryTraceConfig.h"
 #include "velox/exec/Split.h"
 #include "velox/exec/TaskStats.h"
 #include "velox/exec/TaskStructs.h"
-#include "velox/exec/trace/QueryMetadataWriter.h"
-#include "velox/exec/trace/QueryTraceConfig.h"
 #include "velox/vector/ComplexVector.h"
 
 namespace facebook::velox::exec {
@@ -1007,14 +1007,18 @@ class Task : public std::enable_shared_from_this<Task> {
   // Application specific task ID specified at construction time. May not be
   // unique or universally unique.
   const std::string taskId_;
-  core::PlanFragment planFragment_;
+
   const int destination_;
-  const std::shared_ptr<core::QueryCtx> queryCtx_;
-  const std::optional<trace::QueryTraceConfig> traceConfig_;
 
   // The execution mode of the task. It is enforced that a task can only be
   // executed in a single mode throughout its lifetime
   const ExecutionMode mode_;
+
+  std::shared_ptr<core::QueryCtx> queryCtx_;
+
+  core::PlanFragment planFragment_;
+
+  const std::optional<trace::QueryTraceConfig> traceConfig_;
 
   // Hook in the system wide task list.
   TaskListEntry taskListEntry_;

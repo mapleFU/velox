@@ -12,22 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_executable(velox_exec_trace_test QueryTraceTest.cpp)
+add_executable(velox_tool_trace_test TableWriterReplayerTest.cpp
+                                     AggregationReplayerTest.cpp)
 
 add_test(
-  NAME velox_exec_trace_test
-  COMMAND velox_exec_trace_test
+  NAME velox_tool_trace_test
+  COMMAND velox_tool_trace_test
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
-set_tests_properties(velox_exec_trace_test PROPERTIES TIMEOUT 3000)
+set_tests_properties(velox_tool_trace_test PROPERTIES TIMEOUT 3000)
 
 target_link_libraries(
-  velox_exec_trace_test
+  velox_tool_trace_test
   velox_exec
   velox_exec_test_lib
   velox_memory
-  velox_query_trace_exec
-  velox_query_trace_retrieve
+  velox_query_trace_replayer_base
   velox_vector_fuzzer
   GTest::gtest_main
   GTest::gmock

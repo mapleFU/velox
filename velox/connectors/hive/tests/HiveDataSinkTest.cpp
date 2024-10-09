@@ -157,6 +157,7 @@ class HiveDataSinkTest : public exec::test::HiveConnectorTestBase {
             connector::hive::LocationHandle::TableType::kNew),
         fileFormat,
         CompressionKind::CompressionKind_ZSTD,
+        {},
         writerOptions);
   }
 
@@ -767,8 +768,7 @@ DEBUG_ONLY_TEST_F(HiveDataSinkTest, memoryReclaim) {
       memory::testingRunArbitration();
       memory::MemoryArbitrator::Stats curStats =
           memory::memoryManager()->arbitrator()->stats();
-      ASSERT_GT(curStats.reclaimTimeUs - oldStats.reclaimTimeUs, 0);
-      ASSERT_GT(curStats.numReclaimedBytes - oldStats.numReclaimedBytes, 0);
+      ASSERT_GT(curStats.reclaimedUsedBytes - oldStats.reclaimedUsedBytes, 0);
       // We expect dwrf writer set numNonReclaimableAttempts counter.
       ASSERT_LE(
           curStats.numNonReclaimableAttempts -
@@ -779,8 +779,7 @@ DEBUG_ONLY_TEST_F(HiveDataSinkTest, memoryReclaim) {
       memory::testingRunArbitration();
       memory::MemoryArbitrator::Stats curStats =
           memory::memoryManager()->arbitrator()->stats();
-      ASSERT_EQ(curStats.reclaimTimeUs - oldStats.reclaimTimeUs, 0);
-      ASSERT_EQ(curStats.numReclaimedBytes - oldStats.numReclaimedBytes, 0);
+      ASSERT_EQ(curStats.reclaimedUsedBytes - oldStats.reclaimedUsedBytes, 0);
     }
     const auto partitions = dataSink->close();
     if (testData.sortWriter && testData.expectedWriterReclaimed) {

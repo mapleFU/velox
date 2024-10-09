@@ -385,10 +385,6 @@ Table Writer
      - integer
      - task_writer_count
      - The number of parallel table writer threads per task for partitioned table writes. If not set, use 'task_writer_count' as default.
-   * - task_bucketed_writer_count
-     - integer
-     - task_writer_count
-     - The number of parallel table writer threads per task for bucketed table writes. If not set, use 'task_writer_count' as default.
 
 Hive Connector
 --------------
@@ -641,10 +637,10 @@ Each query can override the config by setting corresponding query session proper
      - string
      -
      - The GCS storage scheme, https for default credentials.
-   * - hive.gcs.credentials
+   * - hive.gcs.json-key-file-path
      - string
      -
-     - The GCS service account configuration as json string.
+     - The GCS service account configuration JSON key file.
    * - hive.gcs.max-retry-count
      - integer
      -

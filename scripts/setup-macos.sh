@@ -31,7 +31,7 @@ set -x # Print commands that are executed.
 SCRIPTDIR=$(dirname "${BASH_SOURCE[0]}")
 export INSTALL_PREFIX=${INSTALL_PREFIX:-"$(pwd)/deps-install"}
 source $SCRIPTDIR/setup-helper-functions.sh
-PYTHON_VENV=${PYHTON_VENV:-"${SCRIPTDIR}/../.venv"}
+PYTHON_VENV=${PYTHON_VENV:-"${SCRIPTDIR}/../.venv"}
 # Allow installed package headers to be picked up before brew package headers
 # by tagging the brew packages to be system packages.
 # This is used during package builds.
@@ -42,9 +42,9 @@ BUILD_DUCKDB="${BUILD_DUCKDB:-true}"
 DEPENDENCY_DIR=${DEPENDENCY_DIR:-$(pwd)}
 MACOS_VELOX_DEPS="bison flex gflags glog googletest icu4c libevent libsodium lz4 lzo openssl protobuf@21 snappy xz zstd"
 MACOS_BUILD_DEPS="ninja cmake"
-FB_OS_VERSION="v2024.09.16.00"
+FB_OS_VERSION="v2024.07.01.00"
 FMT_VERSION="10.1.1"
-FAST_FLOAT_VERSION="v6.1.6"
+BOOST_VERSION="boost-1.84.0"
 STEMMER_VERSION="2.2.0"
 
 function update_brew {
@@ -99,6 +99,15 @@ function install_velox_deps_from_brew {
   done
 }
 
+function install_boost {
+  wget_and_untar https://github.com/boostorg/boost/releases/download/${BOOST_VERSION}/${BOOST_VERSION}.tar.gz boost
+  (
+    cd ${DEPENDENCY_DIR}/boost
+    ./bootstrap.sh --prefix=${INSTALL_PREFIX}
+    ${SUDO} ./b2 "-j${NPROC}" -d0 install threading=multi --without-python
+  )
+}
+
 function install_fmt {
   wget_and_untar https://github.com/fmtlib/fmt/archive/${FMT_VERSION}.tar.gz fmt
   cmake_install_dir fmt -DFMT_TEST=OFF
@@ -144,12 +153,6 @@ function install_re2 {
   cmake_install_dir re2 -DRE2_BUILD_TESTING=OFF
 }
 
-function install_fast_float {
-  # Dependency of folly.
-  wget_and_untar https://github.com/fastfloat/fast_float/archive/refs/tags/${FAST_FLOAT_VERSION}.tar.gz fast_float
-  cmake_install_dir fast_float
-}
-
 function install_duckdb {
   if $BUILD_DUCKDB ; then
     echo 'Building DuckDB'
@@ -174,8 +177,8 @@ function install_velox_deps {
   run_and_time install_ranges_v3
   run_and_time install_double_conversion
   run_and_time install_re2
+  run_and_time install_boost
   run_and_time install_fmt
-  run_and_time install_fast_float
   run_and_time install_folly
   run_and_time install_fizz
   run_and_time install_wangle

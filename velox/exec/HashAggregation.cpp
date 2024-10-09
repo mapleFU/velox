@@ -117,6 +117,7 @@ bool HashAggregation::abandonPartialAggregationEarly(int64_t numOutput) const {
 }
 
 void HashAggregation::addInput(RowVectorPtr input) {
+  traceInput(input);
   if (!pushdownChecked_) {
     mayPushdown_ = operatorCtx_->driver()->mayPushdownAggregation(this);
     pushdownChecked_ = true;
@@ -214,7 +215,7 @@ void HashAggregation::resetPartialOutputIfNeed() {
     lockedStats->addRuntimeStat(
         "partialAggregationPct", RuntimeCounter(aggregationPct));
   }
-  groupingSet_->resetTable();
+  groupingSet_->resetTable(/*freeTable=*/false);
   partialFull_ = false;
   if (!finished_) {
     maybeIncreasePartialAggregationMemoryUsage(aggregationPct);
@@ -412,7 +413,7 @@ void HashAggregation::reclaim(
     }
     if (isDistinct_) {
       // Since we have seen all the input, we can safely reset the hash table.
-      groupingSet_->resetTable();
+      groupingSet_->resetTable(/*freeTable=*/true);
       // Release the minimum reserved memory.
       pool()->release();
       return;

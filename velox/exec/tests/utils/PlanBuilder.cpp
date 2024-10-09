@@ -220,6 +220,14 @@ PlanBuilder& PlanBuilder::values(
   return *this;
 }
 
+PlanBuilder& PlanBuilder::traceScan(
+    const std::string& traceNodeDir,
+    const RowTypePtr& outputType) {
+  planNode_ = std::make_shared<core::QueryTraceScanNode>(
+      nextPlanNodeId(), traceNodeDir, outputType);
+  return *this;
+}
+
 PlanBuilder& PlanBuilder::exchange(const RowTypePtr& outputType) {
   VELOX_CHECK_NULL(planNode_, "Exchange must be the source node");
   planNode_ =
@@ -471,8 +479,7 @@ PlanBuilder& PlanBuilder::tableWrite(
       rowType->names(),
       aggregationNode,
       insertHandle,
-      !partitionBy.empty(),
-      bucketProperty != nullptr,
+      false,
       TableWriteTraits::outputType(aggregationNode),
       connector::CommitStrategy::kNoCommit,
       planNode_);

@@ -30,8 +30,8 @@
 #include "velox/exec/NestedLoopJoinBuild.h"
 #include "velox/exec/OperatorUtils.h"
 #include "velox/exec/OutputBufferManager.h"
+#include "velox/exec/QueryTraceUtil.h"
 #include "velox/exec/Task.h"
-#include "velox/exec/trace/QueryTraceUtil.h"
 
 using facebook::velox::common::testutil::TestValue;
 
@@ -288,11 +288,11 @@ Task::Task(
     std::function<void(std::exception_ptr)> onError)
     : uuid_{makeUuid()},
       taskId_(taskId),
-      planFragment_(std::move(planFragment)),
       destination_(destination),
-      queryCtx_(std::move(queryCtx)),
-      traceConfig_(maybeMakeTraceConfig()),
       mode_(mode),
+      queryCtx_(std::move(queryCtx)),
+      planFragment_(std::move(planFragment)),
+      traceConfig_(maybeMakeTraceConfig()),
       consumerSupplier_(std::move(consumerSupplier)),
       onError_(std::move(onError)),
       splitsStates_(buildSplitStates(planFragment_.planNode)),
@@ -308,8 +308,9 @@ Task::Task(
 }
 
 Task::~Task() {
-  removeFromTaskList();
-
+  SCOPE_EXIT {
+    removeFromTaskList();
+  };
   // TODO(spershin): Temporary code designed to reveal what causes SIGABRT in
   // jemalloc when destroying some Tasks.
   std::string clearStage;
@@ -346,6 +347,7 @@ Task::~Task() {
   CLEAR(childPools_.clear());
   CLEAR(pool_.reset());
   CLEAR(planFragment_ = core::PlanFragment());
+  CLEAR(queryCtx_.reset());
   clearStage = "exiting ~Task()";
 
   // Ful-fill the task deletion promises at the end.

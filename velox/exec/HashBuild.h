@@ -88,6 +88,10 @@ class HashBuild final : public Operator {
 
   void close() override;
 
+  bool testingExceededMaxSpillLevelLimit() const {
+    return exceededMaxSpillLevelLimit_;
+  }
+
  private:
   void setState(State state);
   void checkStateTransition(State state);
@@ -113,9 +117,7 @@ class HashBuild final : public Operator {
   // process which will be set by the join probe side.
   void postHashBuildProcess();
 
-  bool spillEnabled() const {
-    return canReclaim();
-  }
+  bool canSpill() const override;
 
   // Indicates if the input is read from spill data or not.
   bool isInputFromSpill() const;
@@ -215,7 +217,7 @@ class HashBuild final : public Operator {
 
   std::shared_ptr<HashJoinBridge> joinBridge_;
 
-  bool exceededMaxSpillLevelLimit_{false};
+  tsan_atomic<bool> exceededMaxSpillLevelLimit_{false};
 
   State state_{State::kRunning};
 
