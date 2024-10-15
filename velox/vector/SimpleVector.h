@@ -137,6 +137,10 @@ class SimpleVector : public BaseVector {
     return stats_;
   }
 
+  void testingSetStats(SimpleVectorStats<T>&& stats) {
+    stats_ = std::move(stats);
+  }
+
   // Concrete Vector types need to implement this themselves.
   // This method does not do bounds checking. When the value is null the return
   // value is technically undefined (currently implemented as default of T)
@@ -236,6 +240,12 @@ class SimpleVector : public BaseVector {
         std::is_same_v<T, int64_t> || std::is_same_v<T, int128_t>) {
       if (type()->isDecimal()) {
         return DecimalUtil::toString(value, type());
+      } else {
+        return velox::to<std::string>(value);
+      }
+    } else if constexpr (std::is_same_v<T, int32_t>) {
+      if (type()->isDate()) {
+        return DATE()->toString(value);
       } else {
         return velox::to<std::string>(value);
       }

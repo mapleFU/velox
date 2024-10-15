@@ -21,25 +21,19 @@
 #include <string>
 
 #include "folly/dynamic.h"
-#include "folly/experimental/EventCount.h"
 #include "velox/common/base/Fs.h"
 #include "velox/common/file/FileSystems.h"
 #include "velox/common/hyperloglog/SparseHll.h"
-#include "velox/common/testutil/TestValue.h"
-#include "velox/dwio/dwrf/writer/Writer.h"
 #include "velox/exec/PartitionFunction.h"
 #include "velox/exec/QueryDataReader.h"
 #include "velox/exec/QueryTraceUtil.h"
 #include "velox/exec/TableWriter.h"
-#include "velox/exec/tests/utils/ArbitratorTestUtil.h"
 #include "velox/exec/tests/utils/AssertQueryBuilder.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
 #include "velox/exec/tests/utils/TempDirectoryPath.h"
-#include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
 #include "velox/serializers/PrestoSerializer.h"
 #include "velox/tool/trace/TableWriterReplayer.h"
-#include "velox/vector/fuzzer/VectorFuzzer.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
 using namespace facebook::velox;
@@ -165,16 +159,24 @@ class TableWriterReplayerTest : public HiveConnectorTestBase {
           connector::CommitStrategy::kNoCommit) {
     return [=](core::PlanNodeId nodeId,
                core::PlanNodePtr source) -> core::PlanNodePtr {
+      std::shared_ptr<core::AggregationNode> aggNode = nullptr;
+      if (aggregationNode == nullptr) {
+        aggNode = generateAggregationNode(
+            "c0", nodeId, {}, core::AggregationNode::Step::kPartial, source);
+      } else {
+        aggNode = aggregationNode;
+      }
+
       return std::make_shared<core::TableWriteNode>(
           nodeId,
           inputColumns,
           tableColumnNames,
-          aggregationNode,
+          aggNode,
           insertHandle,
           hasPartitioningScheme,
-          TableWriteTraits::outputType(aggregationNode),
+          TableWriteTraits::outputType(aggNode),
           commitStrategy,
-          std::move(source));
+          source);
     };
   }
 
@@ -233,6 +235,31 @@ class TableWriterReplayerTest : public HiveConnectorTestBase {
     }
   }
 
+  static std::shared_ptr<core::AggregationNode> generateAggregationNode(
+      const std::string& name,
+      const core::PlanNodeId nodeId,
+      const std::vector<core::FieldAccessTypedExprPtr>& groupingKeys,
+      AggregationNode::Step step,
+      const PlanNodePtr& source) {
+    core::TypedExprPtr inputField =
+        std::make_shared<const core::FieldAccessTypedExpr>(BIGINT(), name);
+    auto callExpr = std::make_shared<const core::CallTypedExpr>(
+        BIGINT(), std::vector<core::TypedExprPtr>{inputField}, "min");
+    std::vector<std::string> aggregateNames = {"min"};
+    std::vector<core::AggregationNode::Aggregate> aggregates = {
+        core::AggregationNode::Aggregate{
+            callExpr, {{BIGINT()}}, nullptr, {}, {}}};
+    return std::make_shared<core::AggregationNode>(
+        nodeId,
+        step,
+        groupingKeys,
+        std::vector<core::FieldAccessTypedExprPtr>{},
+        aggregateNames,
+        aggregates,
+        false, // ignoreNullKeys
+        source);
+  }
+
   std::string tableWriteNodeId_;
   FileFormat fileFormat_{FileFormat::DWRF};
 };
@@ -268,14 +295,15 @@ TEST_F(TableWriterReplayerTest, basic) {
           .split(makeHiveConnectorSplit(sourceFilePath->getPath()))
           .copyResults(pool(), task);
   const auto traceOutputDir = TempDirectoryPath::create();
-  const auto tableWriterReplayer = TableWriterReplayer(
-      traceRoot,
-      task->taskId(),
-      "1",
-      0,
-      "TableWriter",
-      traceOutputDir->getPath());
-  const auto result = tableWriterReplayer.run();
+  const auto result = TableWriterReplayer(
+                          traceRoot,
+                          task->taskId(),
+                          "1",
+                          0,
+                          "TableWriter",
+                          traceOutputDir->getPath())
+                          .run();
+
   // Second column contains details about written files.
   const auto details = results->childAt(TableWriteTraits::kFragmentChannel)
                            ->as<FlatVector<StringView>>();
@@ -392,14 +420,14 @@ TEST_F(TableWriterReplayerTest, partitionWrite) {
       rowType);
 
   const auto traceOutputDir = TempDirectoryPath::create();
-  const auto tableWriterReplayer = TableWriterReplayer(
+  TableWriterReplayer(
       traceRoot,
       task->taskId(),
       tableWriteNodeId,
       0,
       "TableWriter",
-      traceOutputDir->getPath());
-  tableWriterReplayer.run();
+      traceOutputDir->getPath())
+      .run();
   actualPartitionDirectories = getLeafSubdirectories(traceOutputDir->getPath());
   checkWriteResults(
       actualPartitionDirectories,

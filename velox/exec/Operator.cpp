@@ -69,6 +69,7 @@ OperatorCtx::createConnectorQueryCtx(
       planNodeId,
       driverCtx_->driverId,
       driverCtx_->queryConfig().sessionTimezone(),
+      driverCtx_->queryConfig().adjustTimestampToTimezone(),
       task->getCancellationToken());
   connectorQueryCtx->setSelectiveNimbleReaderEnabled(
       driverCtx_->queryConfig().selectiveNimbleReaderEnabled());
@@ -115,9 +116,21 @@ void Operator::maybeSetTracer() {
     return;
   }
 
-  if (queryTraceConfig->queryNodes.count(planNodeId()) == 0) {
+  const auto nodeId = planNodeId();
+  if (queryTraceConfig->queryNodes.count(nodeId) == 0) {
     return;
   }
+
+  auto& tracedOpMap = operatorCtx_->driverCtx()->tracedOperatorMap;
+  if (const auto iter = tracedOpMap.find(operatorId());
+      iter != tracedOpMap.end()) {
+    LOG(WARNING) << "Operator " << iter->first << " with type of "
+                 << operatorType() << ", plan node " << nodeId
+                 << " might be the auxiliary operator of " << iter->second
+                 << " which has the same operator id";
+    return;
+  }
+  tracedOpMap.emplace(operatorId(), operatorType());
 
   const auto pipelineId = operatorCtx_->driverCtx()->pipelineId;
   const auto driverId = operatorCtx_->driverCtx()->driverId;

@@ -287,6 +287,10 @@ struct DriverCtx {
   std::shared_ptr<Task> task;
   Driver* driver{nullptr};
   facebook::velox::process::ThreadDebugInfo threadDebugInfo;
+  /// Tracks the traced operator ids. It is also used to avoid tracing the
+  /// auxiliary operator such as the aggregation operator used by the table
+  /// writer to generate the columns stats.
+  std::unordered_map<int32_t, std::string> tracedOperatorMap;
 
   DriverCtx(
       std::shared_ptr<Task> _task,
@@ -766,6 +770,16 @@ class ScopedDriverThreadContext {
 DriverThreadContext* driverThreadContext();
 
 } // namespace facebook::velox::exec
+
+template <>
+struct fmt::formatter<facebook::velox::exec::BlockingReason>
+    : formatter<std::string> {
+  auto format(facebook::velox::exec::BlockingReason b, format_context& ctx)
+      const {
+    return formatter<std::string>::format(
+        facebook::velox::exec::blockingReasonToString(b), ctx);
+  }
+};
 
 template <>
 struct fmt::formatter<facebook::velox::exec::StopReason>
