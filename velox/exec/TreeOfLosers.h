@@ -42,6 +42,10 @@ class MergeStream {
 
   /// Returns true if the first element of 'this' is less than the first element
   /// of 'other'. hasData() must be true of 'this' and 'other'.
+  ///
+  /// 给非 equal 的非空 Stream 用来比较, 处理 TreeOfLosers::next(). 如果是
+  /// 更小的, 会成为败者, 被上级节点接收. 如果是更大的, 或者甚至左侧与右侧相等,
+  /// 左侧会成为胜者, 留在本地.
   virtual bool operator<(const MergeStream& other) const {
     return compare(other) < 0;
   }
@@ -76,6 +80,7 @@ class TreeOfLosers {
     int32_t size = 0;
     int32_t levelSize = 1;
     int32_t numStreams = streams_.size();
+    // 让 LevelSize >= numStreams.
     while (numStreams > levelSize) {
       size += levelSize;
       levelSize *= 2;
@@ -190,6 +195,7 @@ class TreeOfLosers {
     } else if (right == kEmpty) {
       return left;
     } else if (*streams_[left] < *streams_[right]) {
+      // 把胜者留在本地, 败者的 index 当成返回值.
       values_[node] = right;
       return left;
     } else {
