@@ -39,11 +39,17 @@ namespace facebook::velox::tz {
 
 class TimeZone;
 
-/// Looks up a TimeZone pointer based on a time zone name. This makes an hash
+/// Returns a TimeZone pointer based on a time zone name. This makes an hash
 /// map access, and will construct the index on the first access. `failOnError`
 /// controls whether to throw or return nullptr in case the time zone was not
 /// found.
 const TimeZone* locateZone(std::string_view timeZone, bool failOnError = true);
+
+/// Returns a TimeZone pointer based on a time zone ID. This makes a simple
+/// vector access, and will construct the index on the first access.
+/// `failOnError` controls whether to throw or return nullptr in case the time
+/// zone ID was not valid.
+const TimeZone* locateZone(int16_t timeZoneID, bool failOnError = true);
 
 /// Returns the timezone name associated with timeZoneID.
 std::string getTimeZoneName(int64_t timeZoneID);
@@ -56,6 +62,14 @@ int16_t getTimeZoneID(std::string_view timeZone, bool failOnError = true);
 /// Returns the timeZoneID for a given offset in minutes. The offset must be in
 /// [-14:00, +14:00] range.
 int16_t getTimeZoneID(int32_t offsetMinutes);
+
+// Validates that the time point can be safely used by the external date
+// library.
+template <typename T>
+using time_point = std::chrono::time_point<std::chrono::system_clock, T>;
+
+void validateRange(time_point<std::chrono::seconds> timePoint);
+void validateRange(time_point<std::chrono::milliseconds> timePoint);
 
 /// TimeZone is the proxy object for time zone management. It provides access to
 /// time zone names, their IDs (as defined in TimeZoneDatabase.cpp and
@@ -94,7 +108,12 @@ class TimeZone {
   TimeZone(const TimeZone&) = delete;
   TimeZone& operator=(const TimeZone&) = delete;
 
+  friend std::ostream& operator<<(std::ostream& os, const TimeZone& timezone) {
+    return os << timezone.name();
+  }
+
   using seconds = std::chrono::seconds;
+  using milliseconds = std::chrono::milliseconds;
 
   /// Converts a local time (the time as perceived in the user time zone
   /// represented by this object) to a system time (the corresponding time in
@@ -114,12 +133,15 @@ class TimeZone {
   };
 
   seconds to_sys(seconds timestamp, TChoose choose = TChoose::kFail) const;
+  milliseconds to_sys(milliseconds timestamp, TChoose choose = TChoose::kFail)
+      const;
 
   /// Do the opposite conversion. Taking a system time (the time as perceived in
   /// GMT), convert to the same instant in time as observed in the user local
   /// time represented by this object). Note that this conversion is not
   /// susceptible to the error above.
   seconds to_local(seconds timestamp) const;
+  milliseconds to_local(milliseconds timestamp) const;
 
   const std::string& name() const {
     return timeZoneName_;
@@ -133,6 +155,22 @@ class TimeZone {
     return tz_;
   }
 
+  /// Returns the short name (abbreviation) of the time zone for the given
+  /// timestamp. Note that the timestamp is needed for time zones that support
+  /// daylight savings time as the short name will change depending on the date
+  /// (e.g. PST/PDT).
+  std::string getShortName(
+      milliseconds timestamp,
+      TChoose choose = TChoose::kFail) const;
+
+  /// Returns the long name of the time zone for the given timestamp, e.g.
+  /// Pacific Standard Time.  Note that the timestamp is needed for time zones
+  /// that support daylight savings time as the long name will change depending
+  /// on the date (e.g. Pacific Standard Time vs Pacific Daylight Time).
+  std::string getLongName(
+      milliseconds timestamp,
+      TChoose choose = TChoose::kFail) const;
+
  private:
   const date::time_zone* tz_{nullptr};
   const std::chrono::minutes offset_{0};
@@ -141,13 +179,3 @@ class TimeZone {
 };
 
 } // namespace facebook::velox::tz
-
-#ifdef VELOX_ENABLE_BACKWARD_COMPATIBILITY
-namespace facebook::velox::util {
-
-inline std::string getTimeZoneName(int64_t timeZoneID) {
-  return tz::getTimeZoneName(timeZoneID);
-}
-
-} // namespace facebook::velox::util
-#endif

@@ -223,7 +223,7 @@ void PageReader::prepareDataPageV1(const PageHeader& pageHeader, int64_t row) {
   auto pageEnd = pageData_ + pageHeader.uncompressed_page_size;
   if (maxRepeat_ > 0) {
     uint32_t repeatLength = readField<int32_t>(pageData_);
-    repeatDecoder_ = std::make_unique<::arrow::util::RleDecoder>(
+    repeatDecoder_ = std::make_unique<arrow::util::RleDecoder>(
         reinterpret_cast<const uint8_t*>(pageData_),
         repeatLength,
         ::arrow::bit_util::NumRequiredBits(maxRepeat_));
@@ -239,7 +239,7 @@ void PageReader::prepareDataPageV1(const PageHeader& pageHeader, int64_t row) {
           pageData_ + defineLength,
           ::arrow::bit_util::NumRequiredBits(maxDefine_));
     }
-    wideDefineDecoder_ = std::make_unique<::arrow::util::RleDecoder>(
+    wideDefineDecoder_ = std::make_unique<arrow::util::RleDecoder>(
         reinterpret_cast<const uint8_t*>(pageData_),
         defineLength,
         ::arrow::bit_util::NumRequiredBits(maxDefine_));
@@ -280,7 +280,7 @@ void PageReader::prepareDataPageV2(const PageHeader& pageHeader, int64_t row) {
   pageData_ = readBytes(bytes, pageBuffer_);
 
   if (repeatLength) {
-    repeatDecoder_ = std::make_unique<::arrow::util::RleDecoder>(
+    repeatDecoder_ = std::make_unique<arrow::util::RleDecoder>(
         reinterpret_cast<const uint8_t*>(pageData_),
         repeatLength,
         ::arrow::bit_util::NumRequiredBits(maxRepeat_));
@@ -666,7 +666,7 @@ void PageReader::makeDecoder() {
               pageData_, pageData_ + encodedDataSize_);
           break;
         case thrift::Type::FIXED_LEN_BYTE_ARRAY:
-          if (type_->type()->isVarbinary()) {
+          if (type_->type()->isVarbinary() || type_->type()->isVarchar()) {
             stringDecoder_ = std::make_unique<StringDecoder>(
                 pageData_, pageData_ + encodedDataSize_, type_->typeLength_);
           } else {
@@ -699,6 +699,13 @@ void PageReader::makeDecoder() {
               "DELTA_BINARY_PACKED decoder only supports INT32 and INT64");
       }
       break;
+    case Encoding::DELTA_BYTE_ARRAY:
+      if (parquetType == thrift::Type::BYTE_ARRAY) {
+        deltaByteArrDecoder_ =
+            std::make_unique<DeltaByteArrayDecoder>(pageData_);
+        break;
+      }
+      FMT_FALLTHROUGH;
     default:
       VELOX_UNSUPPORTED("Encoding not supported yet: {}", encoding_);
   }
@@ -719,8 +726,14 @@ void PageReader::skip(int64_t numRows) {
   }
   firstUnvisited_ += numRows;
 
+  if (toSkip == 0) {
+    return;
+  }
   // Skip nulls
   toSkip = skipNulls(toSkip);
+  if (toSkip == 0) {
+    return;
+  }
 
   // Skip the decoder
   if (isDictionary()) {
@@ -733,6 +746,8 @@ void PageReader::skip(int64_t numRows) {
     booleanDecoder_->skip(toSkip);
   } else if (deltaBpDecoder_) {
     deltaBpDecoder_->skip(toSkip);
+  } else if (deltaByteArrDecoder_) {
+    deltaByteArrDecoder_->skip(toSkip);
   } else {
     VELOX_FAIL("No decoder to skip");
   }

@@ -23,6 +23,20 @@
 using facebook::velox::common::testutil::TestValue;
 
 namespace facebook::velox::exec {
+namespace {
+// Returns the CompareFlags vector whose size is equal to numSortKeys. Fill in
+// with default CompareFlags() if 'compareFlags' is empty.
+const std::vector<CompareFlags> getCompareFlagsOrDefault(
+    const std::vector<CompareFlags>& compareFlags,
+    int32_t numSortKeys) {
+  VELOX_DCHECK(compareFlags.empty() || compareFlags.size() == numSortKeys);
+  if (compareFlags.size() == numSortKeys) {
+    return compareFlags;
+  }
+  return std::vector<CompareFlags>(numSortKeys);
+}
+} // namespace
+
 void SpillMergeStream::pop() {
   if (++index_ >= size_) {
     setNextBatch();
@@ -34,6 +48,7 @@ int32_t SpillMergeStream::compare(const MergeStream& other) const {
   auto& children = rowVector_->children();
   auto& otherChildren = otherStream.current().children();
   int32_t key = 0;
+  // 逐个 Key 比较, 看着没有采用 Normalized Key?
   if (sortCompareFlags().empty()) {
     do {
       auto result = children[key]
@@ -74,6 +89,7 @@ SpillState::SpillState(
     uint64_t targetFileSize,
     uint64_t writeBufferSize,
     common::CompressionKind compressionKind,
+    const std::optional<common::PrefixSortConfig>& prefixSortConfig,
     memory::MemoryPool* pool,
     folly::Synchronized<common::SpillStats>* stats,
     const std::string& fileCreateConfig)
@@ -82,10 +98,12 @@ SpillState::SpillState(
       fileNamePrefix_(fileNamePrefix),
       maxPartitions_(maxPartitions),
       numSortKeys_(numSortKeys),
-      sortCompareFlags_(sortCompareFlags),
+      sortCompareFlags_(
+          getCompareFlagsOrDefault(sortCompareFlags, numSortKeys)),
       targetFileSize_(targetFileSize),
       writeBufferSize_(writeBufferSize),
       compressionKind_(compressionKind),
+      prefixSortConfig_(prefixSortConfig),
       fileCreateConfig_(fileCreateConfig),
       pool_(pool),
       stats_(stats),
@@ -338,11 +356,7 @@ tsan_atomic<uint32_t>& injectedSpillCount() {
 }
 
 bool testingTriggerSpill(const std::string& pool) {
-  // Do not evaluate further if trigger is not set.
-  if (!pool.empty() && !RE2::FullMatch(pool, testingSpillPoolRegExp())) {
-    return false;
-  }
-
+  // Put cheap check first to reduce CPU consumption in release code.
   if (testingSpillPct() <= 0) {
     return false;
   }
@@ -352,6 +366,10 @@ bool testingTriggerSpill(const std::string& pool) {
   }
 
   if (folly::Random::rand32() % 100 > testingSpillPct()) {
+    return false;
+  }
+
+  if (!pool.empty() && !RE2::FullMatch(pool, testingSpillPoolRegExp())) {
     return false;
   }
 

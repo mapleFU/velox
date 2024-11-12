@@ -168,17 +168,19 @@ class RowVector : public BaseVector {
       const BaseVector* source,
       const folly::Range<const CopyRange*>& ranges) override;
 
-  VectorPtr copyPreserveEncodings() const override {
+  VectorPtr copyPreserveEncodings(
+      velox::memory::MemoryPool* pool = nullptr) const override {
     std::vector<VectorPtr> copiedChildren(children_.size());
 
     for (auto i = 0; i < children_.size(); ++i) {
-      copiedChildren[i] = children_[i]->copyPreserveEncodings();
+      copiedChildren[i] = children_[i]->copyPreserveEncodings(pool);
     }
 
+    auto selfPool = pool ? pool : pool_;
     return std::make_shared<RowVector>(
-        pool_,
+        selfPool,
         type_,
-        AlignedBuffer::copy(pool_, nulls_),
+        AlignedBuffer::copy(selfPool, nulls_),
         length_,
         copiedChildren,
         nullCount_);
@@ -242,6 +244,17 @@ class RowVector : public BaseVector {
   /// uniquely referenced by the parent when increasing the size.
   /// Note : If the child is null, then it will stay null after the resize.
   void resize(vector_size_t newSize, bool setNotNull = true) override;
+
+  /// Push all dictionary encoding to the leave vectors of a RowVector tree
+  /// (i.e. we traverse the tree consists of RowVectors, possibly wrapped in
+  /// DictionaryVector, and no traverse into other complex types like array or
+  /// map children).  If the wrapper introduce nulls on RowVector, we don't push
+  /// the dictionary into that RowVector.  The input vector should not contain
+  /// any unloaded lazy.
+  ///
+  /// This is used for example in writing Nimble ArrayWithOffsets and
+  /// SlidingWindowMap.
+  static VectorPtr pushDictionaryToRowVectorLeaves(const VectorPtr& input);
 
   VectorPtr& rawVectorForBatchReader() {
     return rawVectorForBatchReader_;
@@ -351,9 +364,24 @@ struct ArrayVectorBase : BaseVector {
     sizes_->asMutable<vector_size_t>()[i] = size;
   }
 
-  /// Verify that an ArrayVector/MapVector does not contain overlapping [offset,
-  /// size] ranges. Throws in case overlaps are found.
-  void checkRanges() const;
+  /// Check if there is any overlapping [offset, size] ranges.
+  bool hasOverlappingRanges() const {
+    std::vector<vector_size_t> indices;
+    return hasOverlappingRanges(
+        size(), rawNulls(), rawOffsets_, rawSizes_, indices);
+  }
+
+  /// Check if there is any overlapping [offset, size] ranges for any non-null
+  /// non-empty rows.
+  ///
+  /// When return true (overlap exists), `indices' will be populated with
+  /// ARRAY/MAP indices sorted by offsets.
+  static bool hasOverlappingRanges(
+      vector_size_t size,
+      const uint64_t* nulls,
+      const vector_size_t* offsets,
+      const vector_size_t* sizes,
+      std::vector<vector_size_t>& indices);
 
  protected:
   ArrayVectorBase(
@@ -466,15 +494,17 @@ class ArrayVector : public ArrayVectorBase {
       const BaseVector* source,
       const folly::Range<const CopyRange*>& ranges) override;
 
-  VectorPtr copyPreserveEncodings() const override {
+  VectorPtr copyPreserveEncodings(
+      velox::memory::MemoryPool* pool = nullptr) const override {
+    auto selfPool = pool ? pool : pool_;
     return std::make_shared<ArrayVector>(
-        pool_,
+        selfPool,
         type_,
-        AlignedBuffer::copy(pool_, nulls_),
+        AlignedBuffer::copy(selfPool, nulls_),
         length_,
-        AlignedBuffer::copy(pool_, offsets_),
-        AlignedBuffer::copy(pool_, sizes_),
-        elements_->copyPreserveEncodings(),
+        AlignedBuffer::copy(selfPool, offsets_),
+        AlignedBuffer::copy(selfPool, sizes_),
+        elements_->copyPreserveEncodings(pool),
         nullCount_);
   }
 
@@ -607,16 +637,18 @@ class MapVector : public ArrayVectorBase {
       const BaseVector* source,
       const folly::Range<const CopyRange*>& ranges) override;
 
-  VectorPtr copyPreserveEncodings() const override {
+  VectorPtr copyPreserveEncodings(
+      velox::memory::MemoryPool* pool = nullptr) const override {
+    auto selfPool = pool ? pool : pool_;
     return std::make_shared<MapVector>(
-        pool_,
+        selfPool,
         type_,
-        AlignedBuffer::copy(pool_, nulls_),
+        AlignedBuffer::copy(selfPool, nulls_),
         length_,
-        AlignedBuffer::copy(pool_, offsets_),
-        AlignedBuffer::copy(pool_, sizes_),
-        keys_->copyPreserveEncodings(),
-        values_->copyPreserveEncodings(),
+        AlignedBuffer::copy(selfPool, offsets_),
+        AlignedBuffer::copy(selfPool, sizes_),
+        keys_->copyPreserveEncodings(pool),
+        values_->copyPreserveEncodings(pool),
         nullCount_,
         sortedKeys_);
   }

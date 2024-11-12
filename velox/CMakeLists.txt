@@ -24,6 +24,7 @@ add_subdirectory(row)
 add_subdirectory(flag_definitions)
 add_subdirectory(external/date)
 add_subdirectory(external/md5)
+add_subdirectory(external/hdfs)
 #
 
 # examples depend on expression
@@ -71,4 +72,8 @@ endif()
 # substrait converter
 if(${VELOX_ENABLE_SUBSTRAIT})
   add_subdirectory(substrait)
+endif()
+
+if(${VELOX_BUILD_TESTING})
+  add_subdirectory(tool)
 endif()

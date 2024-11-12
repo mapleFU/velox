@@ -327,7 +327,7 @@ void Expr::computeMetadata() {
 
   // (5) Compute hasConditionals_.
   // 这个 hasConditional 是递归的, 也判断了 Child 是否包含了 if / else.
-  hasConditionals_ = hasConditionals(this);
+  hasConditionals_ = exec::hasConditionals(this);
 
   metaDataComputed_ = true;
 }
@@ -453,6 +453,9 @@ bool Expr::evalArgsDefaultNulls(
       }
     }
   }
+
+  // Default-null behavior has taken place if rows has changed.
+  stats_.defaultNullRowsSkipped |= rows.hasChanged();
 
   mergeOrThrowArgumentErrors(
       rows.rows(), originalErrors, argumentErrors, context);
@@ -754,7 +757,7 @@ void Expr::evalFlatNoNulls(
     EvalCtx& context,
     VectorPtr& result,
     const ExprSet* parentExprSet) {
-  if (shouldEvaluateSharedSubexp()) {
+  if (shouldEvaluateSharedSubexp(context)) {
     evaluateSharedSubexpr(
         rows,
         context,
@@ -899,7 +902,8 @@ void Expr::eval(
   //    CSE 会缓存表达式的结果, 然后要保证能做范围比较. 比较需要 EnsureLoaded?
   //    这快应该是完全实现相关的.
   if (!hasConditionals_ || distinctFields_.size() == 1 ||
-      shouldEvaluateSharedSubexp()) {
+      shouldEvaluateSharedSubexp(context) ||
+      !context.deferredLazyLoadingEnabled()) {
     // Load lazy vectors if any.
     for (auto* field : distinctFields_) {
       context.ensureFieldLoaded(field->index(context), rows);
@@ -936,21 +940,30 @@ void Expr::evaluateSharedSubexpr(
     VectorPtr& result,
     TEval eval) {
   // Captures the inputs referenced by distinctFields_.
-  std::vector<const BaseVector*> expressionInputFields;
+  InputForSharedResults expressionInputFields;
   for (auto* field : distinctFields_) {
-    expressionInputFields.push_back(
-        context.getField(field->index(context)).get());
+    expressionInputFields.addInput(context.getField(field->index(context)));
   }
 
   // Find the cached results for the same inputs, or create an entry if one
   // doesn't exist.
   auto sharedSubexprResultsIter =
       sharedSubexprResults_.find(expressionInputFields);
+
+  // If any of the input vector is freed/expired, remove the entry from the
+  // results cache.
+  if (sharedSubexprResultsIter != sharedSubexprResults_.end() &&
+      sharedSubexprResultsIter->first.isExpired()) {
+    sharedSubexprResults_.erase(sharedSubexprResultsIter);
+    VELOX_DCHECK(
+        sharedSubexprResults_.find(expressionInputFields) ==
+        sharedSubexprResults_.end());
+    sharedSubexprResultsIter = sharedSubexprResults_.end();
+  }
+
   if (sharedSubexprResultsIter == sharedSubexprResults_.end()) {
-    auto maxSharedSubexprResultsCached = context.execCtx()
-                                             ->queryCtx()
-                                             ->queryConfig()
-                                             .maxSharedSubexprResultsCached();
+    auto maxSharedSubexprResultsCached =
+        context.maxSharedSubexprResultsCached();
     if (sharedSubexprResults_.size() < maxSharedSubexprResultsCached) {
       // If we have room left in the cache, add it.
       sharedSubexprResultsIter =
@@ -964,7 +977,6 @@ void Expr::evaluateSharedSubexpr(
       // 不匹配, `sharedSubexprResults_` 也没有足够空间. 这里不走 CSE 的逻辑了, 
       // 给 input rows 做全量 Eval.
       eval(rows, context, result);
-
       return;
     }
   }
@@ -1010,7 +1022,7 @@ void Expr::evaluateSharedSubexpr(
   //
   // 增量计算 missing rows, 然后结果合并到 sharedSubexprValues.
   LocalSelectivityVector missingRowsHolder(context, rows);
-  auto missingRows = missingRowsHolder.get();
+  auto* missingRows = missingRowsHolder.get();
   missingRows->deselect(*sharedSubexprRows);
   VELOX_DCHECK(missingRows->hasSelections());
 
@@ -1020,7 +1032,7 @@ void Expr::evaluateSharedSubexpr(
   //
   // 这里 Hook 了一个 FinalSelection 的 Hack, 让结果不被 overwrite.
   LocalSelectivityVector newFinalSelectionHolder(context, *sharedSubexprRows);
-  auto newFinalSelection = newFinalSelectionHolder.get();
+  auto* newFinalSelection = newFinalSelectionHolder.get();
   newFinalSelection->select(*missingRows);
   if (!context.isFinalSelection()) {
     newFinalSelection->select(*context.finalSelection());
@@ -1129,7 +1141,7 @@ Expr::PeelEncodingsResult Expr::peelEncodings(
 
   // If the expression depends on one dictionary, results are cacheable.
   bool mayCache = false;
-  if (context.cacheEnabled()) {
+  if (context.dictionaryMemoizationEnabled()) {
     // cache 的条件要求只有一个参数, 然后需要是字典, 然后 Peel 层不能设置 memoDisabled.
     mayCache = distinctFields_.size() == 1 &&
         VectorEncoding::isDictionary(context.wrapEncoding()) &&
@@ -1148,7 +1160,8 @@ void Expr::evalEncodings(
   // 如果不是 determinstic 的, 那么就不会尝试去做 Encoding 的处理. 因为 Peeling
   // 本身会改变 input(可能会减少输入 size), 所以不是 determinstic 的话, 这个优化
   // 本身也不合法.
-  if (deterministic_ && !skipFieldDependentOptimizations()) {
+  if (deterministic_ && !skipFieldDependentOptimizations() &&
+      context.peelingEnabled()) {
     bool hasFlat = false;
     for (auto* field : distinctFields_) {
       if (isFlat(*context.getField(field->index(context)))) {
@@ -1235,7 +1248,12 @@ bool Expr::removeSureNulls(
   }
   if (result) {
     result->updateBounds();
-    return result->countSelected() != rows.countSelected();
+    // Default-null behavior has taken place if some sure nulls has been removed
+    // from rows.
+    if (result->countSelected() < rows.countSelected()) {
+      stats_.defaultNullRowsSkipped = true;
+      return true;
+    }
   }
   return false;
 }
@@ -1496,7 +1514,7 @@ void Expr::evalAll(
     return;
   }
 
-  if (shouldEvaluateSharedSubexp()) {
+  if (shouldEvaluateSharedSubexp(context)) {
     evaluateSharedSubexpr(
         rows,
         context,
@@ -1593,6 +1611,16 @@ bool Expr::applyFunctionWithPeeling(
     VectorPtr& result) {
   LocalDecodedVector localDecoded(context);
   LocalSelectivityVector newRowsHolder(context);
+  if (!context.peelingEnabled()) {
+    if (inputValues_.size() == 1) {
+      // If we have a single input, velox needs to ensure that the
+      // vectorFunction would receive a flat input.
+      BaseVector::flattenVector(inputValues_[0]);
+      applyFunction(applyRows, context, result);
+      return true;
+    }
+    return false;
+  }
   // Attempt peeling.
   std::vector<VectorPtr> peeledVectors;
   auto peeledEncoding = PeeledEncoding::peel(
@@ -1920,7 +1948,7 @@ void addStats(
   uniqueExprs.insert(&expr);
 
   // Do not aggregate empty stats.
-  if (expr.stats().numProcessedRows) {
+  if (expr.stats().numProcessedRows || expr.stats().defaultNullRowsSkipped) {
     stats[expr.name()].add(expr.stats());
   }
 
@@ -2095,6 +2123,12 @@ void ExprSet::clear() {
   }
   distinctFields_.clear();
   multiplyReferencedFields_.clear();
+}
+
+void ExprSet::clearCache() {
+  for (auto& expr : exprs_) {
+    expr->clearCache();
+  }
 }
 
 void ExprSetSimplified::eval(

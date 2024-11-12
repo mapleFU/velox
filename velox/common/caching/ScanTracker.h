@@ -80,33 +80,9 @@ class FileGroupStats;
 /// Reference: 标注某段内存未来可以被访问.
 /// Read: 真实的物理访问
 struct TrackingData {
-  int64_t referencedBytes{};
-  int64_t readBytes{};
-  int32_t numReferences{};
-  int32_t numReads{};
-
-  /// Marks that 'bytes' worth of data in the tracked object has been referenced
-  /// and may later be accessed. If 'bytes' is larger than a single
-  /// 'loadQuantum', the reference counts for as many accesses as are needed to
-  /// cover 'bytes'. When reading a large object, we will get a read per
-  /// quantum. So then if the referenced and read counts match, we know that the
-  /// object is densely read.
-  ///
-  /// loadQuantum 是一次 IO 的 size, 用来计算 Reference 的次数. 没有(不指定)
-  /// 就是一次 IO.
-  void incrementReference(uint64_t bytes, int32_t loadQuantum) {
-    referencedBytes += bytes;
-    if (loadQuantum == 0) {
-      ++numReferences;
-    } else {
-      numReferences += bits::roundUp(bytes, loadQuantum) / loadQuantum;
-    }
-  }
-
-  void incrementRead(uint64_t bytes) {
-    readBytes += bytes;
-    ++numReads;
-  }
+  double referencedBytes{};
+  double lastReferencedBytes{};
+  double readBytes{};
 };
 
 /// Tracks column access frequency during execution of a query. A ScanTracker is
@@ -134,7 +110,6 @@ class ScanTracker {
       FileGroupStats* fileGroupStats = nullptr)
       : id_(id),
         unregisterer_(std::move(unregisterer)),
-        loadQuantum_(loadQuantum),
         fileGroupStats_(fileGroupStats) {}
 
   ~ScanTracker() {
@@ -175,10 +150,10 @@ class ScanTracker {
   int32_t readPct(TrackingId id) {
     std::lock_guard<std::mutex> l(mutex_);
     const auto& data = data_[id];
-    if (data.numReferences == 0) {
+    if (data.referencedBytes == 0) {
       return 100;
     }
-    return (100 * data.numReads) / data.numReferences;
+    return data.readBytes / data.referencedBytes * 100;
   }
 
   TrackingData trackingData(TrackingId id) {
@@ -200,10 +175,6 @@ class ScanTracker {
   // Id of query + scan operator to track.
   const std::string id_;
   const std::function<void(ScanTracker*)> unregisterer_{nullptr};
-  // Maximum size of a read. 10MB would count as two references if the quantum
-  // were 8MB. At the same time this would count as a single 10MB reference for
-  // 'fileGroupStats_'. 0 means the read size is unlimited.
-  const int32_t loadQuantum_;
   FileGroupStats* const fileGroupStats_;
 
   std::mutex mutex_;

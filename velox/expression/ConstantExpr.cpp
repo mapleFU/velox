@@ -26,7 +26,7 @@ void ConstantExpr::evalSpecialForm(
   //
   // 还有一个比较值得关注的细节是这里展开的大小是 `rows.end()`. 这里首先关注性质, 没 select 的地方只会被
   // deselect, 不会被赋值, 所以这里的 `rows.end()` 是合理的. (不同于 null).
-  if (sharedConstantValue_.unique()) {
+  if (sharedConstantValue_.use_count() == 1) {
     sharedConstantValue_->resize(rows.end());
   } else {
     // By reassigning sharedConstantValue_ we increase the chances that it will
@@ -41,7 +41,7 @@ void ConstantExpr::evalSpecialForm(
   if (needToSetIsAscii_) {
     // sharedConstantValue_ must be unique because computeAndSetIsAscii may
     // modify it.
-    VELOX_CHECK(sharedConstantValue_.unique());
+    VELOX_CHECK_EQ(sharedConstantValue_.use_count(), 1);
     auto* vector =
         sharedConstantValue_->asUnchecked<SimpleVector<StringView>>();
     LocalSingleRow singleRow(context, 0);

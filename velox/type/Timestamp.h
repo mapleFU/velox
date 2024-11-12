@@ -117,6 +117,9 @@ struct Timestamp {
   /// and the number of nanoseconds.
   static Timestamp fromDaysAndNanos(int32_t days, int64_t nanos);
 
+  // date is the number of days since unix epoch.
+  static Timestamp fromDate(int32_t date);
+
   // Returns the current unix timestamp (ms precision).
   static Timestamp now();
 
@@ -206,14 +209,6 @@ struct Timestamp {
   /// [-32767-01-01, 32767-12-31] range.
   std::chrono::time_point<std::chrono::system_clock, std::chrono::milliseconds>
   toTimePointMs(bool allowOverflow = false) const;
-
-  /// Exports the current timestamp as a std::chrono::time_point of second
-  /// precision.
-  ///
-  /// Due to the limit of velox/external/date, throws if timestamp is outside of
-  /// [-32767-01-01, 32767-12-31] range.
-  std::chrono::time_point<std::chrono::system_clock, std::chrono::seconds>
-  toTimePointSec() const;
 
   static Timestamp fromMillis(int64_t millis) {
     if (millis >= 0 || millis % 1'000 == 0) {
@@ -353,9 +348,6 @@ struct Timestamp {
   //  ts.toString(); // returns January 1, 1970 08:00:00
   void toGMT(const tz::TimeZone& zone);
 
-  // Same as above, but accepts PrestoDB time zone ID.
-  void toGMT(int16_t tzID);
-
   /// Assuming the timestamp represents a GMT time, converts it to the time at
   /// the same moment at zone. For example:
   ///
@@ -363,9 +355,6 @@ struct Timestamp {
   ///  ts.Timezone("America/Los_Angeles");
   ///  ts.toString(); // returns December 31, 1969 16:00:00
   void toTimezone(const tz::TimeZone& zone);
-
-  // Same as above, but accepts PrestoDB time zone ID.
-  void toTimezone(int16_t tzID);
 
   /// A default time zone that is same across the process.
   static const tz::TimeZone& defaultTimezone();
@@ -519,7 +508,7 @@ struct formatter<facebook::velox::TimestampToStringOptions::Precision>
     : formatter<int> {
   auto format(
       facebook::velox::TimestampToStringOptions::Precision s,
-      format_context& ctx) {
+      format_context& ctx) const {
     return formatter<int>::format(static_cast<int>(s), ctx);
   }
 };
@@ -528,7 +517,7 @@ struct formatter<facebook::velox::TimestampToStringOptions::Mode>
     : formatter<int> {
   auto format(
       facebook::velox::TimestampToStringOptions::Mode s,
-      format_context& ctx) {
+      format_context& ctx) const {
     return formatter<int>::format(static_cast<int>(s), ctx);
   }
 };

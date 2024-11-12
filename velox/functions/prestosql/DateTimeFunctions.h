@@ -16,6 +16,7 @@
 #pragma once
 
 #include <string_view>
+#include "velox/expression/ComplexViewTypes.h"
 #include "velox/functions/lib/DateTimeFormatter.h"
 #include "velox/functions/lib/TimeUtils.h"
 #include "velox/functions/prestosql/DateTimeImpl.h"
@@ -39,7 +40,7 @@ struct ToUnixtimeFunction {
   FOLLY_ALWAYS_INLINE void call(
       double& result,
       const arg_type<TimestampWithTimezone>& timestampWithTimezone) {
-    const auto milliseconds = unpackMillisUtc(timestampWithTimezone);
+    const auto milliseconds = unpackMillisUtc(*timestampWithTimezone);
     result = (double)milliseconds / kMillisecondsInSecond;
   }
 };
@@ -69,10 +70,10 @@ struct FromUnixtimeFunction {
   FOLLY_ALWAYS_INLINE void call(
       out_type<TimestampWithTimezone>& result,
       const arg_type<double>& unixtime,
-      const arg_type<Varchar>& timezone) {
-    int16_t timezoneId =
-        tzID_.value_or(tz::getTimeZoneID((std::string_view)timezone));
-    result = pack(fromUnixtime(unixtime).toMillis(), timezoneId);
+      const arg_type<Varchar>& timeZone) {
+    int16_t timeZoneId =
+        tzID_.value_or(tz::getTimeZoneID((std::string_view)timeZone));
+    result = fromUnixtime(unixtime, timeZoneId);
   }
 
   // (double, bigint, bigint) -> timestamp with time zone
@@ -114,9 +115,10 @@ struct TimestampWithTimezoneSupport {
   Timestamp toTimestamp(
       const arg_type<TimestampWithTimezone>& timestampWithTimezone,
       bool asGMT = false) {
-    auto timestamp = unpackTimestampUtc(timestampWithTimezone);
+    auto timestamp = unpackTimestampUtc(*timestampWithTimezone);
     if (!asGMT) {
-      timestamp.toTimezone(unpackZoneKeyId(timestampWithTimezone));
+      timestamp.toTimezone(
+          *tz::locateZone(unpackZoneKeyId(*timestampWithTimezone)));
     }
 
     return timestamp;
@@ -129,7 +131,8 @@ struct TimestampWithTimezoneSupport {
     Timestamp inputTimeStamp = this->toTimestamp(timestampWithTimezone);
     // Create a copy of inputTimeStamp and convert it to GMT
     auto gmtTimeStamp = inputTimeStamp;
-    gmtTimeStamp.toGMT(unpackZoneKeyId(timestampWithTimezone));
+    gmtTimeStamp.toGMT(
+        *tz::locateZone(unpackZoneKeyId(*timestampWithTimezone)));
 
     // Get offset in seconds with GMT and convert to hour
     return (inputTimeStamp.getSeconds() - gmtTimeStamp.getSeconds());
@@ -195,60 +198,21 @@ struct WeekFunction : public InitSessionTimezone<T>,
                       public TimestampWithTimezoneSupport<T> {
   VELOX_DEFINE_FUNCTION_TYPES(T);
 
-  FOLLY_ALWAYS_INLINE int64_t getWeek(const std::tm& time) {
-    // The computation of ISO week from date follows the algorithm here:
-    // https://en.wikipedia.org/wiki/ISO_week_date
-    int64_t week = floor(
-                       10 + (time.tm_yday + 1) -
-                       (time.tm_wday ? time.tm_wday : kDaysInWeek)) /
-        kDaysInWeek;
-
-    if (week == 0) {
-      // Distance in days between the first day of the current year and the
-      // Monday of the current week.
-      auto mondayOfWeek =
-          time.tm_yday + 1 - (time.tm_wday + kDaysInWeek - 1) % kDaysInWeek;
-      // Distance in days between the first day and the first Monday of the
-      // current year.
-      auto firstMondayOfYear =
-          1 + (mondayOfWeek + kDaysInWeek - 1) % kDaysInWeek;
-
-      if ((util::isLeapYear(time.tm_year + 1900 - 1) &&
-           firstMondayOfYear == 2) ||
-          firstMondayOfYear == 3 || firstMondayOfYear == 4) {
-        week = 53;
-      } else {
-        week = 52;
-      }
-    } else if (week == 53) {
-      // Distance in days between the first day of the current year and the
-      // Monday of the current week.
-      auto mondayOfWeek =
-          time.tm_yday + 1 - (time.tm_wday + kDaysInWeek - 1) % kDaysInWeek;
-      auto daysInYear = util::isLeapYear(time.tm_year + 1900) ? 366 : 365;
-      if (daysInYear - mondayOfWeek < 3) {
-        week = 1;
-      }
-    }
-
-    return week;
-  }
-
   FOLLY_ALWAYS_INLINE void call(
       int64_t& result,
       const arg_type<Timestamp>& timestamp) {
-    result = getWeek(getDateTime(timestamp, this->timeZone_));
+    result = getWeek(timestamp, this->timeZone_, false);
   }
 
   FOLLY_ALWAYS_INLINE void call(int64_t& result, const arg_type<Date>& date) {
-    result = getWeek(getDateTime(date));
+    result = getWeek(Timestamp::fromDate(date), nullptr, false);
   }
 
   FOLLY_ALWAYS_INLINE void call(
       int64_t& result,
       const arg_type<TimestampWithTimezone>& timestampWithTimezone) {
     auto timestamp = this->toTimestamp(timestampWithTimezone);
-    result = getWeek(getDateTime(timestamp, nullptr));
+    result = getWeek(timestamp, nullptr, false);
   }
 };
 
@@ -398,28 +362,26 @@ struct LastDayOfMonthFunction : public InitSessionTimezone<T>,
       out_type<Date>& result,
       const arg_type<Timestamp>& timestamp) {
     auto dt = getDateTime(timestamp, this->timeZone_);
-    int64_t daysSinceEpochFromDate;
-    auto status =
-        util::lastDayOfMonthSinceEpochFromDate(dt, daysSinceEpochFromDate);
-    if (!status.ok()) {
-      VELOX_DCHECK(status.isUserError());
-      VELOX_USER_FAIL(status.message());
+    Expected<int64_t> daysSinceEpochFromDate =
+        util::lastDayOfMonthSinceEpochFromDate(dt);
+    if (daysSinceEpochFromDate.hasError()) {
+      VELOX_DCHECK(daysSinceEpochFromDate.error().isUserError());
+      VELOX_USER_FAIL(daysSinceEpochFromDate.error().message());
     }
-    result = daysSinceEpochFromDate;
+    result = daysSinceEpochFromDate.value();
   }
 
   FOLLY_ALWAYS_INLINE void call(
       out_type<Date>& result,
       const arg_type<Date>& date) {
     auto dt = getDateTime(date);
-    int64_t daysSinceEpochFromDate;
-    auto status =
-        util::lastDayOfMonthSinceEpochFromDate(dt, daysSinceEpochFromDate);
-    if (!status.ok()) {
-      VELOX_DCHECK(status.isUserError());
-      VELOX_USER_FAIL(status.message());
+    Expected<int64_t> lastDayOfMonthSinceEpoch =
+        util::lastDayOfMonthSinceEpochFromDate(dt);
+    if (lastDayOfMonthSinceEpoch.hasError()) {
+      VELOX_DCHECK(lastDayOfMonthSinceEpoch.error().isUserError());
+      VELOX_USER_FAIL(lastDayOfMonthSinceEpoch.error().message());
     }
-    result = daysSinceEpochFromDate;
+    result = lastDayOfMonthSinceEpoch.value();
   }
 
   FOLLY_ALWAYS_INLINE void call(
@@ -427,14 +389,13 @@ struct LastDayOfMonthFunction : public InitSessionTimezone<T>,
       const arg_type<TimestampWithTimezone>& timestampWithTimezone) {
     auto timestamp = this->toTimestamp(timestampWithTimezone);
     auto dt = getDateTime(timestamp, nullptr);
-    int64_t daysSinceEpochFromDate;
-    auto status =
-        util::lastDayOfMonthSinceEpochFromDate(dt, daysSinceEpochFromDate);
-    if (!status.ok()) {
-      VELOX_DCHECK(status.isUserError());
-      VELOX_USER_FAIL(status.message());
+    Expected<int64_t> lastDayOfMonthSinceEpoch =
+        util::lastDayOfMonthSinceEpochFromDate(dt);
+    if (lastDayOfMonthSinceEpoch.hasError()) {
+      VELOX_DCHECK(lastDayOfMonthSinceEpoch.error().isUserError());
+      VELOX_USER_FAIL(lastDayOfMonthSinceEpoch.error().message());
     }
-    result = daysSinceEpochFromDate;
+    result = lastDayOfMonthSinceEpoch.value();
   }
 };
 
@@ -509,7 +470,7 @@ struct TimestampMinusFunction {
       out_type<IntervalDayTime>& result,
       const arg_type<TimestampWithTimezone>& a,
       const arg_type<TimestampWithTimezone>& b) {
-    result = unpackMillisUtc(a) - unpackMillisUtc(b);
+    result = unpackMillisUtc(*a) - unpackMillisUtc(*b);
   }
 };
 
@@ -530,11 +491,22 @@ struct TimestampPlusInterval {
     result = Timestamp::fromMillisNoError(a.toMillis() + b);
   }
 
+  // We only need to capture the time zone session config if we are operating on
+  // a timestamp and a IntervalYearMonth.
+  FOLLY_ALWAYS_INLINE void initialize(
+      const std::vector<TypePtr>& /*inputTypes*/,
+      const core::QueryConfig& config,
+      const arg_type<Timestamp>*,
+      const arg_type<IntervalYearMonth>*) {
+    sessionTimeZone_ = getTimeZoneFromConfig(config);
+  }
+
   FOLLY_ALWAYS_INLINE void call(
       out_type<Timestamp>& result,
       const arg_type<Timestamp>& timestamp,
       const arg_type<IntervalYearMonth>& interval) {
-    result = addToTimestamp(timestamp, DateTimeUnit::kMonth, interval);
+    result = addToTimestamp(
+        timestamp, DateTimeUnit::kMonth, interval, sessionTimeZone_);
   }
 
   FOLLY_ALWAYS_INLINE void call(
@@ -542,7 +514,7 @@ struct TimestampPlusInterval {
       const arg_type<TimestampWithTimezone>& timestampWithTimezone,
       const arg_type<IntervalDayTime>& interval) {
     result = addToTimestampWithTimezone(
-        timestampWithTimezone, DateTimeUnit::kMillisecond, interval);
+        *timestampWithTimezone, DateTimeUnit::kMillisecond, interval);
   }
 
   FOLLY_ALWAYS_INLINE void call(
@@ -550,8 +522,12 @@ struct TimestampPlusInterval {
       const arg_type<TimestampWithTimezone>& timestampWithTimezone,
       const arg_type<IntervalYearMonth>& interval) {
     result = addToTimestampWithTimezone(
-        timestampWithTimezone, DateTimeUnit::kMonth, interval);
+        *timestampWithTimezone, DateTimeUnit::kMonth, interval);
   }
+
+ private:
+  // Only set if the parameters are timestamp and IntervalYearMonth.
+  const tz::TimeZone* sessionTimeZone_ = nullptr;
 };
 
 template <typename T>
@@ -571,11 +547,22 @@ struct IntervalPlusTimestamp {
     result = Timestamp::fromMillisNoError(a + b.toMillis());
   }
 
+  // We only need to capture the time zone session config if we are operating on
+  // a timestamp and a IntervalYearMonth.
+  FOLLY_ALWAYS_INLINE void initialize(
+      const std::vector<TypePtr>& /*inputTypes*/,
+      const core::QueryConfig& config,
+      const arg_type<IntervalYearMonth>*,
+      const arg_type<Timestamp>*) {
+    sessionTimeZone_ = getTimeZoneFromConfig(config);
+  }
+
   FOLLY_ALWAYS_INLINE void call(
       out_type<Timestamp>& result,
       const arg_type<IntervalYearMonth>& interval,
       const arg_type<Timestamp>& timestamp) {
-    result = addToTimestamp(timestamp, DateTimeUnit::kMonth, interval);
+    result = addToTimestamp(
+        timestamp, DateTimeUnit::kMonth, interval, sessionTimeZone_);
   }
 
   FOLLY_ALWAYS_INLINE void call(
@@ -583,7 +570,7 @@ struct IntervalPlusTimestamp {
       const arg_type<IntervalDayTime>& interval,
       const arg_type<TimestampWithTimezone>& timestampWithTimezone) {
     result = addToTimestampWithTimezone(
-        timestampWithTimezone, DateTimeUnit::kMillisecond, interval);
+        *timestampWithTimezone, DateTimeUnit::kMillisecond, interval);
   }
 
   FOLLY_ALWAYS_INLINE void call(
@@ -591,8 +578,12 @@ struct IntervalPlusTimestamp {
       const arg_type<IntervalYearMonth>& interval,
       const arg_type<TimestampWithTimezone>& timestampWithTimezone) {
     result = addToTimestampWithTimezone(
-        timestampWithTimezone, DateTimeUnit::kMonth, interval);
+        *timestampWithTimezone, DateTimeUnit::kMonth, interval);
   }
+
+ private:
+  // Only set if the parameters are timestamp and IntervalYearMonth.
+  const tz::TimeZone* sessionTimeZone_ = nullptr;
 };
 
 template <typename T>
@@ -612,11 +603,22 @@ struct TimestampMinusInterval {
     result = Timestamp::fromMillisNoError(a.toMillis() - b);
   }
 
+  // We only need to capture the time zone session config if we are operating on
+  // a timestamp and a IntervalYearMonth.
+  FOLLY_ALWAYS_INLINE void initialize(
+      const std::vector<TypePtr>& /*inputTypes*/,
+      const core::QueryConfig& config,
+      const arg_type<Timestamp>*,
+      const arg_type<IntervalYearMonth>*) {
+    sessionTimeZone_ = getTimeZoneFromConfig(config);
+  }
+
   FOLLY_ALWAYS_INLINE void call(
       out_type<Timestamp>& result,
       const arg_type<Timestamp>& timestamp,
       const arg_type<IntervalYearMonth>& interval) {
-    result = addToTimestamp(timestamp, DateTimeUnit::kMonth, -interval);
+    result = addToTimestamp(
+        timestamp, DateTimeUnit::kMonth, -interval, sessionTimeZone_);
   }
 
   FOLLY_ALWAYS_INLINE void call(
@@ -624,7 +626,7 @@ struct TimestampMinusInterval {
       const arg_type<TimestampWithTimezone>& timestampWithTimezone,
       const arg_type<IntervalDayTime>& interval) {
     result = addToTimestampWithTimezone(
-        timestampWithTimezone, DateTimeUnit::kMillisecond, -interval);
+        *timestampWithTimezone, DateTimeUnit::kMillisecond, -interval);
   }
 
   FOLLY_ALWAYS_INLINE void call(
@@ -632,8 +634,12 @@ struct TimestampMinusInterval {
       const arg_type<TimestampWithTimezone>& timestampWithTimezone,
       const arg_type<IntervalYearMonth>& interval) {
     result = addToTimestampWithTimezone(
-        timestampWithTimezone, DateTimeUnit::kMonth, -interval);
+        *timestampWithTimezone, DateTimeUnit::kMonth, -interval);
   }
+
+ private:
+  // Only set if the parameters are timestamp and IntervalYearMonth.
+  const tz::TimeZone* sessionTimeZone_ = nullptr;
 };
 
 template <typename T>
@@ -1152,10 +1158,10 @@ struct DateTruncFunction : public TimestampWithTimezoneSupport<T> {
     }
 
     if (unit == DateTimeUnit::kSecond) {
-      auto utcTimestamp = unpackTimestampUtc(timestampWithTimezone);
+      auto utcTimestamp = unpackTimestampUtc(*timestampWithTimezone);
       result = pack(
           utcTimestamp.getSeconds() * 1000,
-          unpackZoneKeyId(timestampWithTimezone));
+          unpackZoneKeyId(*timestampWithTimezone));
       return;
     }
 
@@ -1164,9 +1170,9 @@ struct DateTruncFunction : public TimestampWithTimezoneSupport<T> {
     adjustDateTime(dateTime, unit);
     timestamp =
         Timestamp::fromMillis(Timestamp::calendarUtcToEpoch(dateTime) * 1000);
-    timestamp.toGMT(unpackZoneKeyId(timestampWithTimezone));
+    timestamp.toGMT(*tz::locateZone(unpackZoneKeyId(*timestampWithTimezone)));
 
-    result = pack(timestamp, unpackZoneKeyId(timestampWithTimezone));
+    result = pack(timestamp, unpackZoneKeyId(*timestampWithTimezone));
   }
 
  private:
@@ -1262,8 +1268,8 @@ struct DateAddFunction : public TimestampWithTimezoneSupport<T> {
       VELOX_UNSUPPORTED("integer overflow");
     }
 
-    result =
-        addToTimestampWithTimezone(timestampWithTimezone, unit, (int32_t)value);
+    result = addToTimestampWithTimezone(
+        *timestampWithTimezone, unit, (int32_t)value);
   }
 
   FOLLY_ALWAYS_INLINE void call(
@@ -1330,9 +1336,8 @@ struct DateDiffFunction : public TimestampWithTimezoneSupport<T> {
       const arg_type<Varchar>& unitString,
       const arg_type<Timestamp>& timestamp1,
       const arg_type<Timestamp>& timestamp2) {
-    const auto unit = unit_.has_value()
-        ? unit_.value()
-        : fromDateTimeUnitString(unitString, true /*throwIfInvalid*/).value();
+    const auto unit = unit_.value_or(
+        fromDateTimeUnitString(unitString, true /*throwIfInvalid*/).value());
 
     if (LIKELY(sessionTimeZone_ != nullptr)) {
       // sessionTimeZone not null means that the config
@@ -1371,13 +1376,20 @@ struct DateDiffFunction : public TimestampWithTimezoneSupport<T> {
   FOLLY_ALWAYS_INLINE void call(
       int64_t& result,
       const arg_type<Varchar>& unitString,
-      const arg_type<TimestampWithTimezone>& timestamp1,
-      const arg_type<TimestampWithTimezone>& timestamp2) {
-    call(
-        result,
-        unitString,
-        this->toTimestamp(timestamp1, true),
-        this->toTimestamp(timestamp2, true));
+      const arg_type<TimestampWithTimezone>& timestampWithTz1,
+      const arg_type<TimestampWithTimezone>& timestampWithTz2) {
+    const auto unit = unit_.value_or(
+        fromDateTimeUnitString(unitString, true /*throwIfInvalid*/).value());
+
+    // Presto's behavior is to use the time zone of the first parameter to
+    // perform the calculation. Note that always normalizing to UTC is not
+    // correct as calculations may cross daylight savings boundaries.
+    auto timeZoneId = unpackZoneKeyId(*timestampWithTz1);
+
+    result = diffTimestampWithTimeZone(
+        unit,
+        *timestampWithTz1,
+        pack(unpackMillisUtc(*timestampWithTz2), timeZoneId));
   }
 };
 
@@ -1432,8 +1444,12 @@ struct DateFormatFunction : public TimestampWithTimezoneSupport<T> {
 
  private:
   FOLLY_ALWAYS_INLINE void setFormatter(const arg_type<Varchar> formatString) {
-    mysqlDateTime_ = buildMysqlDateTimeFormatter(
-        std::string_view(formatString.data(), formatString.size()));
+    mysqlDateTime_ =
+        buildMysqlDateTimeFormatter(
+            std::string_view(formatString.data(), formatString.size()))
+            .thenOrThrow(folly::identity, [&](const Status& status) {
+              VELOX_USER_FAIL("{}", status.message());
+            });
     maxResultSize_ = mysqlDateTime_->maxResultSize(sessionTimeZone_);
   }
 
@@ -1470,7 +1486,7 @@ struct FromIso8601Timestamp {
       const arg_type<Varchar>* /*input*/) {
     auto sessionTzName = config.sessionTimezone();
     if (!sessionTzName.empty()) {
-      sessionTzID_ = tz::getTimeZoneID(sessionTzName);
+      sessionTimeZone_ = tz::locateZone(sessionTzName);
     }
   }
 
@@ -1483,19 +1499,19 @@ struct FromIso8601Timestamp {
       return castResult.error();
     }
 
-    auto [ts, tzID] = castResult.value();
+    auto [ts, timeZone] = castResult.value();
     // Input string may not contain a timezone - if so, it is interpreted in
     // session timezone.
-    if (tzID == -1) {
-      tzID = sessionTzID_;
+    if (!timeZone) {
+      timeZone = sessionTimeZone_;
     }
-    ts.toGMT(tzID);
-    result = pack(ts, tzID);
+    ts.toGMT(*timeZone);
+    result = pack(ts, timeZone->id());
     return Status::OK();
   }
 
  private:
-  int16_t sessionTzID_{0};
+  const tz::TimeZone* sessionTimeZone_{tz::locateZone(0)}; // default to GMT.
 };
 
 template <typename T>
@@ -1503,7 +1519,9 @@ struct DateParseFunction {
   VELOX_DEFINE_FUNCTION_TYPES(T);
 
   std::shared_ptr<DateTimeFormatter> format_;
-  std::optional<int64_t> sessionTzID_;
+
+  // By default, assume 0 (GMT).
+  const tz::TimeZone* sessionTimeZone_{tz::locateZone(0)};
   bool isConstFormat_ = false;
 
   FOLLY_ALWAYS_INLINE void initialize(
@@ -1512,14 +1530,18 @@ struct DateParseFunction {
       const arg_type<Varchar>* /*input*/,
       const arg_type<Varchar>* formatString) {
     if (formatString != nullptr) {
-      format_ = buildMysqlDateTimeFormatter(
-          std::string_view(formatString->data(), formatString->size()));
+      format_ =
+          buildMysqlDateTimeFormatter(
+              std::string_view(formatString->data(), formatString->size()))
+              .thenOrThrow(folly::identity, [&](const Status& status) {
+                VELOX_USER_FAIL("{}", status.message());
+              });
       isConstFormat_ = true;
     }
 
     auto sessionTzName = config.sessionTimezone();
     if (!sessionTzName.empty()) {
-      sessionTzID_ = tz::getTimeZoneID(sessionTzName);
+      sessionTimeZone_ = tz::locateZone(sessionTzName);
     }
   }
 
@@ -1529,7 +1551,10 @@ struct DateParseFunction {
       const arg_type<Varchar>& format) {
     if (!isConstFormat_) {
       format_ = buildMysqlDateTimeFormatter(
-          std::string_view(format.data(), format.size()));
+                    std::string_view(format.data(), format.size()))
+                    .thenOrThrow(folly::identity, [&](const Status& status) {
+                      VELOX_USER_FAIL("{}", status.message());
+                    });
     }
 
     auto dateTimeResult = format_->parse((std::string_view)(input));
@@ -1537,10 +1562,7 @@ struct DateParseFunction {
       return dateTimeResult.error();
     }
 
-    // Since MySql format has no timezone specifier, simply check if session
-    // timezone was provided. If not, fallback to 0 (GMT).
-    int16_t timezoneId = sessionTzID_.value_or(0);
-    dateTimeResult->timestamp.toGMT(timezoneId);
+    dateTimeResult->timestamp.toGMT(*sessionTimeZone_);
     result = dateTimeResult->timestamp;
     return Status::OK();
   }
@@ -1577,8 +1599,8 @@ struct FormatDateTimeFunction {
       const arg_type<Varchar>& formatString) {
     ensureFormatter(formatString);
 
-    const auto timestamp = unpackTimestampUtc(timestampWithTimezone);
-    const auto timeZoneId = unpackZoneKeyId(timestampWithTimezone);
+    const auto timestamp = unpackTimestampUtc(*timestampWithTimezone);
+    const auto timeZoneId = unpackZoneKeyId(*timestampWithTimezone);
     auto* timezonePtr = tz::locateZone(tz::getTimeZoneName(timeZoneId));
 
     const auto maxResultSize = jodaDateTime_->maxResultSize(timezonePtr);
@@ -1594,9 +1616,12 @@ struct FormatDateTimeFunction {
   }
 
   FOLLY_ALWAYS_INLINE void setFormatter(const arg_type<Varchar>& formatString) {
-    jodaDateTime_ = buildJodaDateTimeFormatter(
-        std::string_view(formatString.data(), formatString.size()));
-    maxResultSize_ = jodaDateTime_->maxResultSize(sessionTimeZone_);
+    buildJodaDateTimeFormatter(
+        std::string_view(formatString.data(), formatString.size()))
+        .thenOrThrow([this](auto formatter) {
+          jodaDateTime_ = formatter;
+          maxResultSize_ = jodaDateTime_->maxResultSize(sessionTimeZone_);
+        });
   }
 
   void format(
@@ -1621,7 +1646,7 @@ struct ParseDateTimeFunction {
   VELOX_DEFINE_FUNCTION_TYPES(T);
 
   std::shared_ptr<DateTimeFormatter> format_;
-  std::optional<int64_t> sessionTzID_;
+  const tz::TimeZone* sessionTimeZone_{tz::locateZone(0)}; // GMT
   bool isConstFormat_ = false;
 
   FOLLY_ALWAYS_INLINE void initialize(
@@ -1631,13 +1656,16 @@ struct ParseDateTimeFunction {
       const arg_type<Varchar>* format) {
     if (format != nullptr) {
       format_ = buildJodaDateTimeFormatter(
-          std::string_view(format->data(), format->size()));
+                    std::string_view(format->data(), format->size()))
+                    .thenOrThrow(folly::identity, [&](const Status& status) {
+                      VELOX_USER_FAIL("{}", status.message());
+                    });
       isConstFormat_ = true;
     }
 
     auto sessionTzName = config.sessionTimezone();
     if (!sessionTzName.empty()) {
-      sessionTzID_ = tz::getTimeZoneID(sessionTzName);
+      sessionTimeZone_ = tz::locateZone(sessionTzName);
     }
   }
 
@@ -1647,7 +1675,10 @@ struct ParseDateTimeFunction {
       const arg_type<Varchar>& format) {
     if (!isConstFormat_) {
       format_ = buildJodaDateTimeFormatter(
-          std::string_view(format.data(), format.size()));
+                    std::string_view(format.data(), format.size()))
+                    .thenOrThrow(folly::identity, [&](const Status& status) {
+                      VELOX_USER_FAIL("{}", status.message());
+                    });
     }
     auto dateTimeResult =
         format_->parse(std::string_view(input.data(), input.size()));
@@ -1657,11 +1688,10 @@ struct ParseDateTimeFunction {
 
     // If timezone was not parsed, fallback to the session timezone. If there's
     // no session timezone, fallback to 0 (GMT).
-    int16_t timezoneId = dateTimeResult->timezoneId != -1
-        ? dateTimeResult->timezoneId
-        : sessionTzID_.value_or(0);
-    dateTimeResult->timestamp.toGMT(timezoneId);
-    result = pack(dateTimeResult->timestamp, timezoneId);
+    const auto* timeZone =
+        dateTimeResult->timezone ? dateTimeResult->timezone : sessionTimeZone_;
+    dateTimeResult->timestamp.toGMT(*timeZone);
+    result = pack(dateTimeResult->timestamp, timeZone->id());
     return Status::OK();
   }
 };
@@ -1721,6 +1751,16 @@ template <typename T>
 struct ToISO8601Function {
   VELOX_DEFINE_FUNCTION_TYPES(T);
 
+  ToISO8601Function() {
+    auto formatter =
+        functions::buildJodaDateTimeFormatter("yyyy-MM-dd'T'HH:mm:ss.SSSZZ");
+    VELOX_CHECK(
+        !formatter.hasError(),
+        "Default format should always be valid, error: {}",
+        formatter.error().message());
+    formatter_ = formatter.value();
+  }
+
   FOLLY_ALWAYS_INLINE void initialize(
       const std::vector<TypePtr>& inputTypes,
       const core::QueryConfig& config,
@@ -1745,8 +1785,8 @@ struct ToISO8601Function {
   FOLLY_ALWAYS_INLINE void call(
       out_type<Varchar>& result,
       const arg_type<TimestampWithTimezone>& timestampWithTimezone) {
-    const auto timestamp = unpackTimestampUtc(timestampWithTimezone);
-    const auto timeZoneId = unpackZoneKeyId(timestampWithTimezone);
+    const auto timestamp = unpackTimestampUtc(*timestampWithTimezone);
+    const auto timeZoneId = unpackZoneKeyId(*timestampWithTimezone);
     const auto* timeZone = tz::locateZone(tz::getTimeZoneName(timeZoneId));
 
     toIso8601(timestamp, timeZone, result);
@@ -1759,14 +1799,13 @@ struct ToISO8601Function {
       out_type<Varchar>& result) const {
     const auto maxResultSize = formatter_->maxResultSize(timeZone);
     result.reserve(maxResultSize);
-    const auto resultSize =
-        formatter_->format(timestamp, timeZone, maxResultSize, result.data());
+    const auto resultSize = formatter_->format(
+        timestamp, timeZone, maxResultSize, result.data(), false, "Z");
     result.resize(resultSize);
   }
 
   const tz::TimeZone* timeZone_{nullptr};
-  std::shared_ptr<DateTimeFormatter> formatter_ =
-      functions::buildJodaDateTimeFormatter("yyyy-MM-dd'T'HH:mm:ss.SSSZZ");
+  std::shared_ptr<DateTimeFormatter> formatter_;
 };
 
 template <typename T>
@@ -1780,7 +1819,7 @@ struct AtTimezoneFunction : public TimestampWithTimezoneSupport<T> {
       const core::QueryConfig& config,
       const arg_type<TimestampWithTimezone>* /*tsWithTz*/,
       const arg_type<Varchar>* timezone) {
-    if (timezone != nullptr) {
+    if (timezone) {
       targetTimezoneID_ = tz::getTimeZoneID(
           std::string_view(timezone->data(), timezone->size()));
     }
@@ -1790,7 +1829,7 @@ struct AtTimezoneFunction : public TimestampWithTimezoneSupport<T> {
       out_type<TimestampWithTimezone>& result,
       const arg_type<TimestampWithTimezone>& tsWithTz,
       const arg_type<Varchar>& timezone) {
-    const auto inputMs = unpackMillisUtc(tsWithTz);
+    const auto inputMs = unpackMillisUtc(*tsWithTz);
     const auto targetTimezoneID = targetTimezoneID_.has_value()
         ? targetTimezoneID_.value()
         : tz::getTimeZoneID(std::string_view(timezone.data(), timezone.size()));

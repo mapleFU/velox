@@ -59,6 +59,10 @@ class ConstantExpr : public SpecialForm {
     return sharedConstantValue_;
   }
 
+  void setDefaultNullRowsSkipped(bool defaultNullRowsSkipped) {
+    stats_.defaultNullRowsSkipped = defaultNullRowsSkipped;
+  }
+
   std::string toString(bool recursive = true) const override;
 
   std::string toSql(

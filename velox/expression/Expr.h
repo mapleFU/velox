@@ -59,18 +59,24 @@ struct ExprStats {
   /// size.
   uint64_t numProcessedVectors{0};
 
+  /// Whether default-null behavior of an expression resulted in skipping
+  /// evaluation of rows.
+  bool defaultNullRowsSkipped{false};
+
   void add(const ExprStats& other) {
     timing.add(other.timing);
     numProcessedRows += other.numProcessedRows;
     numProcessedVectors += other.numProcessedVectors;
+    defaultNullRowsSkipped |= other.defaultNullRowsSkipped;
   }
 
   std::string toString() const {
     return fmt::format(
-        "timing: {}, numProcessedRows: {}, numProcessedVectors: {}",
+        "timing: {}, numProcessedRows: {}, numProcessedVectors: {}, defaultNullRowsSkipped: {}",
         timing.toString(),
         numProcessedRows,
-        numProcessedVectors);
+        numProcessedVectors,
+        defaultNullRowsSkipped ? "true" : "false");
   }
 };
 
@@ -265,6 +271,14 @@ class Expr {
     cachedDictionaryIndices_ = nullptr;
   }
 
+  virtual void clearCache() {
+    sharedSubexprResults_.clear();
+    clearMemo();
+    for (auto& input : inputs_) {
+      input->clearCache();
+    }
+  }
+
   const TypePtr& type() const {
     return type_;
   }
@@ -285,6 +299,10 @@ class Expr {
     return false;
   }
 
+  bool hasConditionals() const {
+    return hasConditionals_;
+  }
+
   bool isDeterministic() const {
     return deterministic_;
   }
@@ -301,6 +319,20 @@ class Expr {
 
   void setMultiplyReferenced() {
     isMultiplyReferenced_ = true;
+  }
+
+  /// True if this is a special form where the next argument will always be
+  /// evaluated on a subset of the rows for which the previous one was
+  /// evaluated.  This is true of AND and no other at this time.  This implies
+  /// that lazies can be loaded on first use and not before starting evaluating
+  /// the form.  This is so because a subsequent use will never access rows that
+  /// were not in scope for the previous one.
+  ///
+  /// 这个应该是和 LazyLoad / Incremental Exec 有关的.
+  /// 在 https://github.com/facebookincubator/velox/pull/7433 引入. 如果是 AND 这种
+  /// 前面会降低后面 Selectivity 的, 可能可以有一些优化. 目前只有它是 ConjunctAnd 才会出现.
+  virtual bool evaluatesArgumentsOnNonIncreasingSelection() const {
+    return false;
   }
 
   std::vector<common::Subfield> extractSubfields() const;
@@ -379,7 +411,7 @@ class Expr {
     return vectorFunctionMetadata_;
   }
 
-  auto& inputValues() {
+  std::vector<VectorPtr>& inputValues() {
     return inputValues_;
   }
 
@@ -489,15 +521,16 @@ class Expr {
   /// 'evaluateSharedSubexpr'.
   ///
   /// Shared Sub Expr 在 comment 里面定义又叫 CSE.
-  bool shouldEvaluateSharedSubexp() const {
+  bool shouldEvaluateSharedSubexp(EvalCtx& context) const {
     // 需要是:
     // 1. deterministic (不 determinstic 感觉不能增量算, 要每次自己算了)
     // 2. 被多个表达式依赖
-    // 3. 有 input --> i.e. not a constant or field access (并非指向表达式结果的 FieldRef) 
+    // 3. 有 input --> i.e. not a constant or field access (并非指向表达式结果的 FieldRef)
     //   expression. 这些表达式都很轻, 感觉也没必要 CSE 这种搞法了.
     //
     // 这个还是看算子树的情况
-    return deterministic_ && isMultiplyReferenced_ && !inputs_.empty();
+    return deterministic_ && isMultiplyReferenced_ && !inputs_.empty() &&
+        context.sharedSubExpressionReuseEnabled();
   }
 
   /// Evaluate common sub-expression. Check if sharedSubexprValues_ already has
@@ -582,20 +615,6 @@ class Expr {
   // referenced fields.
   virtual void computeDistinctFields();
 
-  // True if this is a spcial form where the next argument will always be
-  // evaluated on a subset of the rows for which the previous one was evaluated.
-  // This is true of AND and no other at this time.  This implies that lazies
-  // can be loaded on first use and not before starting evaluating the form.
-  // This is so because a subsequent use will never access rows that were not in
-  // scope for the previous one.
-  //
-  // 这个应该是和 LazyLoad / Incremental Exec 有关的.
-  // 在 https://github.com/facebookincubator/velox/pull/7433 引入. 如果是 AND 这种
-  // 前面会降低后面 Selectivity 的, 可能可以有一些优化. 目前只有它是 ConjunctAnd 才会出现.
-  virtual bool evaluatesArgumentsOnNonIncreasingSelection() const {
-    return false;
-  }
-
   // Output 的类型.
   const TypePtr type_;
   const std::vector<std::shared_ptr<Expr>> inputs_;
@@ -604,11 +623,9 @@ class Expr {
   // 在 Arrow Expression 系统中, Expr 直接分为 Call, Parameter, Literal.
   // 这里 Velox 的 Call 就是直接 Expr 的 vectorFunction.
   const std::shared_ptr<VectorFunction> vectorFunction_;
-<<<<<<< HEAD
-  // 子类做的标记.
-=======
+
   const VectorFunctionMetadata vectorFunctionMetadata_;
->>>>>>> main
+  // 子类做的标记.
   const bool specialForm_;
   const bool supportsFlatNoNullsFastPath_;
   const bool trackCpuUsage_;
@@ -627,15 +644,15 @@ class Expr {
   // parent Expr.
   //
   // Input 的 distinct fields, 就是来源的字段是第几个, 应该可以帮助做一些计算.
-  // 这里保证是某种 SpecialForm. 可以来自 EvalCtx 输入行的一个字段上, 
+  // 这里保证是某种 SpecialForm. 可以来自 EvalCtx 输入行的一个字段上,
   // 或者是一个表达式结果.
-  std::vector<FieldReference * FOLLY_NONNULL> distinctFields_;
+  std::vector<FieldReference*> distinctFields_;
 
   // Fields referenced by multiple inputs, which is subset of distinctFields_.
   // Used to determine pre-loading of lazy vectors at current expr.
   //
   // 被多个表达式依赖. 这个允许做一些重复计算.
-  std::unordered_set<FieldReference * FOLLY_NONNULL> multiplyReferencedFields_;
+  std::unordered_set<FieldReference*> multiplyReferencedFields_;
 
   // True if a null in any of 'distinctFields_' causes 'this' to be
   // null for the row.
@@ -662,6 +679,37 @@ class Expr {
   // 区分出来, 会在执行的时候设置.
   std::vector<VectorPtr> inputValues_;
 
+  /// Represents a set of inputs referenced by 'distinctFields_' that are
+  /// captured when the 'evaluateSharedSubexpr()' method is called on a shared
+  /// sub-expression. The purpose of this class is to ensure that cached
+  /// results are re-used for the correct set of live input vectors.
+  class InputForSharedResults {
+   public:
+    void addInput(const std::shared_ptr<BaseVector>& input) {
+      inputVectors_.push_back(input.get());
+      inputWeakVectors_.push_back(input);
+    }
+
+    bool operator<(const InputForSharedResults& other) const {
+      return inputVectors_ < other.inputVectors_;
+    }
+
+    bool isExpired() const {
+      for (const auto& input : inputWeakVectors_) {
+        if (input.expired()) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+   private:
+    // Used as a key in a map that keeps track of cached results.
+    std::vector<const BaseVector*> inputVectors_;
+    // Used to check if inputs have expired.
+    std::vector<std::weak_ptr<BaseVector>> inputWeakVectors_;
+  };
+
   struct SharedResults {
     // The rows for which 'sharedSubexprValues_' has a value.
     //
@@ -677,7 +725,7 @@ class Expr {
   // evaluateSharedSubexpr() is called to the cached shared results.
   //
   // CSE 计算的结果, 受到 `maxSharedSubexprResultsCached()` 的限制.
-  std::map<std::vector<const BaseVector*>, SharedResults> sharedSubexprResults_;
+  std::map<InputForSharedResults, SharedResults> sharedSubexprResults_;
 
   // Pointers to the last base vector of cachable dictionary input. Used to
   // check if the current input's base vector is the same as the last. If it's
@@ -730,8 +778,7 @@ class Expr {
 };
 
 /// Generate a selectivity vector of a single row.
-SelectivityVector* FOLLY_NONNULL
-singleRow(LocalSelectivityVector& holder, vector_size_t row);
+SelectivityVector* singleRow(LocalSelectivityVector& holder, vector_size_t row);
 
 using ExprPtr = std::shared_ptr<Expr>;
 
@@ -774,6 +821,11 @@ class ExprSet {
       std::vector<VectorPtr>& result);
 
   void clear();
+
+  /// Clears the internally cached buffers used for shared sub-expressions and
+  /// dictionary memoization which are allocated through memory pool. This is
+  /// used by memory arbitration to reclaim memory.
+  void clearCache();
 
   core::ExecCtx* execCtx() const {
     return execCtx_;
@@ -826,10 +878,10 @@ class ExprSet {
   // The distinct references to input columns among all expressions in ExprSet.
   //
   // 这个是所有 Expr 的 distinctFields 的并集.
-  std::vector<FieldReference * FOLLY_NONNULL> distinctFields_;
+  std::vector<FieldReference*> distinctFields_;
 
   // Fields referenced by multiple expressions in ExprSet.
-  std::unordered_set<FieldReference * FOLLY_NONNULL> multiplyReferencedFields_;
+  std::unordered_set<FieldReference*> multiplyReferencedFields_;
 
   // Distinct Exprs reachable from 'exprs_' for which reset() needs to
   // be called at the start of eval().

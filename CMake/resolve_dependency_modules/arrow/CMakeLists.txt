@@ -24,6 +24,7 @@ if(VELOX_ENABLE_ARROW)
   set(ARROW_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/arrow_ep")
   set(ARROW_CMAKE_ARGS
       -DARROW_PARQUET=OFF
+      -DARROW_DEPENDENCY_SOURCE=AUTO
       -DARROW_WITH_THRIFT=ON
       -DARROW_WITH_LZ4=ON
       -DARROW_WITH_SNAPPY=ON
@@ -61,7 +62,7 @@ if(VELOX_ENABLE_ARROW)
       "https://archive.apache.org/dist/arrow/arrow-${VELOX_ARROW_BUILD_VERSION}/apache-arrow-${VELOX_ARROW_BUILD_VERSION}.tar.gz"
   )
 
-  resolve_dependency_url(ARROW)
+  velox_resolve_dependency_url(ARROW)
 
   ExternalProject_Add(
     arrow_ep

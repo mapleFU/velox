@@ -19,8 +19,7 @@
 #include "velox/vector/ConstantVector.h"
 #include "velox/vector/TypeAliases.h"
 
-namespace facebook {
-namespace velox {
+namespace facebook::velox {
 
 template <>
 const bool* FlatVector<bool>::rawValues() const {
@@ -41,7 +40,7 @@ template <>
 void FlatVector<bool>::set(vector_size_t idx, bool value) {
   VELOX_DCHECK_LT(idx, BaseVector::length_);
   ensureValues();
-  VELOX_DCHECK(!values_->isView())
+  VELOX_DCHECK(!values_->isView());
   if (BaseVector::rawNulls_) {
     BaseVector::setNull(idx, false);
   }
@@ -105,7 +104,7 @@ template <>
 void FlatVector<StringView>::set(vector_size_t idx, StringView value) {
   VELOX_DCHECK_LT(idx, BaseVector::length_);
   ensureValues();
-  VELOX_DCHECK(!values_->isView())
+  VELOX_DCHECK(!values_->isView());
   if (BaseVector::rawNulls_) {
     BaseVector::setNull(idx, false);
   }
@@ -130,7 +129,7 @@ void FlatVector<StringView>::setNoCopy(
     const StringView& value) {
   VELOX_DCHECK_LT(idx, BaseVector::length_);
   ensureValues();
-  VELOX_DCHECK(!values_->isView())
+  VELOX_DCHECK(!values_->isView());
   if (BaseVector::nulls_) {
     BaseVector::setNull(idx, false);
   }
@@ -368,10 +367,9 @@ void FlatVector<StringView>::validate(
       VELOX_CHECK(
           isValid,
           "String view at idx {} points outside of the string buffers",
-          i)
+          i);
     }
   }
 }
 
-} // namespace velox
-} // namespace facebook
+} // namespace facebook::velox

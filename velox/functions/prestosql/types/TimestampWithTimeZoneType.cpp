@@ -23,14 +23,14 @@
 namespace facebook::velox {
 namespace {
 
-int64_t getTimeZoneIDFromConfig(const core::QueryConfig& config) {
+const tz::TimeZone* getTimeZoneFromConfig(const core::QueryConfig& config) {
   const auto sessionTzName = config.sessionTimezone();
 
   if (!sessionTzName.empty()) {
-    return tz::getTimeZoneID(sessionTzName);
+    return tz::locateZone(sessionTzName);
   }
 
-  return 0;
+  return tz::locateZone(0); // GMT
 }
 
 void castFromTimestamp(
@@ -39,7 +39,7 @@ void castFromTimestamp(
     const SelectivityVector& rows,
     int64_t* rawResults) {
   const auto& config = context.execCtx()->queryCtx()->queryConfig();
-  int64_t sessionTzID = getTimeZoneIDFromConfig(config);
+  const auto* sessionTimeZone = getTimeZoneFromConfig(config);
 
   const auto adjustTimestampToTimezone = config.adjustTimestampToTimezone();
 
@@ -49,9 +49,9 @@ void castFromTimestamp(
       // Treat TIMESTAMP as wall time in session time zone. This means that in
       // order to get its UTC representation we need to shift the value by the
       // offset of the time zone.
-      ts.toGMT(sessionTzID);
+      ts.toGMT(*sessionTimeZone);
     }
-    rawResults[row] = pack(ts.toMillis(), sessionTzID);
+    rawResults[row] = pack(ts.toMillis(), sessionTimeZone->id());
   });
 }
 
@@ -61,17 +61,17 @@ void castFromDate(
     const SelectivityVector& rows,
     int64_t* rawResults) {
   const auto& config = context.execCtx()->queryCtx()->queryConfig();
-  int64_t sessionTzID = getTimeZoneIDFromConfig(config);
+  const auto* sessionTimeZone = getTimeZoneFromConfig(config);
 
   static const int64_t kSecondsInDay = 86400;
 
   context.applyToSelectedNoThrow(rows, [&](auto row) {
     const auto days = inputVector.valueAt(row);
     Timestamp ts{days * kSecondsInDay, 0};
-    if (sessionTzID != 0) {
-      ts.toGMT(sessionTzID);
+    if (sessionTimeZone != nullptr) {
+      ts.toGMT(*sessionTimeZone);
     }
-    rawResults[row] = pack(ts.toMillis(), sessionTzID);
+    rawResults[row] = pack(ts.toMillis(), sessionTimeZone->id());
   });
 }
 
@@ -88,15 +88,15 @@ void castFromString(
     if (castResult.hasError()) {
       context.setStatus(row, castResult.error());
     } else {
-      auto [ts, tzID] = castResult.value();
+      auto [ts, timeZone] = castResult.value();
       // Input string may not contain a timezone - if so, it is interpreted in
       // session timezone.
-      if (tzID == -1) {
+      if (timeZone == nullptr) {
         const auto& config = context.execCtx()->queryCtx()->queryConfig();
-        tzID = getTimeZoneIDFromConfig(config);
+        timeZone = getTimeZoneFromConfig(config);
       }
-      ts.toGMT(tzID);
-      rawResults[row] = pack(ts.toMillis(), tzID);
+      ts.toGMT(*timeZone);
+      rawResults[row] = pack(ts.toMillis(), timeZone->id());
     }
   });
 }
@@ -109,9 +109,13 @@ void castToString(
   auto* flatResult = result.as<FlatVector<StringView>>();
   const auto* timestamps = input.as<SimpleVector<int64_t>>();
 
-  auto formatter =
-      functions::buildJodaDateTimeFormatter("yyyy-MM-dd HH:mm:ss.SSS zzzz");
-
+  auto expectedFormatter =
+      functions::buildJodaDateTimeFormatter("yyyy-MM-dd HH:mm:ss.SSS ZZZ");
+  VELOX_CHECK(
+      !expectedFormatter.hasError(),
+      "Default format should always be valid, error: {}",
+      expectedFormatter.error().message());
+  auto formatter = expectedFormatter.value();
   context.applyToSelectedNoThrow(rows, [&](auto row) {
     const auto timestampWithTimezone = timestamps->valueAt(row);
 
@@ -146,7 +150,7 @@ void castToTimestamp(
     auto ts = unpackTimestampUtc(timestampWithTimezone);
     if (!adjustTimestampToTimezone) {
       // Convert UTC to the given time zone.
-      ts.toTimezone(unpackZoneKeyId(timestampWithTimezone));
+      ts.toTimezone(*tz::locateZone(unpackZoneKeyId(timestampWithTimezone)));
     }
     flatResult->set(row, ts);
   });
@@ -163,7 +167,8 @@ void castToDate(
   context.applyToSelectedNoThrow(rows, [&](auto row) {
     auto timestampWithTimezone = timestampVector->valueAt(row);
     auto timestamp = unpackTimestampUtc(timestampWithTimezone);
-    timestamp.toTimezone(unpackZoneKeyId(timestampWithTimezone));
+    timestamp.toTimezone(
+        *tz::locateZone(unpackZoneKeyId(timestampWithTimezone)));
 
     const auto days = util::toDate(timestamp, nullptr);
     flatResult->set(row, days);

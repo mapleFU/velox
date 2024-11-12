@@ -16,10 +16,10 @@
 
 #include "velox/connectors/hive/storage_adapters/gcs/GCSFileSystem.h"
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/common/config/Config.h"
 #include "velox/common/file/File.h"
 #include "velox/connectors/hive/FileHandle.h"
 #include "velox/connectors/hive/storage_adapters/gcs/GCSUtil.h"
-#include "velox/core/Config.h"
 #include "velox/exec/tests/utils/TempFilePath.h"
 
 #include <boost/process.hpp>
@@ -139,12 +139,13 @@ class GCSFileSystemTest : public testing::Test {
                              << ">, status=" << object.status();
   }
 
-  std::shared_ptr<const Config> testGcsOptions() const {
+  std::shared_ptr<const config::ConfigBase> testGcsOptions() const {
     std::unordered_map<std::string, std::string> configOverride = {};
 
     configOverride["hive.gcs.scheme"] = "http";
     configOverride["hive.gcs.endpoint"] = "localhost:" + testbench_->port();
-    return std::make_shared<const core::MemConfig>(std::move(configOverride));
+    return std::make_shared<const config::ConfigBase>(
+        std::move(configOverride));
   }
 
   std::string preexistingBucketName() {
@@ -309,7 +310,7 @@ TEST_F(GCSFileSystemTest, credentialsConfig) {
   // for authentication because the key has been deactivated on the server-side,
   // *and* the account(s) involved are deleted *and* they are not the accounts
   // or projects do not match its contents.
-  configOverride["hive.gcs.credentials"] = R"""({
+  auto creds = R"""({
       "type": "service_account",
       "project_id": "foo-project",
       "private_key_id": "a1a111aa1111a11a11a11aa111a111a1a1111111",
@@ -343,13 +344,17 @@ TEST_F(GCSFileSystemTest, credentialsConfig) {
       "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
       "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/foo-email%40foo-project.iam.gserviceaccount.com"
   })""";
+  auto jsonFile = exec::test::TempFilePath::create();
+  std::ofstream credsOut(jsonFile->getPath());
+  credsOut << creds;
+  credsOut.close();
+  configOverride["hive.gcs.json-key-file-path"] = jsonFile->getPath();
   configOverride["hive.gcs.scheme"] = "http";
   configOverride["hive.gcs.endpoint"] = "localhost:" + testbench_->port();
-  std::shared_ptr<const Config> conf =
-      std::make_shared<const core::MemConfig>(std::move(configOverride));
+  std::shared_ptr<const config::ConfigBase> conf =
+      std::make_shared<const config::ConfigBase>(std::move(configOverride));
 
   filesystems::GCSFileSystem gcfs(conf);
-
   gcfs.initializeClient();
   try {
     const std::string gcsFile =

@@ -76,8 +76,10 @@ class PrestoSerializerTest
     common::CompressionKind kind = GetParam();
     const bool nullsFirst =
         serdeOptions == nullptr ? false : serdeOptions->nullsFirst;
+    const bool preserveEncodings =
+        serdeOptions == nullptr ? false : serdeOptions->preserveEncodings;
     serializer::presto::PrestoVectorSerde::PrestoOptions paramOptions{
-        useLosslessTimestamp, kind, nullsFirst};
+        useLosslessTimestamp, kind, nullsFirst, preserveEncodings};
 
     return paramOptions;
   }
@@ -117,10 +119,13 @@ class PrestoSerializerTest
           rowVector.get(), indexRanges.value(), sizes.data(), scratch);
       serializer->append(rowVector, indexRanges.value(), scratch);
     } else if (rows.has_value()) {
-      raw_vector<vector_size_t*> sizes(rows.value().size());
-      std::fill(sizes.begin(), sizes.end(), &sizeEstimate);
+      raw_vector<vector_size_t> sizes(rows.value().size());
+      std::vector<vector_size_t*> sizePointers(rows.value().size());
+      for (vector_size_t i = 0; i < sizes.size(); ++i) {
+        sizePointers[i] = &sizes[i];
+      }
       serde_->estimateSerializedSize(
-          rowVector.get(), rows.value(), sizes.data(), scratch);
+          rowVector.get(), rows.value(), sizePointers.data(), scratch);
       serializer->append(rowVector, rows.value(), scratch);
     } else {
       vector_size_t* sizes = &sizeEstimate;
@@ -151,12 +156,13 @@ class PrestoSerializerTest
     return {static_cast<int64_t>(size), sizeEstimate};
   }
 
-  ByteInputStream toByteStream(const std::string& input) {
+  std::unique_ptr<ByteInputStream> toByteStream(const std::string& input) {
     ByteRange byteRange{
         reinterpret_cast<uint8_t*>(const_cast<char*>(input.data())),
         (int32_t)input.length(),
         0};
-    return ByteInputStream({byteRange});
+    return std::make_unique<BufferInputStream>(
+        std::vector<ByteRange>{{byteRange}});
   }
 
   void validateLexer(
@@ -199,7 +205,7 @@ class PrestoSerializerTest
     validateLexer(input, paramOptions);
     RowVectorPtr result;
     serde_->deserialize(
-        &byteStream, pool_.get(), rowType, &result, 0, &paramOptions);
+        byteStream.get(), pool_.get(), rowType, &result, 0, &paramOptions);
     return result;
   }
 
@@ -276,7 +282,12 @@ class PrestoSerializerTest
     for (auto i = 0; i < serialized.size(); ++i) {
       auto byteStream = toByteStream(serialized[i]);
       serde_->deserialize(
-          &byteStream, pool_.get(), rowType, &result, offset, &paramOptions);
+          byteStream.get(),
+          pool_.get(),
+          rowType,
+          &result,
+          offset,
+          &paramOptions);
       offset = result->size();
     }
 
@@ -386,7 +397,12 @@ class PrestoSerializerTest
     for (auto i = 0; i < 3; ++i) {
       auto byteStream = toByteStream(serialized);
       serde_->deserialize(
-          &byteStream, pool_.get(), rowType, &result, offset, &paramOptions);
+          byteStream.get(),
+          pool_.get(),
+          rowType,
+          &result,
+          offset,
+          &paramOptions);
       offset = result->size();
     }
 
@@ -445,7 +461,7 @@ class PrestoSerializerTest
       auto piece = pieces[pieceIdx];
       auto byteStream = toByteStream(piece);
       serde_->deserialize(
-          &byteStream,
+          byteStream.get(),
           pool_.get(),
           rowType,
           &deserialized,
@@ -456,14 +472,14 @@ class PrestoSerializerTest
           BaseVector::create<RowVector>(rowType, 0, pool_.get());
       byteStream = toByteStream(piece);
       serde_->deserialize(
-          &byteStream, pool_.get(), rowType, &single, 0, &paramOptions);
+          byteStream.get(), pool_.get(), rowType, &single, 0, &paramOptions);
       assertEqualVectors(single->childAt(0), vectors[pieceIdx]);
 
       RowVectorPtr single2 =
           BaseVector::create<RowVector>(rowType, 0, pool_.get());
       byteStream = toByteStream(reusedPieces[pieceIdx]);
       serde_->deserialize(
-          &byteStream, pool_.get(), rowType, &single2, 0, &paramOptions);
+          byteStream.get(), pool_.get(), rowType, &single2, 0, &paramOptions);
       assertEqualVectors(single2->childAt(0), vectors[pieceIdx]);
     }
     assertEqualVectors(concatenation, deserialized);
@@ -764,6 +780,15 @@ TEST_P(PrestoSerializerTest, basic) {
   testRoundTrip(rowVector);
 }
 
+TEST_P(PrestoSerializerTest, basicLarge) {
+  const vector_size_t numRows = 80'000;
+  auto rowVector = makeRowVector(
+      {makeFlatVector<int64_t>(numRows, [](vector_size_t row) { return row; }),
+       makeFlatVector<std::string>(
+           numRows, [](vector_size_t row) { return std::string(1024, 'x'); })});
+  testRoundTrip(rowVector);
+}
+
 /// Test serialization of a dictionary vector that adds nulls to the base
 /// vector.
 TEST_P(PrestoSerializerTest, dictionaryWithExtraNulls) {
@@ -798,6 +823,33 @@ TEST_P(PrestoSerializerTest, emptyPage) {
   auto rowType = asRowType(rowVector->type());
   auto deserialized = deserialize(rowType, out.str(), nullptr);
   assertEqualVectors(deserialized, rowVector);
+}
+
+TEST_P(PrestoSerializerTest, initMemory) {
+  const auto numRows = 100;
+  auto testFunc = [&](TypePtr type, int64_t expectedBytes) {
+    const auto poolMemUsage = pool_->usedBytes();
+    auto arena = std::make_unique<StreamArena>(pool_.get());
+    const auto paramOptions = getParamSerdeOptions(nullptr);
+    const auto rowType = ROW({type});
+    const auto serializer = serde_->createIterativeSerializer(
+        rowType, numRows, arena.get(), &paramOptions);
+    ASSERT_EQ(pool_->usedBytes() - poolMemUsage, expectedBytes);
+  };
+
+  testFunc(BOOLEAN(), 0);
+  testFunc(TINYINT(), 0);
+  testFunc(SMALLINT(), 0);
+  testFunc(INTEGER(), 0);
+  testFunc(BIGINT(), 0);
+  testFunc(REAL(), 0);
+  testFunc(DOUBLE(), 0);
+  testFunc(VARCHAR(), 0);
+  testFunc(TIMESTAMP(), 0);
+  // For nested types, 2 pages allocation quantum for first offset (0).
+  testFunc(ROW({VARCHAR()}), 8192);
+  testFunc(ARRAY(INTEGER()), 8192);
+  testFunc(MAP(VARCHAR(), INTEGER()), 8192);
 }
 
 TEST_P(PrestoSerializerTest, serializeNoRowsSelected) {
@@ -931,7 +983,12 @@ TEST_P(PrestoSerializerTest, unknown) {
     for (auto i = 0; i < serialized.size(); ++i) {
       auto byteStream = toByteStream(serialized[i]);
       serde_->deserialize(
-          &byteStream, pool_.get(), rowType, &result, offset, &paramOptions);
+          byteStream.get(),
+          pool_.get(),
+          rowType,
+          &result,
+          offset,
+          &paramOptions);
       offset = result->size();
     }
 
@@ -974,11 +1031,16 @@ TEST_P(PrestoSerializerTest, multiPage) {
   for (int i = 0; i < testVectors.size(); i++) {
     RowVectorPtr& vec = testVectors[i];
     serde_->deserialize(
-        &byteStream, pool_.get(), rowType, &deserialized, 0, &paramOptions);
+        byteStream.get(),
+        pool_.get(),
+        rowType,
+        &deserialized,
+        0,
+        &paramOptions);
     if (i < testVectors.size() - 1) {
-      ASSERT_FALSE(byteStream.atEnd());
+      ASSERT_FALSE(byteStream->atEnd());
     } else {
-      ASSERT_TRUE(byteStream.atEnd());
+      ASSERT_TRUE(byteStream->atEnd());
     }
     assertEqualVectors(deserialized, vec);
     deserialized->validate({});
@@ -1100,41 +1162,58 @@ TEST_P(PrestoSerializerTest, dictionaryEncodingTurnedOff) {
       BaseVector::wrapInDictionary(nullptr, allIndices, 32, stringBase),
   });
 
-  std::ostringstream out;
-  serializeBatch(rows, &out, /*serdeOptions=*/nullptr);
-  const auto serialized = out.str();
+  for (bool preserveEncodings : {false, true}) {
+    SCOPED_TRACE(fmt::format("preserveEncodings: {}", preserveEncodings));
+    auto exptectedTransformedEncoding = preserveEncodings
+        ? VectorEncoding::Simple::DICTIONARY
+        : VectorEncoding::Simple::FLAT;
+    serializer::presto::PrestoVectorSerde::PrestoOptions serdeOptions;
+    serdeOptions.preserveEncodings = preserveEncodings;
+    std::ostringstream out;
+    serializeBatch(rows, &out, &serdeOptions);
+    const auto serialized = out.str();
 
-  auto rowType = asRowType(rows->type());
-  auto deserialized =
-      deserialize(rowType, serialized, /*serdeOptions=*/nullptr);
+    auto rowType = asRowType(rows->type());
+    auto deserialized = deserialize(rowType, serialized, &serdeOptions);
 
-  assertEqualVectors(rows, deserialized);
+    assertEqualVectors(rows, deserialized);
 
-  // smallInt + one index
-  ASSERT_EQ(deserialized->childAt(0)->encoding(), VectorEncoding::Simple::FLAT);
-  // int + one index
-  ASSERT_EQ(deserialized->childAt(1)->encoding(), VectorEncoding::Simple::FLAT);
-  // bigint + one index
-  ASSERT_EQ(
-      deserialized->childAt(2)->encoding(), VectorEncoding::Simple::DICTIONARY);
-  // bigint + quarter indices
-  ASSERT_EQ(
-      deserialized->childAt(3)->encoding(), VectorEncoding::Simple::DICTIONARY);
-  // bigint + all but one indices
-  ASSERT_EQ(deserialized->childAt(4)->encoding(), VectorEncoding::Simple::FLAT);
-  // bigint + all indices
-  ASSERT_EQ(deserialized->childAt(5)->encoding(), VectorEncoding::Simple::FLAT);
-  // string + one index
-  ASSERT_EQ(
-      deserialized->childAt(6)->encoding(), VectorEncoding::Simple::DICTIONARY);
-  // string + quarter indices
-  ASSERT_EQ(
-      deserialized->childAt(7)->encoding(), VectorEncoding::Simple::DICTIONARY);
-  // string + all but one indices
-  ASSERT_EQ(
-      deserialized->childAt(8)->encoding(), VectorEncoding::Simple::DICTIONARY);
-  // string + all indices
-  ASSERT_EQ(deserialized->childAt(9)->encoding(), VectorEncoding::Simple::FLAT);
+    // smallInt + one index
+    ASSERT_EQ(
+        deserialized->childAt(0)->encoding(), exptectedTransformedEncoding);
+    // int + one index
+    ASSERT_EQ(
+        deserialized->childAt(1)->encoding(), exptectedTransformedEncoding);
+    // bigint + one index
+    ASSERT_EQ(
+        deserialized->childAt(2)->encoding(),
+        VectorEncoding::Simple::DICTIONARY);
+    // bigint + quarter indices
+    ASSERT_EQ(
+        deserialized->childAt(3)->encoding(),
+        VectorEncoding::Simple::DICTIONARY);
+    // bigint + all but one indices
+    ASSERT_EQ(
+        deserialized->childAt(4)->encoding(), exptectedTransformedEncoding);
+    // bigint + all indices
+    ASSERT_EQ(
+        deserialized->childAt(5)->encoding(), exptectedTransformedEncoding);
+    // string + one index
+    ASSERT_EQ(
+        deserialized->childAt(6)->encoding(),
+        VectorEncoding::Simple::DICTIONARY);
+    // string + quarter indices
+    ASSERT_EQ(
+        deserialized->childAt(7)->encoding(),
+        VectorEncoding::Simple::DICTIONARY);
+    // string + all but one indices
+    ASSERT_EQ(
+        deserialized->childAt(8)->encoding(),
+        VectorEncoding::Simple::DICTIONARY);
+    // string + all indices
+    ASSERT_EQ(
+        deserialized->childAt(9)->encoding(), exptectedTransformedEncoding);
+  }
 }
 
 TEST_P(PrestoSerializerTest, emptyVectorBatchVectorSerializer) {
@@ -1434,7 +1513,7 @@ TEST_P(PrestoSerializerTest, checksum) {
   // This should fail because the checksums don't match.
   VELOX_ASSERT_THROW(
       serde_->deserialize(
-          &byteStream,
+          byteStream.get(),
           pool->addLeafChild("child").get(),
           ROW({BIGINT()}),
           &result,
@@ -1484,7 +1563,7 @@ TEST_F(PrestoSerializerTest, deserializeSingleColumn) {
     auto byteStream = toByteStream(input);
     VectorPtr deserialized;
     serde_->deserializeSingleColumn(
-        &byteStream, pool(), vector->type(), &deserialized, nullptr);
+        byteStream.get(), pool(), vector->type(), &deserialized, nullptr);
     assertEqualVectors(vector, deserialized);
   };
 
@@ -1536,6 +1615,13 @@ class PrestoSerializerBatchEstimateSizeTest : public testing::Test,
     if (!isRegisteredVectorSerde()) {
       serializer::presto::PrestoVectorSerde::registerVectorSerde();
     }
+    ASSERT_EQ(getVectorSerde()->kind(), VectorSerde::Kind::kPresto);
+    if (!isRegisteredNamedVectorSerde(VectorSerde::Kind::kPresto)) {
+      serializer::presto::PrestoVectorSerde::registerNamedVectorSerde();
+    }
+    ASSERT_EQ(
+        getNamedVectorSerde(VectorSerde::Kind::kPresto)->kind(),
+        VectorSerde::Kind::kPresto);
 
     memory::MemoryManager::testingSetInstance({});
   }
