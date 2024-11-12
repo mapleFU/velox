@@ -193,6 +193,9 @@ class MemoryManager {
   FOLLY_EXPORT static MemoryManager& deprecatedGetInstance(
       const MemoryManagerOptions& options = MemoryManagerOptions{});
 
+  /// Returns true if the memory manager has been set.
+  static bool testInstance();
+
   /// Used by test to override the process-wide memory manager.
   static MemoryManager& testingSetInstance(const MemoryManagerOptions& options);
 
@@ -343,7 +346,6 @@ std::shared_ptr<MemoryPool> deprecatedAddDefaultLeafMemoryPool(
 /// Default unmanaged leaf pool with no threadsafe stats support. Libraries
 /// using this method can get a pool that is shared with other threads. The goal
 /// is to minimize lock contention while supporting such use cases.
-///
 ///
 /// TODO: deprecate this API after all the use cases are able to manage the
 /// lifecycle of the allocated memory pools properly.

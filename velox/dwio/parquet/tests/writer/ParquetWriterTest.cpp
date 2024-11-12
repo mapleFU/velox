@@ -42,6 +42,9 @@ class ParquetWriterTest : public ParquetTestBase {
   static void SetUpTestCase() {
     memory::MemoryManager::testingSetInstance({});
     testutil::TestValue::enable();
+    filesystems::registerLocalFileSystem();
+    connector::registerConnectorFactory(
+        std::make_shared<connector::hive::HiveConnectorFactory>());
     auto hiveConnector =
         connector::getConnectorFactory(
             connector::hive::HiveConnectorFactory::kHiveConnectorName)

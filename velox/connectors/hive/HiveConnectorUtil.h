@@ -33,9 +33,6 @@ struct HiveConnectorSplit;
 using SubfieldFilters =
     std::unordered_map<common::Subfield, std::unique_ptr<common::Filter>>;
 
-constexpr const char* kPath = "$path";
-constexpr const char* kBucket = "$bucket";
-
 const std::string& getColumnName(const common::Subfield& subfield);
 
 void checkColumnNameLowerCase(const std::shared_ptr<const Type>& type);
@@ -47,6 +44,11 @@ void checkColumnNameLowerCase(
 
 void checkColumnNameLowerCase(const core::TypedExprPtr& typeExpr);
 
+struct SpecialColumnNames {
+  std::optional<std::string> rowIndex;
+  std::optional<std::string> rowId;
+};
+
 std::shared_ptr<common::ScanSpec> makeScanSpec(
     const RowTypePtr& rowType,
     const folly::F14FastMap<std::string, std::vector<const common::Subfield*>>&
@@ -57,7 +59,7 @@ std::shared_ptr<common::ScanSpec> makeScanSpec(
         partitionKeys,
     const std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>&
         infoColumns,
-    const std::shared_ptr<HiveColumnHandle>& rowIndexColumn,
+    const SpecialColumnNames& specialColumns,
     memory::MemoryPool* pool);
 
 void configureReaderOptions(

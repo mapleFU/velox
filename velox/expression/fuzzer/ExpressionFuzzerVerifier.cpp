@@ -21,6 +21,10 @@
 #include <exception>
 
 #include "velox/common/base/Exceptions.h"
+#include "velox/common/file/FileSystems.h"
+#include "velox/connectors/hive/HiveConnector.h"
+#include "velox/dwio/dwrf/RegisterDwrfWriter.h"
+#include "velox/exec/fuzzer/FuzzerUtil.h"
 #include "velox/expression/Expr.h"
 #include "velox/expression/FunctionSignature.h"
 #include "velox/expression/ReverseSignatureBinder.h"
@@ -32,9 +36,8 @@ namespace {
 
 using exec::SignatureBinder;
 
-/// Returns row numbers for non-null rows among all children in'data' or null
-/// if all rows are null.
-BufferPtr extractNonNullIndices(const RowVectorPtr& data) {
+/// Returns all non-null rows among all children in 'data'.
+SelectivityVector extractNonNullRows(const RowVectorPtr& data) {
   DecodedVector decoded;
   SelectivityVector nonNullRows(data->size());
 
@@ -44,19 +47,8 @@ BufferPtr extractNonNullIndices(const RowVectorPtr& data) {
     if (rawNulls) {
       nonNullRows.deselectNulls(rawNulls, 0, data->size());
     }
-    if (!nonNullRows.hasSelections()) {
-      return nullptr;
-    }
   }
-
-  BufferPtr indices = allocateIndices(nonNullRows.end(), data->pool());
-  auto rawIndices = indices->asMutable<vector_size_t>();
-  vector_size_t cnt = 0;
-  nonNullRows.applyToSelected(
-      [&](vector_size_t row) { rawIndices[cnt++] = row; });
-  VELOX_CHECK_GT(cnt, 0);
-  indices->setSize(cnt * sizeof(vector_size_t));
-  return indices;
+  return nonNullRows;
 }
 
 /// Wraps child vectors of the specified 'rowVector' in dictionary using
@@ -86,13 +78,14 @@ ExpressionFuzzerVerifier::ExpressionFuzzerVerifier(
     : options_(options),
       queryCtx_(core::QueryCtx::create(
           nullptr,
-          core::QueryConfig(options.queryConfigs))),
+          core::QueryConfig(options_.queryConfigs))),
       execCtx_({pool_.get(), queryCtx_.get()}),
       verifier_(
           &execCtx_,
           {options_.disableConstantFolding,
            options_.reproPersistPath,
-           options_.persistAndRunOnce}),
+           options_.persistAndRunOnce},
+          options_.expressionFuzzerOptions.referenceQueryRunner),
       vectorFuzzer_(std::make_shared<VectorFuzzer>(
           options_.vectorFuzzerOptions,
           execCtx_.pool())),
@@ -100,8 +93,16 @@ ExpressionFuzzerVerifier::ExpressionFuzzerVerifier(
           signatureMap,
           initialSeed,
           vectorFuzzer_,
-          options.expressionFuzzerOptions,
-          argGenerators) {
+          options_.expressionFuzzerOptions,
+          argGenerators),
+      referenceQueryRunner_{
+          options_.expressionFuzzerOptions.referenceQueryRunner} {
+  filesystems::registerLocalFileSystem();
+  connector::registerConnectorFactory(
+      std::make_shared<connector::hive::HiveConnectorFactory>());
+  exec::test::registerHiveConnector({});
+  dwrf::registerDwrfWriterFactory();
+
   seed(initialSeed);
 
   // Init stats and register listener.
@@ -114,20 +115,39 @@ ExpressionFuzzerVerifier::ExpressionFuzzerVerifier(
   }
 }
 
-std::vector<int> ExpressionFuzzerVerifier::generateLazyColumnIds(
+InputRowMetadata ExpressionFuzzerVerifier::generateInputRowMetadata(
     const RowVectorPtr& rowVector,
     VectorFuzzer& vectorFuzzer) {
-  std::vector<int> columnsToWrapInLazy;
-  if (options_.lazyVectorGenerationRatio > 0) {
-    for (int idx = 0; idx < rowVector->childrenSize(); idx++) {
-      VELOX_CHECK_NOT_NULL(rowVector->childAt(idx));
-      if (vectorFuzzer.coinToss(options_.lazyVectorGenerationRatio)) {
-        columnsToWrapInLazy.push_back(
-            vectorFuzzer.coinToss(0.8) ? idx : -1 * idx);
-      }
+  InputRowMetadata inputRowMetadata;
+  if (options_.commonDictionaryWrapRatio <= 0 &&
+      options_.lazyVectorGenerationRatio <= 0) {
+    return inputRowMetadata;
+  }
+
+  bool wrapInCommonDictionary =
+      vectorFuzzer.coinToss(options_.commonDictionaryWrapRatio);
+  for (int idx = 0; idx < rowVector->childrenSize(); idx++) {
+    const auto& child = rowVector->childAt(idx);
+    VELOX_CHECK_NOT_NULL(child);
+    if (child->encoding() != VectorEncoding::Simple::DICTIONARY &&
+        wrapInCommonDictionary) {
+      inputRowMetadata.columnsToWrapInCommonDictionary.push_back(idx);
+    }
+    if (vectorFuzzer.coinToss(options_.lazyVectorGenerationRatio)) {
+      inputRowMetadata.columnsToWrapInLazy.push_back(
+          vectorFuzzer.coinToss(0.8) ? idx : -1 * idx);
     }
   }
-  return columnsToWrapInLazy;
+  // Skip wrapping in common dictionary if there is only one column.
+  if (inputRowMetadata.columnsToWrapInCommonDictionary.size() > 1) {
+    auto inputSize = rowVector->size();
+    inputRowMetadata.commonDictionaryIndices =
+        vectorFuzzer.fuzzIndices(inputSize, inputSize);
+    inputRowMetadata.commonDictionaryNulls = vectorFuzzer.fuzzNulls(inputSize);
+  } else {
+    inputRowMetadata.columnsToWrapInCommonDictionary.clear();
+  }
+  return inputRowMetadata;
 }
 
 void ExpressionFuzzerVerifier::reSeed() {
@@ -232,7 +252,7 @@ void ExpressionFuzzerVerifier::retryWithTry(
     std::vector<core::TypedExprPtr> plans,
     const RowVectorPtr& rowVector,
     const VectorPtr& resultVector,
-    const std::vector<int>& columnsToWrapInLazy) {
+    const InputRowMetadata& inputRowMetadata) {
   // Wrap each expression tree with 'try'.
   std::vector<core::TypedExprPtr> tryPlans;
   for (auto& plan : plans) {
@@ -248,17 +268,19 @@ void ExpressionFuzzerVerifier::retryWithTry(
     tryResult = verifier_.verify(
         tryPlans,
         rowVector,
+        std::nullopt,
         resultVector ? BaseVector::copy(*resultVector) : nullptr,
         false, // canThrow
-        columnsToWrapInLazy);
+        inputRowMetadata);
   } catch (const std::exception&) {
     if (options_.findMinimalSubexpression) {
       test::computeMinimumSubExpression(
-          {&execCtx_, {false, ""}},
+          {&execCtx_, {false, ""}, referenceQueryRunner_},
           *vectorFuzzer_,
           plans,
           rowVector,
-          columnsToWrapInLazy);
+          std::nullopt,
+          inputRowMetadata);
     }
     throw;
   }
@@ -270,35 +292,48 @@ void ExpressionFuzzerVerifier::retryWithTry(
 
   // Re-evaluate the original expression on rows that didn't produce an
   // error (i.e. returned non-NULL results when evaluated with TRY).
-  BufferPtr noErrorIndices = extractNonNullIndices(tryResult.result);
+  SelectivityVector noErrorRows = extractNonNullRows(tryResult.result);
 
-  if (noErrorIndices != nullptr) {
-    auto noErrorRowVector = wrapChildren(noErrorIndices, rowVector);
-
-    LOG(INFO) << "Retrying original expression on " << noErrorRowVector->size()
+  if (noErrorRows.hasSelections()) {
+    LOG(INFO) << "Retrying original expression on " << noErrorRows.end()
               << " rows without errors";
 
     try {
       verifier_.verify(
           plans,
-          noErrorRowVector,
-          resultVector ? BaseVector::copy(*resultVector)
-                             ->slice(0, noErrorRowVector->size())
-                       : nullptr,
+          rowVector,
+          noErrorRows,
+          resultVector ? BaseVector::copy(*resultVector) : nullptr,
           false, // canThrow
-          columnsToWrapInLazy);
+          inputRowMetadata);
     } catch (const std::exception&) {
       if (options_.findMinimalSubexpression) {
         test::computeMinimumSubExpression(
-            {&execCtx_, {false, ""}},
+            {&execCtx_, {false, ""}, referenceQueryRunner_},
             *vectorFuzzer_,
             plans,
-            noErrorRowVector,
-            columnsToWrapInLazy);
+            rowVector,
+            noErrorRows,
+            inputRowMetadata);
       }
       throw;
     }
   }
+}
+
+RowVectorPtr ExpressionFuzzerVerifier::fuzzInputWithRowNumber(
+    VectorFuzzer& fuzzer,
+    const RowTypePtr& type) {
+  auto rowVector = fuzzer.fuzzInputRow(type);
+  auto names = type->names();
+  names.push_back("row_number");
+
+  auto& children = rowVector->children();
+  velox::test::VectorMaker vectorMaker{pool_.get()};
+  children.push_back(vectorMaker.flatVector<int64_t>(
+      rowVector->size(), [&](auto row) { return row; }));
+
+  return vectorMaker.rowVector(names, children);
 }
 
 void ExpressionFuzzerVerifier::go() {
@@ -329,6 +364,10 @@ void ExpressionFuzzerVerifier::go() {
         1, options_.maxExpressionTreesPerStep)(rng_);
     auto [expressions, inputType, selectionStats] =
         expressionFuzzer_.fuzzExpressions(numExpressionTrees);
+    // Project a row number column in the output to enable epsilon-comparison
+    // for floating-point columns and make investigation of failures easier.
+    expressions.push_back(
+        std::make_shared<core::FieldAccessTypedExpr>(BIGINT(), "row_number"));
 
     for (auto& [funcName, count] : selectionStats) {
       exprNameToStats_[funcName].numTimesSelected += count;
@@ -336,9 +375,10 @@ void ExpressionFuzzerVerifier::go() {
 
     std::vector<core::TypedExprPtr> plans = std::move(expressions);
 
-    auto rowVector = vectorFuzzer_->fuzzInputRow(inputType);
+    auto rowVector = fuzzInputWithRowNumber(*vectorFuzzer_, inputType);
 
-    auto columnsToWrapInLazy = generateLazyColumnIds(rowVector, *vectorFuzzer_);
+    InputRowMetadata inputRowMetadata =
+        generateInputRowMetadata(rowVector, *vectorFuzzer_);
 
     auto resultVectors = generateResultVectors(plans);
     ResultOrError result;
@@ -347,17 +387,19 @@ void ExpressionFuzzerVerifier::go() {
       result = verifier_.verify(
           plans,
           rowVector,
+          std::nullopt,
           resultVectors ? BaseVector::copy(*resultVectors) : nullptr,
           true, // canThrow
-          columnsToWrapInLazy);
+          inputRowMetadata);
     } catch (const std::exception&) {
       if (options_.findMinimalSubexpression) {
         test::computeMinimumSubExpression(
-            {&execCtx_, {false, ""}},
+            {&execCtx_, {false, ""}, referenceQueryRunner_},
             *vectorFuzzer_,
             plans,
             rowVector,
-            columnsToWrapInLazy);
+            std::nullopt,
+            inputRowMetadata);
       }
       throw;
     }
@@ -374,7 +416,7 @@ void ExpressionFuzzerVerifier::go() {
         !result.unsupportedInputUncatchableError) {
       LOG(INFO)
           << "Both paths failed with compatible exceptions. Retrying expression using try().";
-      retryWithTry(plans, rowVector, resultVectors, columnsToWrapInLazy);
+      retryWithTry(plans, rowVector, resultVectors, inputRowMetadata);
     }
 
     LOG(INFO) << "==============================> Done with iteration " << i;

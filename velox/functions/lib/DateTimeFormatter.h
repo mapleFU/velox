@@ -112,7 +112,10 @@ enum class DateTimeFormatSpecifier : uint8_t {
   TIMEZONE_OFFSET_ID = 22,
 
   // A literal % character
-  LITERAL_PERCENT = 23
+  LITERAL_PERCENT = 23,
+
+  // Week of month based on java.text.SimpleDateFormat, e.g: 2
+  WEEK_OF_MONTH = 24
 };
 
 struct FormatPattern {
@@ -154,7 +157,7 @@ struct DateTimeToken {
 
 struct DateTimeResult {
   Timestamp timestamp;
-  int64_t timezoneId{-1};
+  const tz::TimeZone* timezone = nullptr;
 };
 
 /// A user defined formatter that formats/parses time to/from user provided
@@ -200,13 +203,17 @@ class DateTimeFormatter {
   ///
   /// The timestamp will be firstly converted to millisecond then to
   /// std::chrono::time_point. If allowOverflow is true, integer overflow is
-  /// allowed in converting to milliseconds.
+  /// allowed in converting to milliseconds. If zeroOffsetText is set, that
+  /// string will be used to represent the zero offset timezone, other time
+  /// zones will still be represented based on the pattern this was initialized
+  /// with.
   int32_t format(
       const Timestamp& timestamp,
       const tz::TimeZone* timezone,
       const uint32_t maxResultSize,
       char* result,
-      bool allowOverflow = false) const;
+      bool allowOverflow = false,
+      const std::optional<std::string>& zeroOffsetText = std::nullopt) const;
 
  private:
   std::unique_ptr<char[]> literalBuf_;
@@ -215,13 +222,13 @@ class DateTimeFormatter {
   DateTimeFormatterType type_;
 };
 
-std::shared_ptr<DateTimeFormatter> buildMysqlDateTimeFormatter(
+Expected<std::shared_ptr<DateTimeFormatter>> buildMysqlDateTimeFormatter(
     const std::string_view& format);
 
-std::shared_ptr<DateTimeFormatter> buildJodaDateTimeFormatter(
+Expected<std::shared_ptr<DateTimeFormatter>> buildJodaDateTimeFormatter(
     const std::string_view& format);
 
-std::shared_ptr<DateTimeFormatter> buildSimpleDateTimeFormatter(
+Expected<std::shared_ptr<DateTimeFormatter>> buildSimpleDateTimeFormatter(
     const std::string_view& format,
     bool lenient);
 

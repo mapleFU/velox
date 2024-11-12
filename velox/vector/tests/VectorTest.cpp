@@ -818,10 +818,10 @@ class VectorTest : public testing::Test, public test::VectorTestBase {
     auto sourceRow = makeRowVector({"c"}, {source});
     auto sourceRowType = asRowType(sourceRow->type());
 
-    VectorStreamGroup even(pool());
+    VectorStreamGroup even(pool(), nullptr);
     even.createStreamTree(sourceRowType, source->size() / 4);
 
-    VectorStreamGroup odd(pool());
+    VectorStreamGroup odd(pool(), nullptr);
     odd.createStreamTree(sourceRowType, source->size() / 3);
 
     std::vector<IndexRange> evenIndices;
@@ -847,9 +847,9 @@ class VectorTest : public testing::Test, public test::VectorTestBase {
     }
 
     VectorStreamGroup::estimateSerializedSize(
-        source.get(), evenIndices, evenSizePointers.data());
+        source.get(), evenIndices, nullptr, evenSizePointers.data());
     VectorStreamGroup::estimateSerializedSize(
-        source.get(), oddIndices, oddSizePointers.data());
+        source.get(), oddIndices, nullptr, oddSizePointers.data());
     even.append(
         sourceRow, folly::Range(evenIndices.data(), evenIndices.size() / 2));
     even.append(
@@ -878,7 +878,8 @@ class VectorTest : public testing::Test, public test::VectorTestBase {
     auto evenInput = prepareInput(evenString);
 
     RowVectorPtr resultRow;
-    VectorStreamGroup::read(evenInput.get(), pool(), sourceRowType, &resultRow);
+    VectorStreamGroup::read(
+        evenInput.get(), pool(), sourceRowType, nullptr, &resultRow);
     VectorPtr result = resultRow->childAt(0);
     switch (source->encoding()) {
       case VectorEncoding::Simple::FLAT:
@@ -907,7 +908,8 @@ class VectorTest : public testing::Test, public test::VectorTestBase {
     auto oddString = oddStream.str();
     auto oddInput = prepareInput(oddString);
 
-    VectorStreamGroup::read(oddInput.get(), pool(), sourceRowType, &resultRow);
+    VectorStreamGroup::read(
+        oddInput.get(), pool(), sourceRowType, nullptr, &resultRow);
     result = resultRow->childAt(0);
     for (int32_t i = 0; i < oddIndices.size(); ++i) {
       EXPECT_TRUE(result->equalValueAt(source.get(), i, oddIndices[i].begin))
@@ -1549,7 +1551,7 @@ TEST_F(VectorTest, wrapInConstantWithCopy) {
       std::dynamic_pointer_cast<ConstantVector<ComplexType>>(
           BaseVector::wrapInConstant(size, 22, constBaseVector, true));
   EXPECT_NE(constArrayVector->valueVector(), nullptr);
-  EXPECT_TRUE(constArrayVector->valueVector().unique());
+  EXPECT_EQ(constArrayVector->valueVector().use_count(), 1);
   for (auto i = 0; i < size; i++) {
     ASSERT_FALSE(constArrayVector->isNullAt(i));
     ASSERT_TRUE(constArrayVector->equalValueAt(arrayVector.get(), i, 3));
@@ -1561,7 +1563,7 @@ TEST_F(VectorTest, wrapInConstantWithCopy) {
   constArrayVector = std::dynamic_pointer_cast<ConstantVector<ComplexType>>(
       BaseVector::wrapInConstant(size, 22, constBaseVector, true));
   EXPECT_NE(constArrayVector->valueVector(), nullptr);
-  EXPECT_TRUE(constArrayVector->valueVector().unique());
+  EXPECT_EQ(constArrayVector->valueVector().use_count(), 1);
   for (auto i = 0; i < size; i++) {
     ASSERT_TRUE(constArrayVector->isNullAt(i));
   }
@@ -1571,7 +1573,7 @@ TEST_F(VectorTest, rowResize) {
   auto testRowResize = [&](const VectorPtr& vector, bool setNotNull) {
     auto rowVector = vector->as<RowVector>();
     for (auto& child : rowVector->children()) {
-      VELOX_CHECK(child.unique());
+      VELOX_CHECK_EQ(child.use_count(), 1);
     }
     auto oldSize = rowVector->size();
     auto newSize = oldSize * 2;

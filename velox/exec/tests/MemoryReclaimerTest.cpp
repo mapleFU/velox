@@ -17,6 +17,7 @@
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/memory/MemoryArbitrator.h"
 #include "velox/common/memory/MemoryPool.h"
+#include "velox/common/memory/tests/SharedArbitratorTestUtil.h"
 #include "velox/exec/tests/utils/OperatorTestBase.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 
@@ -71,7 +72,7 @@ TEST_F(MemoryReclaimerTest, enterArbitrationTest) {
     fakeTask_->testingIncrementThreads();
     if (underDriverContext) {
       driver->state().setThread();
-      ScopedDriverThreadContext scopedDriverThreadCtx{*driver->driverCtx()};
+      ScopedDriverThreadContext scopedDriverThreadCtx{driver->driverCtx()};
       reclaimer->enterArbitration();
       ASSERT_TRUE(driver->state().isOnThread());
       ASSERT_TRUE(driver->state().suspended());
@@ -264,7 +265,11 @@ TEST_F(MemoryReclaimerTest, parallelMemoryReclaimer) {
           static_cast<MockMemoryReclaimer*>(leafPools.back()->reclaimer()));
     }
 
-    ScopedMemoryArbitrationContext context(rootPool.get());
+    auto arbitrationStructs =
+        memory::test::ArbitrationTestStructs::createArbitrationTestStructs(
+            rootPool);
+    memory::ScopedMemoryArbitrationContext context(
+        rootPool.get(), arbitrationStructs.operation.get());
     memory::MemoryReclaimer::Stats stats;
     rootPool->reclaim(testData.bytesToReclaim, 0, stats);
     for (int i = 0; i < memoryReclaimers.size(); ++i) {

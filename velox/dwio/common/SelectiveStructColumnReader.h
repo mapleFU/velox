@@ -40,10 +40,8 @@ class SelectiveStructColumnReaderBase : public SelectiveColumnReader {
       const dwio::common::StatsContext& context,
       FormatData::FilterRowGroupsResult&) const override;
 
-  void read(
-      vector_size_t offset,
-      const RowSet& rows,
-      const uint64_t* incomingNulls) override;
+  void read(int64_t offset, const RowSet& rows, const uint64_t* incomingNulls)
+      override;
 
   void getValues(const RowSet& rows, VectorPtr* result) override;
 
@@ -51,7 +49,7 @@ class SelectiveStructColumnReaderBase : public SelectiveColumnReader {
     return numReads_;
   }
 
-  vector_size_t lazyVectorReadOffset() const {
+  int64_t lazyVectorReadOffset() const {
     return lazyVectorReadOffset_;
   }
 
@@ -59,14 +57,14 @@ class SelectiveStructColumnReaderBase : public SelectiveColumnReader {
   /// calling seekToRowGroup.
   virtual void advanceFieldReader(
       SelectiveColumnReader* reader,
-      vector_size_t offset) = 0;
+      int64_t offset) = 0;
 
   // Returns the nulls bitmap from reading this. Used in LazyVector loaders.
   const uint64_t* nulls() const {
     return nullsInReadRange_ ? nullsInReadRange_->as<uint64_t>() : nullptr;
   }
 
-  void setReadOffsetRecursive(vector_size_t readOffset) override {
+  void setReadOffsetRecursive(int64_t readOffset) override {
     readOffset_ = readOffset;
     for (auto& child : children_) {
       child->setReadOffsetRecursive(readOffset);
@@ -100,8 +98,8 @@ class SelectiveStructColumnReaderBase : public SelectiveColumnReader {
     return debugString_;
   }
 
-  void setFillMutatedOutputRows(bool value) final {
-    fillMutatedOutputRows_ = value;
+  void setCurrentRowNumber(int64_t value) final {
+    currentRowNumber_ = value;
   }
 
  protected:
@@ -123,12 +121,6 @@ class SelectiveStructColumnReaderBase : public SelectiveColumnReader {
             getExceptionContext().message(VeloxException::Type::kSystem)),
         isRoot_(isRoot) {}
 
-  /// Records the number of nulls added by 'this' between the end position of
-  /// each child reader and the end of the range of 'read(). This must be done
-  /// also if a child is not read so that we know how much to skip when seeking
-  /// forward within the row group.
-  void recordParentNullsInChildren(vector_size_t offset, const RowSet& rows);
-
   bool hasDeletion() const final {
     return hasDeletion_;
   }
@@ -143,7 +135,16 @@ class SelectiveStructColumnReaderBase : public SelectiveColumnReader {
         isChildMissing(childSpec);
   }
 
+  std::vector<SelectiveColumnReader*> children_;
+
+ private:
   void fillOutputRowsFromMutation(vector_size_t size);
+
+  /// Records the number of nulls added by 'this' between the end position of
+  /// each child reader and the end of the range of 'read(). This must be done
+  /// also if a child is not read so that we know how much to skip when seeking
+  /// forward within the row group.
+  void recordParentNullsInChildren(int64_t offset, const RowSet& rows);
 
   // Context information obtained from ExceptionContext. Stored here
   // so that LazyVector readers under this can add this to their
@@ -156,24 +157,22 @@ class SelectiveStructColumnReaderBase : public SelectiveColumnReader {
   // table.
   const bool isRoot_;
 
-  std::vector<SelectiveColumnReader*> children_;
+  // Dense set of rows to read in next().
+  raw_vector<vector_size_t> rows_;
 
   // Sequence number of output batch. Checked against ColumnLoaders
   // created by 'this' to verify they are still valid at load.
   uint64_t numReads_ = 0;
 
-  vector_size_t lazyVectorReadOffset_;
+  int64_t lazyVectorReadOffset_;
 
-  // Dense set of rows to read in next().
-  raw_vector<vector_size_t> rows_;
+  int64_t currentRowNumber_ = -1;
 
   const Mutation* mutation_ = nullptr;
 
   // After read() call mutation_ could go out of scope.  Need to keep this
   // around for lazy columns.
   bool hasDeletion_ = false;
-
-  bool fillMutatedOutputRows_ = false;
 };
 
 class SelectiveStructColumnReader : public SelectiveStructColumnReaderBase {
@@ -221,14 +220,14 @@ class SelectiveFlatMapColumnReaderHelper {
     }
   }
 
-  void read(vector_size_t offset, RowSet rows, const uint64_t* incomingNulls);
+  void read(int64_t offset, RowSet rows, const uint64_t* incomingNulls);
 
   void getValues(RowSet rows, VectorPtr* result);
 
  private:
   MapVector& prepareResult(VectorPtr& result, vector_size_t size) {
     if (result && result->encoding() == VectorEncoding::Simple::MAP &&
-        result.unique()) {
+        result.use_count() == 1) {
       result->resetDataDependentFlags(nullptr);
       result->resize(size);
     } else {
@@ -275,7 +274,7 @@ class SelectiveFlatMapColumnReaderHelper {
 
 template <typename T, typename KeyNode, typename FormatData>
 void SelectiveFlatMapColumnReaderHelper<T, KeyNode, FormatData>::read(
-    vector_size_t offset,
+    int64_t offset,
     RowSet rows,
     const uint64_t* incomingNulls) {
   reader_.numReads_ = reader_.scanSpec_->newRead();

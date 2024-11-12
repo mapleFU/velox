@@ -39,7 +39,7 @@ StructColumnReader::StructColumnReader(
       childSpec->setSubscript(kConstantChildSpecSubscript);
       continue;
     }
-    if (childSpecs[i]->isExplicitRowNumber()) {
+    if (!childSpecs[i]->readFromFile()) {
       continue;
     }
     auto childFileType = fileType_->childByName(childSpec->fieldName());
@@ -101,7 +101,7 @@ StructColumnReader::findBestLeaf() {
 }
 
 void StructColumnReader::read(
-    vector_size_t offset,
+    int64_t offset,
     const RowSet& rows,
     const uint64_t* /*incomingNulls*/) {
   ensureRepDefs(*this, offset + rows.back() + 1 - readOffset_);
@@ -145,7 +145,7 @@ void StructColumnReader::enqueueRowGroup(
   }
 }
 
-void StructColumnReader::seekToRowGroup(uint32_t index) {
+void StructColumnReader::seekToRowGroup(int64_t index) {
   SelectiveStructColumnReader::seekToRowGroup(index);
   BufferPtr noBuffer;
   formatData_->as<ParquetData>().setNulls(noBuffer, 0);

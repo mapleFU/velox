@@ -25,6 +25,9 @@
 #include "velox/exec/fuzzer/TransformResultVerifier.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
 #include "velox/functions/sparksql/aggregates/Register.h"
+#include "velox/serializers/CompactRowSerializer.h"
+#include "velox/serializers/PrestoSerializer.h"
+#include "velox/serializers/UnsafeRowSerializer.h"
 
 DEFINE_int64(
     seed,
@@ -51,6 +54,21 @@ int main(int argc, char** argv) {
   folly::Init init(&argc, &argv);
 
   facebook::velox::functions::prestosql::registerInternalFunctions();
+  if (!isRegisteredNamedVectorSerde(
+          facebook::velox::VectorSerde::Kind::kPresto)) {
+    facebook::velox::serializer::presto::PrestoVectorSerde::
+        registerNamedVectorSerde();
+  }
+  if (!isRegisteredNamedVectorSerde(
+          facebook::velox::VectorSerde::Kind::kCompactRow)) {
+    facebook::velox::serializer::CompactRowVectorSerde::
+        registerNamedVectorSerde();
+  }
+  if (!isRegisteredNamedVectorSerde(
+          facebook::velox::VectorSerde::Kind::kUnsafeRow)) {
+    facebook::velox::serializer::spark::UnsafeRowVectorSerde::
+        registerNamedVectorSerde();
+  }
   facebook::velox::memory::MemoryManager::initialize({});
 
   // TODO: List of the functions that at some point crash or fail and need to
@@ -111,24 +129,6 @@ int main(int argc, char** argv) {
        // formula. The results from the two methods are completely different.
        "kurtosis"});
 
-  using facebook::velox::DataSpec;
-  // For some functions, velox supports NaN, Infinity better than presto query
-  // runner, which makes the comparison impossible.
-  // Add data spec in vector fuzzer to enforce to not generate such data
-  // for those functions before they are fixed in presto query runner
-  static const std::unordered_map<std::string, DataSpec> functionDataSpec = {
-      {"regr_avgx", DataSpec{false, false}},
-      {"regr_avgy", DataSpec{false, false}},
-      {"regr_r2", DataSpec{false, false}},
-      {"regr_sxx", DataSpec{false, false}},
-      {"regr_syy", DataSpec{false, false}},
-      {"regr_sxy", DataSpec{false, false}},
-      {"regr_slope", DataSpec{false, false}},
-      {"regr_replacement", DataSpec{false, false}},
-      {"covar_pop", DataSpec{true, false}},
-      {"covar_samp", DataSpec{true, false}},
-  };
-
   using Runner = facebook::velox::exec::test::AggregationFuzzerRunner;
   using Options = facebook::velox::exec::test::AggregationFuzzerOptions;
 
@@ -137,6 +137,5 @@ int main(int argc, char** argv) {
   options.skipFunctions = skipFunctions;
   options.customVerificationFunctions = customVerificationFunctions;
   options.orderableGroupKeys = true;
-  options.functionDataSpec = functionDataSpec;
   return Runner::run(initialSeed, std::move(duckQueryRunner), options);
 }

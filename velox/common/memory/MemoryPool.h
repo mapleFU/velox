@@ -16,17 +16,14 @@
 
 #pragma once
 
-#include <array>
 #include <atomic>
 #include <memory>
 #include <optional>
-#include <queue>
 
 #include <fmt/format.h>
 #include "velox/common/base/BitUtil.h"
 #include "velox/common/base/Exceptions.h"
 #include "velox/common/base/Portability.h"
-#include "velox/common/future/VeloxPromise.h"
 #include "velox/common/memory/Allocation.h"
 #include "velox/common/memory/MemoryAllocator.h"
 #include "velox/common/memory/MemoryArbitrator.h"
@@ -1030,7 +1027,7 @@ class MemoryPoolImpl : public MemoryPool {
   std::unique_ptr<MemoryReclaimer> reclaimer_;
 
   // The memory cap in bytes to enforce.
-  int64_t capacity_;
+  tsan_atomic<int64_t> capacity_;
 
   // The number of reservation bytes.
   tsan_atomic<int64_t> reservationBytes_{0};

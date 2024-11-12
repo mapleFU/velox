@@ -117,7 +117,6 @@ bool HashAggregation::abandonPartialAggregationEarly(int64_t numOutput) const {
 }
 
 void HashAggregation::addInput(RowVectorPtr input) {
-  traceInput(input);
   if (!pushdownChecked_) {
     mayPushdown_ = operatorCtx_->driver()->mayPushdownAggregation(this);
     pushdownChecked_ = true;
@@ -162,8 +161,8 @@ void HashAggregation::addInput(RowVectorPtr input) {
 void HashAggregation::updateRuntimeStats() {
   // Report range sizes and number of distinct values for the group-by keys.
   const auto& hashers = groupingSet_->hashLookup().hashers;
-  uint64_t asRange;
-  uint64_t asDistinct;
+  uint64_t asRange{0};
+  uint64_t asDistinct{0};
   const auto hashTableStats = groupingSet_->hashTableStats();
 
   auto lockedStats = stats_.wlock();

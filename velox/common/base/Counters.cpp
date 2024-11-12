@@ -371,6 +371,24 @@ void registerVeloxMetrics() {
       kMetricArbitratorGlobalArbitrationCount,
       facebook::velox::StatType::COUNT);
 
+  // The number of victims distribution of a global arbitration run [0, 32] with
+  // 32 buckets. It is configured to report the number of victims at P50, P90,
+  // P99, and P100 percentiles.
+  DEFINE_HISTOGRAM_METRIC(
+      kMetricArbitratorGlobalArbitrationNumReclaimVictims,
+      1,
+      0,
+      32,
+      50,
+      90,
+      99,
+      100);
+
+  // The number of victim query memory pool having nothing to spill.
+  DEFINE_METRIC(
+      kMetricArbitratorGlobalArbitrationFailedVictimCount,
+      facebook::velox::StatType::COUNT);
+
   // The time distribution of a global arbitration run [0, 600s] with 20
   // buckets. It is configured to report the latency at P50, P90, P99, and P100
   // percentiles.
@@ -522,6 +540,12 @@ void registerVeloxMetrics() {
   // flushed due to memory reclaiming.
   DEFINE_METRIC(
       kMetricFileWriterEarlyFlushedRawBytes, facebook::velox::StatType::SUM);
+
+  // The distribution of the amount of time spent on hive sort writer finish
+  // call in range of [0, 120s] with 60 buckets. It is configured to report the
+  // latency at P50, P90, P99, and P100 percentiles.
+  DEFINE_HISTOGRAM_METRIC(
+      kMetricHiveSortWriterFinishTimeMs, 2'000, 0, 120'000, 50, 90, 99, 100);
 
   // The current spilling memory usage in bytes.
   DEFINE_METRIC(kMetricSpillMemoryBytes, facebook::velox::StatType::AVG);

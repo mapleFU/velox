@@ -27,7 +27,7 @@
 #include "velox/common/time/CpuWallTimer.h"
 #include "velox/core/PlanFragment.h"
 #include "velox/core/QueryCtx.h"
-#include "velox/exec/QueryTraceConfig.h"
+#include "velox/exec/TraceConfig.h"
 
 namespace facebook::velox::exec {
 
@@ -287,6 +287,10 @@ struct DriverCtx {
   std::shared_ptr<Task> task;
   Driver* driver{nullptr};
   facebook::velox::process::ThreadDebugInfo threadDebugInfo;
+  /// Tracks the traced operator ids. It is also used to avoid tracing the
+  /// auxiliary operator such as the aggregation operator used by the table
+  /// writer to generate the columns stats.
+  std::unordered_map<int32_t, std::string> tracedOperatorMap;
 
   DriverCtx(
       std::shared_ptr<Task> _task,
@@ -297,7 +301,7 @@ struct DriverCtx {
 
   const core::QueryConfig& queryConfig() const;
 
-  const std::optional<trace::QueryTraceConfig>& traceConfig() const;
+  const std::optional<trace::TraceConfig>& traceConfig() const;
 
   velox::memory::MemoryPool* addOperatorPool(
       const core::PlanNodeId& planNodeId,
@@ -745,15 +749,27 @@ class SuspendedSection {
 
 /// Provides the execution context of a driver thread. This is set to a
 /// per-thread local variable if the running thread is a driver thread.
-struct DriverThreadContext {
-  const DriverCtx& driverCtx;
+class DriverThreadContext {
+ public:
+  explicit DriverThreadContext(const DriverCtx* driverCtx)
+      : driverCtx_(driverCtx) {}
+
+  const DriverCtx* driverCtx() const {
+    VELOX_CHECK_NOT_NULL(driverCtx_);
+    return driverCtx_;
+  }
+
+ private:
+  const DriverCtx* driverCtx_;
 };
 
 /// Object used to set/restore the driver thread context when driver execution
 /// starts/leaves the driver thread.
 class ScopedDriverThreadContext {
  public:
-  explicit ScopedDriverThreadContext(const DriverCtx& driverCtx);
+  explicit ScopedDriverThreadContext(const DriverCtx* driverCtx);
+  explicit ScopedDriverThreadContext(
+      const DriverThreadContext* _driverThreadCtx);
   ~ScopedDriverThreadContext();
 
  private:
@@ -766,6 +782,16 @@ class ScopedDriverThreadContext {
 DriverThreadContext* driverThreadContext();
 
 } // namespace facebook::velox::exec
+
+template <>
+struct fmt::formatter<facebook::velox::exec::BlockingReason>
+    : formatter<std::string> {
+  auto format(facebook::velox::exec::BlockingReason b, format_context& ctx)
+      const {
+    return formatter<std::string>::format(
+        facebook::velox::exec::blockingReasonToString(b), ctx);
+  }
+};
 
 template <>
 struct fmt::formatter<facebook::velox::exec::StopReason>

@@ -18,15 +18,20 @@
 
 #include "velox/common/file/FileSystems.h"
 #include "velox/core/PlanNode.h"
+#include "velox/parse/PlanNodeIdGenerator.h"
+
+namespace facebook::velox::exec {
+class Task;
+}
 
 namespace facebook::velox::tool::trace {
 class OperatorReplayerBase {
  public:
   OperatorReplayerBase(
-      std::string rootDir,
+      std::string traceDir,
+      std::string queryId,
       std::string taskId,
       std::string nodeId,
-      int32_t pipelineId,
       std::string operatorType);
   virtual ~OperatorReplayerBase() = default;
 
@@ -36,38 +41,36 @@ class OperatorReplayerBase {
   OperatorReplayerBase& operator=(OperatorReplayerBase&& other) noexcept =
       delete;
 
-  RowVectorPtr run() const;
-
-  static void printSummary(
-      const std::string& rootDir,
-      const std::string& taskId,
-      bool shortSummary);
-
-  static std::string usage();
+  virtual RowVectorPtr run();
 
  protected:
-  virtual core::PlanNodePtr createPlan() const;
-
-  virtual std::function<core::PlanNodePtr(std::string, core::PlanNodePtr)>
-  addReplayNode(const core::PlanNode* node) const;
-
   virtual core::PlanNodePtr createPlanNode(
       const core::PlanNode* node,
       const core::PlanNodeId& nodeId,
       const core::PlanNodePtr& source) const = 0;
 
-  const std::string rootDir_;
+  core::PlanNodePtr createPlan() const;
+
+  const std::string queryId_;
   const std::string taskId_;
   const std::string nodeId_;
-  const int32_t pipelineId_;
   const std::string operatorType_;
+  const std::string taskTraceDir_;
+  const std::string nodeTraceDir_;
+  const std::shared_ptr<filesystems::FileSystem> fs_;
+  const std::vector<uint32_t> pipelineIds_;
+  const uint32_t maxDrivers_;
+
+  const std::shared_ptr<core::PlanNodeIdGenerator> planNodeIdGenerator_{
+      std::make_shared<core::PlanNodeIdGenerator>()};
 
   std::unordered_map<std::string, std::string> queryConfigs_;
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
       connectorConfigs_;
   core::PlanNodePtr planFragment_;
-  std::shared_ptr<filesystems::FileSystem> fs_;
-  int32_t maxDrivers_{1};
-};
 
+ private:
+  std::function<core::PlanNodePtr(std::string, core::PlanNodePtr)>
+  replayNodeFactory(const core::PlanNode* node) const;
+};
 } // namespace facebook::velox::tool::trace

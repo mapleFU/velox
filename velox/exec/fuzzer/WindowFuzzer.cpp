@@ -254,8 +254,9 @@ std::vector<SortingKeyAndOrder> WindowFuzzer::generateSortingKeysAndOrders(
     const std::string& prefix,
     std::vector<std::string>& names,
     std::vector<TypePtr>& types,
-    bool isKRangeFrame) {
-  auto keys = generateSortingKeys(prefix, names, types, isKRangeFrame);
+    bool isKRangeFrame,
+    std::optional<uint32_t> numKeys) {
+  auto keys = generateSortingKeys(prefix, names, types, isKRangeFrame, numKeys);
   std::vector<SortingKeyAndOrder> results;
   for (auto i = 0; i < keys.size(); ++i) {
     auto asc = vectorFuzzer_.coinToss(0.5);
@@ -318,17 +319,18 @@ std::string WindowFuzzer::addKRangeOffsetColumnToInputImpl(
     const SortingKeyAndOrder& orderByKey,
     const std::string& columnName,
     const std::string& offsetColumnName) {
+  // Generate frame bound (constant/column) without nulls.
+  ScopedVarSetter nullRatioHolder(
+      &vectorFuzzer_.getMutableOptions().nullRatio, 0.0);
+  ScopedVarSetter dataSpecHolder(
+      &vectorFuzzer_.getMutableOptions().dataSpec, {false, false});
+
   // Use columns as frame bound 50% of time.
   bool isColumnBound = vectorFuzzer_.coinToss(0.5);
   const auto type = CppToType<T>::create();
   VectorPtr constantFrameBound =
       isColumnBound ? nullptr : vectorFuzzer_.fuzzConstant(type, 1);
   VectorPtr columnFrameBound;
-  // Generate frame bound (constant/column) without nulls.
-  ScopedVarSetter nullRatioHolder(
-      &vectorFuzzer_.getMutableOptions().nullRatio, 0.0);
-  ScopedVarSetter dataSpecHolder(
-      &vectorFuzzer_.getMutableOptions().dataSpec, {false, false});
   velox::test::VectorMaker vectorMaker{pool_.get()};
 
   for (auto i = 0; i < FLAGS_num_batches; i++) {
@@ -451,7 +453,10 @@ void WindowFuzzer::go() {
     auto useRowNumberKey =
         requireSortedInput || windowType == core::WindowNode::WindowType::kRows;
 
-    const auto partitionKeys = generateSortingKeys("p", argNames, argTypes);
+    const uint32_t numKeys =
+        boost::random::uniform_int_distribution<uint32_t>(1, 15)(rng_);
+    const auto partitionKeys =
+        generateSortingKeys("p", argNames, argTypes, false, numKeys);
 
     std::vector<SortingKeyAndOrder> sortingKeysAndOrders;
     TypeKind orderByTypeKind;
@@ -465,12 +470,12 @@ void WindowFuzzer::go() {
       // kRange frames need only one order by key. This would be row_number for
       // functions that are order dependent.
       sortingKeysAndOrders =
-          generateSortingKeysAndOrders("s", argNames, argTypes, true);
+          generateSortingKeysAndOrders("s", argNames, argTypes, true, numKeys);
       orderByTypeKind = argTypes.back()->kind();
     } else if (vectorFuzzer_.coinToss(0.5)) {
       // 50% chance without order-by clause.
       sortingKeysAndOrders =
-          generateSortingKeysAndOrders("s", argNames, argTypes);
+          generateSortingKeysAndOrders("s", argNames, argTypes, false, numKeys);
     }
 
     auto input = generateInputDataWithRowNumber(

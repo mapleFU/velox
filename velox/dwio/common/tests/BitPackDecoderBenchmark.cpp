@@ -17,6 +17,7 @@
 #include "velox/common/base/BitUtil.h"
 #include "velox/common/base/Exceptions.h"
 #include "velox/dwio/common/BitPackDecoder.h"
+#include "velox/dwio/parquet/writer/arrow/util/BitStreamUtilsInternal.h"
 
 #ifdef __BMI2__
 #include "velox/dwio/common/tests/Lemire/bmipacking32.h"
@@ -24,7 +25,6 @@
 
 #include "velox/dwio/common/tests/Lemire/FastPFor/bitpackinghelpers.h"
 
-#include <arrow/util/rle_encoding.h>
 #include <folly/Benchmark.h>
 #include <folly/Random.h>
 #include <folly/init/Init.h>
@@ -233,11 +233,9 @@ std::vector<int32_t> oddRowNumbers;
 RowSet allRows;
 RowSet oddRows;
 
-static size_t len_u32 = 0;
 std::vector<uint32_t> randomInts_u32;
 std::vector<uint64_t> randomInts_u32_result;
 
-static size_t len_u64 = 0;
 std::vector<uint64_t> randomInts_u64;
 std::vector<uint64_t> randomInts_u64_result;
 std::vector<char> buffer_u64;
@@ -309,7 +307,7 @@ void lemirebmi2(uint8_t bitWidth, uint32_t* result) {
 
 template <typename T>
 void arrowBitUnpack(uint8_t bitWidth, T* result) {
-  arrow::bit_util::BitReader bitReader(
+  facebook::velox::parquet::arrow::bit_util::BitReader bitReader(
       reinterpret_cast<const uint8_t*>(bitPackedData[bitWidth].data()),
       BYTES(kNumValues, bitWidth));
   bitReader.GetBatch<T>(bitWidth, result, kNumValues);

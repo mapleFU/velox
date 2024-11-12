@@ -179,8 +179,12 @@ class DataSink {
   /// TODO maybe at some point we want to make it async.
   virtual void appendData(RowVectorPtr input) = 0;
 
-  /// Returns the stats of this data sink.
-  virtual Stats stats() const = 0;
+  /// Called after all data has been added via possibly multiple calls to
+  /// appendData() This function finishes the data procesing like sort all the
+  /// added data and write them to the file writer. The finish might take long
+  /// time so it returns false to yield in the middle of processing. The
+  /// function returns true if it has processed all data. This call is blocking.
+  virtual bool finish() = 0;
 
   /// Called once after all data has been added via possibly multiple calls to
   /// appendData(). The function returns the metadata of written data in string
@@ -190,6 +194,9 @@ class DataSink {
   /// Called to abort this data sink object and we don't expect any appendData()
   /// calls on an aborted data sink object.
   virtual void abort() = 0;
+
+  /// Returns the stats of this data sink.
+  virtual Stats stats() const = 0;
 };
 
 /// 这个 DataSource 对应一个 Split Consumer 感觉, push 进去一个 split, 就可以
@@ -291,6 +298,7 @@ class ConnectorQueryCtx {
       const std::string& planNodeId,
       int driverId,
       const std::string& sessionTimezone,
+      bool adjustTimestampToTimezone = false,
       folly::CancellationToken cancellationToken = {})
       : operatorPool_(operatorPool),
         connectorPool_(connectorPool),
@@ -305,6 +313,7 @@ class ConnectorQueryCtx {
         driverId_(driverId),
         planNodeId_(planNodeId),
         sessionTimezone_(sessionTimezone),
+        adjustTimestampToTimezone_(adjustTimestampToTimezone),
         cancellationToken_(std::move(cancellationToken)) {
     VELOX_CHECK_NOT_NULL(sessionProperties);
   }
@@ -373,6 +382,13 @@ class ConnectorQueryCtx {
     return sessionTimezone_;
   }
 
+  /// Whether to adjust Timestamp to the timeZone obtained through
+  /// sessionTimezone(). This is used to be compatible with the
+  /// old logic of Presto.
+  bool adjustTimestampToTimezone() const {
+    return adjustTimestampToTimezone_;
+  }
+
   /// Returns the cancellation token associated with this task.
   const folly::CancellationToken& cancellationToken() const {
     return cancellationToken_;
@@ -400,6 +416,7 @@ class ConnectorQueryCtx {
   const int driverId_;
   const std::string planNodeId_;
   const std::string sessionTimezone_;
+  const bool adjustTimestampToTimezone_;
   const folly::CancellationToken cancellationToken_;
   bool selectiveNimbleReaderEnabled_{false};
 };
@@ -479,9 +496,6 @@ class ConnectorFactory {
 
   virtual ~ConnectorFactory() = default;
 
-  /// Initialize is called during the factory registration.
-  virtual void initialize() {}
-
   const std::string& connectorName() const {
     return name_;
   }
@@ -531,9 +545,4 @@ std::shared_ptr<Connector> getConnector(const std::string& connectorId);
 const std::unordered_map<std::string, std::shared_ptr<Connector>>&
 getAllConnectors();
 
-#define VELOX_REGISTER_CONNECTOR_FACTORY(theFactory)                      \
-  namespace {                                                             \
-  static bool FB_ANONYMOUS_VARIABLE(g_ConnectorFactory) =                 \
-      facebook::velox::connector::registerConnectorFactory((theFactory)); \
-  }
 } // namespace facebook::velox::connector

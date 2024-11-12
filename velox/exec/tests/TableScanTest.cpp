@@ -334,17 +334,30 @@ TEST_F(TableScanTest, connectorStats) {
   EXPECT_NE(nullptr, hiveConnector);
   verifyCacheStats(hiveConnector->fileHandleCacheStats(), 0, 0, 0);
 
-  for (size_t i = 0; i < 99; i++) {
+  // Vector to store file paths
+  std::vector<std::shared_ptr<TempFilePath>> filePaths;
+
+  for (size_t i = 0; i < 49; i++) {
     auto vectors = makeVectors(10, 10);
     auto filePath = TempFilePath::create();
     writeToFile(filePath->getPath(), vectors);
+    filePaths.push_back(filePath); // Store the file path
     createDuckDbTable(vectors);
     auto plan = tableScanNode();
     assertQuery(plan, {filePath}, "SELECT * FROM tmp");
   }
 
-  verifyCacheStats(hiveConnector->fileHandleCacheStats(), 99, 0, 99);
-  verifyCacheStats(hiveConnector->clearFileHandleCache(), 0, 0, 99);
+  // Verify cache stats after the first loop
+  verifyCacheStats(hiveConnector->fileHandleCacheStats(), 49, 0, 49);
+
+  // Second loop to query using the stored file paths
+  for (const auto& filePath : filePaths) {
+    auto plan = tableScanNode();
+    assertQuery(plan, {filePath}, "SELECT * FROM tmp");
+  }
+
+  // Verify cache stats, expecting numHits to have increased
+  verifyCacheStats(hiveConnector->fileHandleCacheStats(), 49, 49, 98);
 }
 
 TEST_F(TableScanTest, columnAliases) {
@@ -614,6 +627,12 @@ DEBUG_ONLY_TEST_F(TableScanTest, timeLimitInGetOutput) {
 }
 
 TEST_F(TableScanTest, subfieldPruningRowType) {
+  // rowType: ROW
+  // └── "e": ROW
+  //     ├── "c": ROW
+  //     │   ├── "a": BIGINT
+  //     │   └── "b": DOUBLE
+  //     └── "d": BIGINT
   auto innerType = ROW({"a", "b"}, {BIGINT(), DOUBLE()});
   auto columnType = ROW({"c", "d"}, {innerType, BIGINT()});
   auto rowType = ROW({"e"}, {columnType});
@@ -648,6 +667,7 @@ TEST_F(TableScanTest, subfieldPruningRowType) {
   auto c = e->childAt(0)->as<RowVector>();
   ASSERT_EQ(c->childrenSize(), 2);
   int j = 0;
+  // assert scanned result is matching input vectors
   for (auto& vec : vectors) {
     ASSERT_LE(j + vec->size(), c->size());
     auto ee = vec->childAt(0)->as<RowVector>();
@@ -663,6 +683,7 @@ TEST_F(TableScanTest, subfieldPruningRowType) {
   }
   ASSERT_EQ(j, c->size());
   auto d = e->childAt(1);
+  // assert e.d is pruned(using null)
   ASSERT_EQ(d->size(), e->size());
   for (int i = 0; i < d->size(); ++i) {
     ASSERT_TRUE(e->isNullAt(i) || d->isNullAt(i));
@@ -705,6 +726,25 @@ TEST_F(TableScanTest, subfieldPruningRemainingFilterSubfieldsMissing) {
   auto a = e->childAt(0);
   for (int i = 0; i < a->size(); ++i) {
     ASSERT_TRUE(e->isNullAt(i) || a->isNullAt(i));
+  }
+
+  op = PlanBuilder()
+           .startTableScan()
+           .outputType(rowType)
+           .remainingFilter("e.a is not null")
+           .assignments(assignments)
+           .endTableScan()
+           .planNode();
+  result = AssertQueryBuilder(op).split(split).copyResults(pool());
+  rows = result->as<RowVector>();
+  e = rows->childAt(0)->as<RowVector>();
+  ASSERT_TRUE(e);
+  ASSERT_EQ(e->childrenSize(), 3);
+  a = e->childAt(0);
+  for (int i = 0; i < a->size(); ++i) {
+    if (!e->isNullAt(i)) {
+      ASSERT_TRUE(!a->isNullAt(i));
+    }
   }
 }
 
@@ -921,19 +961,19 @@ TEST_F(TableScanTest, subfieldPruningMapType) {
         kSize, [i](auto j) { return j >= i + 1 && j % 17 == (i + 1) % 17; });
     auto offsets = allocateOffsets(kSize, pool());
     auto* rawOffsets = offsets->asMutable<vector_size_t>();
-    auto lengths = allocateOffsets(kSize, pool());
-    auto* rawLengths = lengths->asMutable<vector_size_t>();
-    int mapEntrySize = 0;
+    auto sizes = allocateSizes(kSize, pool());
+    auto* rawLengths = sizes->asMutable<vector_size_t>();
+    int totalSize = 0;
     for (int j = 0; j < kSize; ++j) {
-      rawOffsets[j] = mapEntrySize;
+      rawOffsets[j] = totalSize;
       rawLengths[j] = bits::isBitNull(nulls->as<uint64_t>(), j) ? 0 : kMapSize;
-      mapEntrySize += rawLengths[j];
+      totalSize += rawLengths[j];
     }
     auto keys = makeFlatVector<int64_t>(
-        mapEntrySize, [](auto row) { return row % kMapSize; });
-    auto values = makeVectors(1, mapEntrySize, valueType)[0];
+        totalSize, [](auto row) { return row % kMapSize; });
+    auto values = makeVectors(1, totalSize, valueType)[0];
     auto maps = std::make_shared<MapVector>(
-        pool(), mapType, nulls, kSize, offsets, lengths, keys, values);
+        pool(), mapType, nulls, kSize, offsets, sizes, keys, values);
     vectors.push_back(makeRowVector({"c"}, {maps}));
   }
   auto rowType = asRowType(vectors[0]->type());
@@ -963,25 +1003,36 @@ TEST_F(TableScanTest, subfieldPruningMapType) {
   auto rows = result->as<RowVector>();
   ASSERT_TRUE(rows);
   ASSERT_EQ(rows->childrenSize(), 1);
-  auto maps = rows->childAt(0)->as<MapVector>();
-  ASSERT_TRUE(maps);
-  ASSERT_EQ(maps->size(), result->size());
-  for (int i = 0; i < maps->size(); ++i) {
-    auto expected =
-        vectors[i / kSize]->as<RowVector>()->childAt(0)->as<MapVector>();
+  auto outputFlat = rows->childAt(0)->as<MapVector>();
+  ASSERT_TRUE(outputFlat);
+  ASSERT_EQ(outputFlat->size(), result->size());
+  auto currentVectorIndex = -1;
+  const MapVector* inputVector = nullptr;
+  for (int i = 0; i < outputFlat->size(); ++i) {
+    // Create inputVector only when needed
+    int newVectorIndex = i / kSize;
+    if (newVectorIndex != currentVectorIndex) {
+      currentVectorIndex = newVectorIndex;
+      inputVector = vectors[currentVectorIndex]
+                        ->as<RowVector>()
+                        ->childAt(0)
+                        ->as<MapVector>();
+    }
     int j = i % kSize;
-    if (expected->isNullAt(j)) {
-      ASSERT_TRUE(maps->isNullAt(i));
+    if (inputVector->isNullAt(j)) {
+      ASSERT_TRUE(outputFlat->isNullAt(i));
       continue;
     }
-    ASSERT_EQ(maps->sizeAt(i), 3);
+    ASSERT_EQ(outputFlat->sizeAt(i), 3);
     for (int k = 0; k < 3; ++k) {
-      int ki = maps->offsetAt(i) + k;
-      int kj = expected->offsetAt(j) + 2 * k;
-      ASSERT_TRUE(
-          maps->mapKeys()->equalValueAt(expected->mapKeys().get(), ki, kj));
-      ASSERT_TRUE(
-          maps->mapValues()->equalValueAt(expected->mapValues().get(), ki, kj));
+      // Verify pruned output map (offset_output: 0, 1, 2) matches the
+      // entries from the original input map (offset_input: 0, 2, 4)
+      int offset_output = outputFlat->offsetAt(i) + k;
+      int offset_input = inputVector->offsetAt(j) + 2 * k;
+      ASSERT_TRUE(outputFlat->mapKeys()->equalValueAt(
+          inputVector->mapKeys().get(), offset_output, offset_input));
+      ASSERT_TRUE(outputFlat->mapValues()->equalValueAt(
+          inputVector->mapValues().get(), offset_output, offset_input));
     }
   }
 }
@@ -997,7 +1048,7 @@ TEST_F(TableScanTest, subfieldPruningArrayType) {
         kSize, [i](auto j) { return j >= i + 1 && j % 17 == (i + 1) % 17; });
     auto offsets = allocateOffsets(kSize, pool());
     auto* rawOffsets = offsets->asMutable<vector_size_t>();
-    auto lengths = allocateOffsets(kSize, pool());
+    auto lengths = allocateSizes(kSize, pool());
     auto* rawLengths = lengths->asMutable<vector_size_t>();
     int arrayElementSize = 0;
     for (int j = 0; j < kSize; ++j) {
@@ -1039,20 +1090,29 @@ TEST_F(TableScanTest, subfieldPruningArrayType) {
   auto arrays = rows->childAt(0)->as<ArrayVector>();
   ASSERT_TRUE(arrays);
   ASSERT_EQ(arrays->size(), result->size());
+  auto currentVectorIndex = -1;
+  const ArrayVector* inputVector = nullptr;
   for (int i = 0; i < arrays->size(); ++i) {
-    auto expected =
-        vectors[i / kSize]->as<RowVector>()->childAt(0)->as<ArrayVector>();
+    int newVectorIndex = i / kSize;
+    // Create inputVector only when needed
+    if (newVectorIndex != currentVectorIndex) {
+      currentVectorIndex = newVectorIndex;
+      inputVector = vectors[currentVectorIndex]
+                        ->as<RowVector>()
+                        ->childAt(0)
+                        ->as<ArrayVector>();
+    }
     int j = i % kSize;
-    if (expected->isNullAt(j)) {
+    if (inputVector->isNullAt(j)) {
       ASSERT_TRUE(arrays->isNullAt(i));
       continue;
     }
     ASSERT_EQ(arrays->sizeAt(i), 3);
     for (int k = 0; k < 3; ++k) {
       int ki = arrays->offsetAt(i) + k;
-      int kj = expected->offsetAt(j) + k;
-      ASSERT_TRUE(
-          arrays->elements()->equalValueAt(expected->elements().get(), ki, kj));
+      int kj = inputVector->offsetAt(j) + k;
+      ASSERT_TRUE(arrays->elements()->equalValueAt(
+          inputVector->elements().get(), ki, kj));
     }
   }
 }
@@ -1617,7 +1677,8 @@ DEBUG_ONLY_TEST_F(TableScanTest, tableScanSplitsAndWeights) {
   auto leafTaskId = "local://leaf-0";
   auto leafPlan = PlanBuilder()
                       .values(vectors)
-                      .partitionedOutput({}, 1, {"c0", "c1", "c2"})
+                      .partitionedOutput(
+                          {}, 1, {"c0", "c1", "c2"}, VectorSerde::Kind::kPresto)
                       .planNode();
   std::unordered_map<std::string, std::string> config;
   auto queryCtx = core::QueryCtx::create(
@@ -1636,24 +1697,23 @@ DEBUG_ONLY_TEST_F(TableScanTest, tableScanSplitsAndWeights) {
   // Main task plan with table scan and remote exchange.
   auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
   core::PlanNodeId scanNodeId, exchangeNodeId;
-  auto planNode = PlanBuilder(planNodeIdGenerator, pool_.get())
-                      .tableScan(rowType_)
-                      .capturePlanNodeId(scanNodeId)
-                      .project({"c0 AS t0", "c1 AS t1", "c2 AS t2"})
-                      .hashJoin(
-                          {"t0"},
-                          {"u0"},
-                          PlanBuilder(planNodeIdGenerator, pool_.get())
-                              .exchange(leafPlan->outputType())
-                              .capturePlanNodeId(exchangeNodeId)
-                              // .values(vectors)
-                              // .partitionedOutput({}, 1, {"c0", "c1", "c2"})
-                              .project({"c0 AS u0", "c1 AS u1", "c2 AS u2"})
-                              .planNode(),
-                          "",
-                          {"t1"},
-                          core::JoinType::kAnti)
-                      .planNode();
+  auto planNode =
+      PlanBuilder(planNodeIdGenerator, pool_.get())
+          .tableScan(rowType_)
+          .capturePlanNodeId(scanNodeId)
+          .project({"c0 AS t0", "c1 AS t1", "c2 AS t2"})
+          .hashJoin(
+              {"t0"},
+              {"u0"},
+              PlanBuilder(planNodeIdGenerator, pool_.get())
+                  .exchange(leafPlan->outputType(), VectorSerde::Kind::kPresto)
+                  .capturePlanNodeId(exchangeNodeId)
+                  .project({"c0 AS u0", "c1 AS u1", "c2 AS u2"})
+                  .planNode(),
+              "",
+              {"t1"},
+              core::JoinType::kAnti)
+          .planNode();
 
   // Create task, cursor, start the task and supply the table scan splits.
   const int32_t numDrivers = 6;
@@ -2663,7 +2723,7 @@ TEST_F(TableScanTest, path) {
   auto assignments = allRegularColumns(rowType);
   assignments[kPath] = synthesizedColumn(kPath, VARCHAR());
 
-  auto pathValue = fmt::format("file:{}", filePath->getPath());
+  auto& pathValue = filePath->getPath();
   auto typeWithPath = ROW({kPath, "a"}, {VARCHAR(), BIGINT()});
   auto op = PlanBuilder()
                 .startTableScan()
@@ -5131,4 +5191,133 @@ TEST_F(TableScanTest, rowNumberInRemainingFilter) {
   AssertQueryBuilder(plan)
       .split(makeHiveConnectorSplit(file->getPath()))
       .assertResults(expected);
+}
+
+TEST_F(TableScanTest, hugeStripe) {
+  CursorParameters params;
+  params.planNode =
+      PlanBuilder()
+          .tableScan(ROW({}, {}), {"c0 IS NULL"}, "", ROW({"c0"}, {TINYINT()}))
+          .planNode();
+  params.copyResult = false;
+  auto cursor = TaskCursor::create(params);
+  auto path = facebook::velox::test::getDataFilePath(
+      "velox/exec/tests", "data/many-nulls.dwrf");
+  cursor->task()->addSplit("0", makeHiveSplit(path));
+  cursor->task()->noMoreSplits("0");
+  int64_t numRows = 0;
+  while (cursor->moveNext()) {
+    auto& vector = cursor->current();
+    ASSERT_EQ(vector->childrenSize(), 0);
+    numRows += vector->size();
+  }
+  ASSERT_EQ(numRows, 4'294'980'000);
+}
+
+TEST_F(TableScanTest, rowId) {
+  const auto rowIdType =
+      ROW({"row_number",
+           "row_group_id",
+           "metadata_version",
+           "partition_id",
+           "table_guid"},
+          {BIGINT(), VARCHAR(), BIGINT(), BIGINT(), VARCHAR()});
+  auto data = makeFlatVector<int64_t>(10, [](auto i) { return i + 1; });
+  auto vector = makeRowVector({data});
+  auto file = TempFilePath::create();
+  writeToFile(file->getPath(), {vector});
+  auto makeRowIdColumnHandle = [&](auto& name) {
+    return std::make_shared<HiveColumnHandle>(
+        name, HiveColumnHandle::ColumnType::kRowId, rowIdType, rowIdType);
+  };
+  {
+    SCOPED_TRACE("Preload");
+    auto outputType = ROW({"c0", "c1"}, {BIGINT(), rowIdType});
+    auto plan = PlanBuilder()
+                    .startTableScan()
+                    .outputType(outputType)
+                    .assignments({
+                        {"c0", makeColumnHandle("c0", BIGINT(), {})},
+                        {"c1", makeRowIdColumnHandle("c1")},
+                    })
+                    .endTableScan()
+                    .planNode();
+    auto query = AssertQueryBuilder(plan);
+    query.config(core::QueryConfig::kMaxSplitPreloadPerDriver, "4");
+    auto expected = BaseVector::create<RowVector>(outputType, 0, pool());
+    for (int i = 0; i < 10; ++i) {
+      auto split = makeHiveConnectorSplit(file->getPath());
+      split->rowIdProperties = {
+          .metadataVersion = i,
+          .partitionId = 2 * i,
+          .tableGuid = fmt::format("table-guid-{}", i),
+      };
+      query.split(split);
+      auto rowGroupId = split->getFileName();
+      auto newExpected = makeRowVector({
+          data,
+          makeRowVector({
+              makeFlatVector<int64_t>(10, folly::identity),
+              makeConstant(StringView(rowGroupId), 10),
+              makeConstant(split->rowIdProperties->metadataVersion, 10),
+              makeConstant(split->rowIdProperties->partitionId, 10),
+              makeConstant(StringView(split->rowIdProperties->tableGuid), 10),
+          }),
+      });
+      expected->append(newExpected.get());
+    }
+    auto task = query.assertResults(expected);
+    auto stats = getTableScanRuntimeStats(task);
+    ASSERT_GT(stats.at("preloadedSplits").sum, 0);
+  }
+  {
+    SCOPED_TRACE("Remaining filter only");
+    auto remainingFilter =
+        parseExpr("c1.row_number % 2 == 0", ROW({"c1"}, {rowIdType}));
+    auto plan = PlanBuilder()
+                    .startTableScan()
+                    .tableHandle(makeTableHandle({}, remainingFilter))
+                    .outputType(ROW({"c0"}, {BIGINT()}))
+                    .assignments({
+                        {"c0", makeColumnHandle("c0", BIGINT(), {})},
+                        {"c1", makeRowIdColumnHandle("c1")},
+                    })
+                    .endTableScan()
+                    .planNode();
+    auto split = makeHiveConnectorSplit(file->getPath());
+    split->rowIdProperties = {
+        .metadataVersion = 42,
+        .partitionId = 24,
+        .tableGuid = "foo",
+    };
+    auto expected = makeRowVector(
+        {makeFlatVector<int64_t>(5, [](auto i) { return 1 + 2 * i; })});
+    AssertQueryBuilder(plan).split(split).assertResults(expected);
+  }
+  {
+    SCOPED_TRACE("Row ID only");
+    auto plan = PlanBuilder()
+                    .startTableScan()
+                    .outputType(ROW({"c0"}, {rowIdType}))
+                    .assignments({{"c0", makeRowIdColumnHandle("c0")}})
+                    .endTableScan()
+                    .planNode();
+    auto split = makeHiveConnectorSplit(file->getPath());
+    split->rowIdProperties = {
+        .metadataVersion = 42,
+        .partitionId = 24,
+        .tableGuid = "foo",
+    };
+    auto rowGroupId = split->getFileName();
+    auto expected = makeRowVector({
+        makeRowVector({
+            makeFlatVector<int64_t>(10, folly::identity),
+            makeConstant(StringView(rowGroupId), 10),
+            makeConstant(split->rowIdProperties->metadataVersion, 10),
+            makeConstant(split->rowIdProperties->partitionId, 10),
+            makeConstant(StringView(split->rowIdProperties->tableGuid), 10),
+        }),
+    });
+    AssertQueryBuilder(plan).split(split).assertResults(expected);
+  }
 }

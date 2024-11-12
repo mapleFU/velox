@@ -76,6 +76,13 @@ Generic Configuration
      - integer
      - 32MB
      - Used for backpressure to block local exchange producers when the local exchange buffer reaches or exceeds this size.
+  * - max_local_exchange_partition_count
+     - integer
+     - 2^32
+     - Limits the number of partitions created by a local exchange. Partitioning data too granularly can lead to poor performance.
+       This setting allows increasing the task concurrency for all pipelines except the ones that require a local partitioning.
+       Affects the number of drivers for pipelines containing LocalPartitionNode and cannot exceed the maximum number of
+       pipeline drivers configured for the task.
    * - exchange.max_buffer_size
      - integer
      - 32MB
@@ -168,6 +175,10 @@ Expression Evaluation Configuration
      - bool
      - false
      - This flag makes the Row conversion to by applied in a way that the casting row field are matched by name instead of position.
+   * - expression.max_array_size_in_reduce
+     - integer
+     - 100000
+     - ``Reduce`` function will throw an error if encountered an array of size greater than this.
    * - debug_disable_expression_with_peeling
      - bool
      - false
@@ -338,6 +349,11 @@ Spilling
      - Specifies the compression algorithm type to compress the spilled data before write to disk to trade CPU for IO
        efficiency. The supported compression codecs are: ZLIB, SNAPPY, LZO, ZSTD, LZ4 and GZIP.
        NONE means no compression.
+   * - spill_prefixsort_enabled
+     - bool
+     - false
+     - Enable the prefix sort or fallback to timsort in spill. The prefix sort is faster than std::sort but requires the
+       memory to build normalized prefix keys, which might have potential risk of running out of server memory.
    * - spiller_start_partition_bit
      - integer
      - 29
@@ -619,6 +635,7 @@ Each query can override the config by setting corresponding query session proper
        Legacy mode only enables throttled retry for transient errors.
        Standard mode is built on top of legacy mode and has throttled retry enabled for throttling errors apart from transient errors.
        Adaptive retry mode dynamically limits the rate of AWS requests to maximize success rate.
+
 ``Google Cloud Storage Configuration``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 .. list-table::
@@ -632,11 +649,7 @@ Each query can override the config by setting corresponding query session proper
    * - hive.gcs.endpoint
      - string
      -
-     - The GCS storage endpoint server.
-   * - hive.gcs.scheme
-     - string
-     -
-     - The GCS storage scheme, https for default credentials.
+     - The GCS storage URI.
    * - hive.gcs.json-key-file-path
      - string
      -

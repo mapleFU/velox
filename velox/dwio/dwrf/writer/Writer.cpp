@@ -75,8 +75,12 @@ Writer::Writer(
                                     *options.encryptionSpec,
                                     options.encrypterFactory.get())
                               : nullptr);
-  writerBase_->initContext(options.config, pool, std::move(handler));
-
+  writerBase_->initContext(
+      options.config,
+      pool,
+      options.sessionTimezone,
+      options.adjustTimestampToTimezone,
+      std::move(handler));
   auto& context = writerBase_->getContext();
   VELOX_CHECK_EQ(
       context.getTotalMemoryUsage(),
@@ -445,7 +449,7 @@ void Writer::flushStripe(bool close) {
   uint64_t offset = 0;
   const auto addStream = [&](const DwrfStreamIdentifier& stream,
                              const auto& out) {
-    uint32_t currentIndex;
+    uint32_t currentIndex = 0;
     const auto nodeId = stream.encodingKey().node();
     proto::Stream* s = encodingManager.addStreamToFooter(nodeId, currentIndex);
 

@@ -59,58 +59,8 @@ class HiveConfig {
   static constexpr const char* kImmutablePartitions =
       "hive.immutable-partitions";
 
-  /// Virtual addressing is used for AWS S3 and is the default
-  /// (path-style-access is false). Path access style is used for some on-prem
-  /// systems like Minio.
-  static constexpr const char* kS3PathStyleAccess = "hive.s3.path-style-access";
-
-  /// Log granularity of AWS C++ SDK.
-  static constexpr const char* kS3LogLevel = "hive.s3.log-level";
-
-  /// Use HTTPS to communicate with the S3 API.
-  static constexpr const char* kS3SSLEnabled = "hive.s3.ssl.enabled";
-
-  /// Use the EC2 metadata service to retrieve API credentials.
-  static constexpr const char* kS3UseInstanceCredentials =
-      "hive.s3.use-instance-credentials";
-
-  /// The S3 storage endpoint server. This can be used to connect to an
-  /// S3-compatible storage system instead of AWS.
-  static constexpr const char* kS3Endpoint = "hive.s3.endpoint";
-
-  /// Default AWS access key to use.
-  static constexpr const char* kS3AwsAccessKey = "hive.s3.aws-access-key";
-
-  /// Default AWS secret key to use.
-  static constexpr const char* kS3AwsSecretKey = "hive.s3.aws-secret-key";
-
-  /// IAM role to assume.
-  static constexpr const char* kS3IamRole = "hive.s3.iam-role";
-
-  /// Session name associated with the IAM role.
-  static constexpr const char* kS3IamRoleSessionName =
-      "hive.s3.iam-role-session-name";
-
-  /// Socket connect timeout.
-  static constexpr const char* kS3ConnectTimeout = "hive.s3.connect-timeout";
-
-  /// Socket read timeout.
-  static constexpr const char* kS3SocketTimeout = "hive.s3.socket-timeout";
-
-  /// Maximum concurrent TCP connections for a single http client.
-  static constexpr const char* kS3MaxConnections = "hive.s3.max-connections";
-
-  /// Maximum retry attempts for a single http client.
-  static constexpr const char* kS3MaxAttempts = "hive.s3.max-attempts";
-
-  /// Retry mode for a single http client.
-  static constexpr const char* kS3RetryMode = "hive.s3.retry-mode";
-
   /// The GCS storage endpoint server.
   static constexpr const char* kGCSEndpoint = "hive.gcs.endpoint";
-
-  /// The GCS storage scheme, https for default credentials.
-  static constexpr const char* kGCSScheme = "hive.gcs.scheme";
 
   /// The GCS service account configuration JSON key file.
   static constexpr const char* kGCSCredentialsPath =
@@ -242,8 +192,12 @@ class HiveConfig {
   static constexpr const char* kSortWriterMaxOutputBytesSession =
       "sort_writer_max_output_bytes";
 
-  static constexpr const char* kS3UseProxyFromEnv =
-      "hive.s3.use-proxy-from-env";
+  /// Sort Writer will exit finish() method after this many milliseconds even if
+  /// it has not completed its work yet. Zero means no time limit.
+  static constexpr const char* kSortWriterFinishTimeSliceLimitMs =
+      "sort-writer_finish_time_slice_limit_ms";
+  static constexpr const char* kSortWriterFinishTimeSliceLimitMsSession =
+      "sort_writer_finish_time_slice_limit_ms";
 
   // The unit for reading timestamps from files.
   static constexpr const char* kReadTimestampUnit =
@@ -261,37 +215,7 @@ class HiveConfig {
 
   bool immutablePartitions() const;
 
-  bool s3UseVirtualAddressing() const;
-
-  std::string s3GetLogLevel() const;
-
-  bool s3UseSSL() const;
-
-  bool s3UseInstanceCredentials() const;
-
-  std::string s3Endpoint() const;
-
-  std::optional<std::string> s3AccessKey() const;
-
-  std::optional<std::string> s3SecretKey() const;
-
-  std::optional<std::string> s3IAMRole() const;
-
-  std::string s3IAMRoleSessionName() const;
-
-  std::optional<std::string> s3ConnectTimeout() const;
-
-  std::optional<std::string> s3SocketTimeout() const;
-
-  std::optional<uint32_t> s3MaxConnections() const;
-
-  std::optional<int32_t> s3MaxAttempts() const;
-
-  std::optional<std::string> s3RetryMode() const;
-
   std::string gcsEndpoint() const;
-
-  std::string gcsScheme() const;
 
   std::string gcsCredentialsPath() const;
 
@@ -357,11 +281,12 @@ class HiveConfig {
 
   uint64_t sortWriterMaxOutputBytes(const config::ConfigBase* session) const;
 
+  uint64_t sortWriterFinishTimeSliceLimitMs(
+      const config::ConfigBase* session) const;
+
   uint64_t footerEstimatedSize() const;
 
   uint64_t filePreloadThreshold() const;
-
-  bool s3UseProxyFromEnv() const;
 
   // Returns the timestamp unit used when reading timestamps from files.
   uint8_t readTimestampUnit(const config::ConfigBase* session) const;

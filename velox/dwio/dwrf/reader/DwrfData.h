@@ -74,7 +74,7 @@ class DwrfData : public dwio::common::FormatData {
 
   /// Seeks possible flat map in map streams and nulls to the row group
   /// and returns a PositionsProvider for the other streams.
-  dwio::common::PositionProvider seekToRowGroup(uint32_t index) override;
+  dwio::common::PositionProvider seekToRowGroup(int64_t index) override;
 
   int64_t stripeRows() const {
     return stripeRows_;
@@ -147,6 +147,14 @@ class DwrfParams : public dwio::common::FormatParams {
 
   const StreamLabels& streamLabels() const {
     return streamLabels_;
+  }
+
+  const tz::TimeZone* sessionTimezone() const {
+    return stripeStreams_.sessionTimezone();
+  }
+
+  bool adjustTimestampToTimezone() const {
+    return stripeStreams_.adjustTimestampToTimezone();
   }
 
  private:

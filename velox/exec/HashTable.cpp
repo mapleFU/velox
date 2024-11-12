@@ -928,6 +928,13 @@ void HashTable<ignoreNullKeys>::parallelJoinBuild() {
     rowPartitions.push_back(table->rows()->createRowPartitions(*rows_->pool()));
   }
 
+  // Passing driver context directly to avoid cross thread access to thread
+  // local driver thread context.
+  const DriverCtx* driverCtx{nullptr};
+  if (const auto* driverThreadCtx = driverThreadContext()) {
+    driverCtx = driverThreadCtx->driverCtx();
+  }
+
   // The parallel table partitioning step.
   for (auto i = 0; i < numPartitions; ++i) {
     auto* table = getTable(i);
@@ -937,7 +944,10 @@ void HashTable<ignoreNullKeys>::parallelJoinBuild() {
           return std::make_unique<bool>(true);
         }));
     VELOX_CHECK(!partitionSteps.empty());
-    buildExecutor_->add([step = partitionSteps.back()]() { step->prepare(); });
+    buildExecutor_->add([driverCtx, step = partitionSteps.back()]() {
+      ScopedDriverThreadContext scopedDriverThreadContext(driverCtx);
+      step->prepare();
+    });
   }
 
   std::exception_ptr error;
@@ -961,7 +971,10 @@ void HashTable<ignoreNullKeys>::parallelJoinBuild() {
           return std::make_unique<bool>(true);
         }));
     VELOX_CHECK(!buildSteps.empty());
-    buildExecutor_->add([step = buildSteps.back()]() { step->prepare(); });
+    buildExecutor_->add([driverCtx, step = buildSteps.back()]() {
+      ScopedDriverThreadContext scopedDriverThreadContext(driverCtx);
+      step->prepare();
+    });
   }
   syncWorkItems(buildSteps, error, offThreadBuildTiming_);
 

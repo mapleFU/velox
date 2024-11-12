@@ -28,6 +28,7 @@
 namespace facebook::velox::memory {
 
 class MemoryPool;
+class ArbitrationOperation;
 
 using MemoryArbitrationStateCheckCB = std::function<void(MemoryPool&)>;
 
@@ -102,6 +103,10 @@ class MemoryArbitrator {
   }
 
   virtual ~MemoryArbitrator() = default;
+
+  /// Invoked by the memory manager to shutdown the memory arbitrator to stop
+  /// serving new memory arbitration requests.
+  virtual void shutdown() = 0;
 
   /// Invoked by the memory manager to add a newly created memory pool. The
   /// memory arbitrator allocates the initial capacity for 'pool' and
@@ -264,7 +269,7 @@ class MemoryReclaimer {
     /// due to reclaiming at non-reclaimable stage.
     uint64_t numNonReclaimableAttempts{0};
 
-    /// The total execution time to do the reclaim in microseconds.
+    /// The total time to do the reclaim in microseconds.
     uint64_t reclaimExecTimeUs{0};
 
     /// The total reclaimed memory bytes.
@@ -394,11 +399,11 @@ class NonReclaimableSectionGuard {
   const bool oldNonReclaimableSectionValue_;
 };
 
-/// The memory arbitration context which is set on per-thread local variable by
-/// memory arbitrator. It is used to indicate a running thread is under memory
-/// arbitration processing or not. This helps to enable sanity check such as all
-/// the memory reservations during memory arbitration should come from the
-/// spilling memory pool.
+/// The memory arbitration context which is set as per-thread local variable by
+/// memory arbitrator. It is used to indicate if a running thread is under
+/// memory arbitration. This helps to enable sanity check such as all the memory
+/// reservations during memory arbitration should come from the spilling memory
+/// pool.
 struct MemoryArbitrationContext {
   /// Defines the type of memory arbitration.
   enum class Type {
@@ -416,19 +421,27 @@ struct MemoryArbitrationContext {
   /// global memory arbitration type.
   const std::string requestorName;
 
-  explicit MemoryArbitrationContext(const MemoryPool* requestor);
+  ArbitrationOperation* const op;
 
-  MemoryArbitrationContext() : type(Type::kGlobal) {}
+  MemoryArbitrationContext(
+      const MemoryPool* requestor,
+      ArbitrationOperation* _op);
+
+  MemoryArbitrationContext() : type(Type::kGlobal), op(nullptr) {}
 };
 
 /// Object used to set/restore the memory arbitration context when a thread is
 /// under memory arbitration processing.
 class ScopedMemoryArbitrationContext {
  public:
-  explicit ScopedMemoryArbitrationContext(const MemoryPool* requestor);
   ScopedMemoryArbitrationContext();
+
   explicit ScopedMemoryArbitrationContext(
       const MemoryArbitrationContext* context);
+
+  ScopedMemoryArbitrationContext(
+      const MemoryPool* requestor,
+      ArbitrationOperation* op);
 
   ~ScopedMemoryArbitrationContext();
 

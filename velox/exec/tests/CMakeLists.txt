@@ -27,6 +27,7 @@ target_link_libraries(
   aggregate_companion_functions_test
   velox_exec
   velox_function_registry
+  velox_exec_test_lib
   GTest::gtest
   GTest::gtest_main)
 
@@ -60,14 +61,15 @@ add_executable(
   MultiFragmentTest.cpp
   NestedLoopJoinTest.cpp
   OrderByTest.cpp
+  OperatorTraceTest.cpp
   OutputBufferManagerTest.cpp
   PartitionedOutputTest.cpp
   PlanNodeSerdeTest.cpp
   PlanNodeToStringTest.cpp
   PrefixSortTest.cpp
   PrintPlanWithStatsTest.cpp
-  QueryTraceTest.cpp
   ProbeOperatorStateTest.cpp
+  TraceUtilTest.cpp
   RoundRobinPartitionFunctionTest.cpp
   RowContainerTest.cpp
   RowNumberTest.cpp

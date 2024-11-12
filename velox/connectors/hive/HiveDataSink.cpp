@@ -38,6 +38,9 @@ using facebook::velox::common::testutil::TestValue;
 
 namespace facebook::velox::connector::hive {
 namespace {
+#define WRITER_NON_RECLAIMABLE_SECTION_GUARD(index)       \
+  memory::NonReclaimableSectionGuard nonReclaimableGuard( \
+      writerInfo_[(index)]->nonReclaimableSectionHolder.get())
 
 // Returns the type of non-partition data columns.
 RowTypePtr getNonPartitionTypes(
@@ -181,10 +184,17 @@ std::shared_ptr<memory::MemoryPool> createSortPool(
   return writerPool->addLeafChild(fmt::format("{}.sort", writerPool->name()));
 }
 
-#define WRITER_NON_RECLAIMABLE_SECTION_GUARD(index)       \
-  memory::NonReclaimableSectionGuard nonReclaimableGuard( \
-      writerInfo_[(index)]->nonReclaimableSectionHolder.get())
-
+uint64_t getFinishTimeSliceLimitMsFromHiveConfig(
+    const std::shared_ptr<const HiveConfig>& config,
+    const config::ConfigBase* sessions) {
+  const uint64_t flushTimeSliceLimitMsFromConfig =
+      config->sortWriterFinishTimeSliceLimitMs(sessions);
+  // NOTE: if the flush time slice limit is set to 0, then we treat it as no
+  // limit.
+  return flushTimeSliceLimitMsFromConfig == 0
+      ? std::numeric_limits<uint64_t>::max()
+      : flushTimeSliceLimitMsFromConfig;
+}
 } // namespace
 
 const HiveWriterId& HiveWriterId::unpartitionedId() {
@@ -386,9 +396,12 @@ HiveDataSink::HiveDataSink(
                              *insertTableHandle_->bucketProperty(),
                              inputType_)
                        : nullptr),
-      writerFactory_(dwio::common::getWriterFactory(
-          insertTableHandle_->tableStorageFormat())),
-      spillConfig_(connectorQueryCtx->spillConfig()) {
+      writerFactory_(
+          dwio::common::getWriterFactory(insertTableHandle_->storageFormat())),
+      spillConfig_(connectorQueryCtx->spillConfig()),
+      sortWriterFinishTimeSliceLimitMs_(getFinishTimeSliceLimitMsFromHiveConfig(
+          hiveConfig_,
+          connectorQueryCtx->sessionProperties())) {
   if (isBucketed()) {
     VELOX_USER_CHECK_LT(
         bucketCount_, maxBucketCount(), "bucketCount exceeds the limit");
@@ -425,8 +438,7 @@ HiveDataSink::HiveDataSink(
 bool HiveDataSink::canReclaim() const {
   // Currently, we only support memory reclaim on dwrf file writer.
   return (spillConfig_ != nullptr) &&
-      (insertTableHandle_->tableStorageFormat() ==
-       dwio::common::FileFormat::DWRF);
+      (insertTableHandle_->storageFormat() == dwio::common::FileFormat::DWRF);
 }
 
 void HiveDataSink::appendData(RowVectorPtr input) {
@@ -475,6 +487,7 @@ void HiveDataSink::write(size_t index, RowVectorPtr input) {
   auto dataInput = makeDataInput(dataChannels_, input);
 
   writers_[index]->write(dataInput);
+  writerInfo_[index]->inputSizeInBytes += dataInput->estimateFlatSize();
   writerInfo_[index]->numWrittenRows += dataInput->size();
 }
 
@@ -482,6 +495,8 @@ std::string HiveDataSink::stateString(State state) {
   switch (state) {
     case State::kRunning:
       return "RUNNING";
+    case State::kFinishing:
+      return "FLUSHING";
     case State::kClosed:
       return "CLOSED";
     case State::kAborted:
@@ -578,23 +593,52 @@ void HiveDataSink::setState(State newState) {
 void HiveDataSink::checkStateTransition(State oldState, State newState) {
   switch (oldState) {
     case State::kRunning:
-      if (newState == State::kAborted || newState == State::kClosed) {
+      if (newState == State::kAborted || newState == State::kFinishing) {
         return;
       }
       break;
+    case State::kFinishing:
+      if (newState == State::kAborted || newState == State::kClosed ||
+          // The finishing state is reentry state if we yield in the middle of
+          // finish processing if a single run takes too long.
+          newState == State::kFinishing) {
+        return;
+      }
+      [[fallthrough]];
     case State::kAborted:
-      [[fallthrough]];
     case State::kClosed:
-      [[fallthrough]];
     default:
       break;
   }
   VELOX_FAIL("Unexpected state transition from {} to {}", oldState, newState);
 }
 
+bool HiveDataSink::finish() {
+  // Flush is reentry state.
+  setState(State::kFinishing);
+
+  // As for now, only sorted writer needs flush buffered data. For non-sorted
+  // writer, data is directly written to the underlying file writer.
+  if (!sortWrite()) {
+    return true;
+  }
+
+  // TODO: we might refactor to move the data sorting logic into hive data sink.
+  const uint64_t startTimeMs = getCurrentTimeMs();
+  for (auto i = 0; i < writers_.size(); ++i) {
+    WRITER_NON_RECLAIMABLE_SECTION_GUARD(i);
+    if (!writers_[i]->finish()) {
+      return false;
+    }
+    if (getCurrentTimeMs() - startTimeMs > sortWriterFinishTimeSliceLimitMs_) {
+      return false;
+    }
+  }
+  return true;
+}
+
 std::vector<std::string> HiveDataSink::close() {
-  checkRunning();
-  state_ = State::kClosed;
+  setState(State::kClosed);
   closeInternal();
 
   std::vector<std::string> partitionUpdates;
@@ -617,9 +661,7 @@ std::vector<std::string> HiveDataSink::close() {
               ("targetFileName", info->writerParameters.targetFileName())
               ("fileSize", ioStats_.at(i)->rawBytesWritten())))
           ("rowCount", info->numWrittenRows)
-         // TODO(gaoge): track and send the fields when inMemoryDataSizeInBytes
-         // and containsNumberedFileNames are needed at coordinator when file_renaming_enabled are turned on.
-          ("inMemoryDataSizeInBytes", 0)
+          ("inMemoryDataSizeInBytes", info->inputSizeInBytes)
           ("onDiskDataSizeInBytes", ioStats_.at(i)->rawBytesWritten())
           ("containsNumberedFileNames", true));
     // clang-format on
@@ -629,13 +671,13 @@ std::vector<std::string> HiveDataSink::close() {
 }
 
 void HiveDataSink::abort() {
-  checkRunning();
-  state_ = State::kAborted;
+  setState(State::kAborted);
   closeInternal();
 }
 
 void HiveDataSink::closeInternal() {
   VELOX_CHECK_NE(state_, State::kRunning);
+  VELOX_CHECK_NE(state_, State::kFinishing);
 
   TestValue::adjust(
       "facebook::velox::connector::hive::HiveDataSink::closeInternal", this);
@@ -739,10 +781,17 @@ uint32_t HiveDataSink::appendWriter(const HiveWriterId& id) {
   }
 
   updateWriterOptionsFromHiveConfig(
-      insertTableHandle_->tableStorageFormat(),
+      insertTableHandle_->storageFormat(),
       hiveConfig_,
       connectorSessionProperties,
       options);
+
+  const auto& sessionTimeZoneName = connectorQueryCtx_->sessionTimezone();
+  if (!sessionTimeZoneName.empty()) {
+    options->sessionTimezone = tz::locateZone(sessionTimeZoneName);
+  }
+  options->adjustTimestampToTimezone =
+      connectorQueryCtx_->adjustTimestampToTimezone();
 
   // Prevents the memory allocation during the writer creation.
   WRITER_NON_RECLAIMABLE_SECTION_GUARD(writerInfo_.size() - 1);
@@ -792,7 +841,8 @@ HiveDataSink::maybeCreateBucketSortWriter(
       hiveConfig_->sortWriterMaxOutputRows(
           connectorQueryCtx_->sessionProperties()),
       hiveConfig_->sortWriterMaxOutputBytes(
-          connectorQueryCtx_->sessionProperties()));
+          connectorQueryCtx_->sessionProperties()),
+      sortWriterFinishTimeSliceLimitMs_);
 }
 
 HiveWriterId HiveDataSink::getWriterId(size_t row) const {
@@ -886,7 +936,7 @@ std::pair<std::string, std::string> HiveDataSink::getWriterFileNames(
       ? fmt::format(".tmp.velox.{}_{}", targetFileName, makeUuid())
       : targetFileName;
   if (generateFileName &&
-      insertTableHandle_->tableStorageFormat() ==
+      insertTableHandle_->storageFormat() ==
           dwio::common::FileFormat::PARQUET) {
     return {
         fmt::format("{}{}", targetFileName, ".parquet"),
@@ -954,7 +1004,7 @@ folly::dynamic HiveInsertTableHandle::serialize() const {
 
   obj["inputColumns"] = arr;
   obj["locationHandle"] = locationHandle_->serialize();
-  obj["tableStorageFormat"] = dwio::common::toString(tableStorageFormat_);
+  obj["tableStorageFormat"] = dwio::common::toString(storageFormat_);
 
   if (bucketProperty_) {
     obj["bucketProperty"] = bucketProperty_->serialize();
@@ -1014,8 +1064,7 @@ void HiveInsertTableHandle::registerSerDe() {
 
 std::string HiveInsertTableHandle::toString() const {
   std::ostringstream out;
-  out << "HiveInsertTableHandle ["
-      << dwio::common::toString(tableStorageFormat_);
+  out << "HiveInsertTableHandle [" << dwio::common::toString(storageFormat_);
   if (compressionKind_.has_value()) {
     out << " " << common::compressionKindToString(compressionKind_.value());
   } else {

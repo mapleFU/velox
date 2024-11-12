@@ -22,6 +22,8 @@
 #include "velox/dwio/parquet/reader/StructColumnReader.h"
 #include "velox/dwio/parquet/thrift/ThriftTransport.h"
 
+namespace facebook::velox::parquet {
+
 namespace {
 
 bool isParquetReservedKeyword(
@@ -35,8 +37,8 @@ bool isParquetReservedKeyword(
       : false;
 }
 
-facebook::velox::TypePtr getUpdatedTableSchema(
-    const facebook::velox::TypePtr& tableSchema,
+TypePtr getUpdatedTableSchema(
+    const TypePtr& tableSchema,
     uint32_t i,
     uint32_t parentSchemaIdx,
     uint32_t curSchemaIdx,
@@ -46,8 +48,6 @@ facebook::velox::TypePtr getUpdatedTableSchema(
       : tableSchema->childAt(i);
 }
 } // namespace
-
-namespace facebook::velox::parquet {
 
 /// Metadata and options for reading Parquet.
 class ReaderBase {
@@ -91,7 +91,7 @@ class ReaderBase {
   }
 
   const tz::TimeZone* sessionTimezone() const {
-    return options_.getSessionTimezone();
+    return options_.sessionTimezone();
   }
 
   std::optional<SemanticVersion> version() const {
@@ -917,7 +917,6 @@ class ParquetRowReader::Impl {
         currentRowGroupPtr_{nullptr},
         rowsInCurrentRowGroup_{0},
         currentRowInGroup_{0} {
-    const auto& fileSchema = readerBase_->schema();
     // Validate the requested type is compatible with what's in the file
     std::function<std::string()> createExceptionContext = [&]() {
       std::string exceptionMessageContext = fmt::format(
@@ -948,8 +947,6 @@ class ParquetRowReader::Impl {
         readerBase_->schemaWithId(), // Id is schema id
         params,
         *options_.scanSpec());
-    columnReader_->setFillMutatedOutputRows(
-        options_.rowNumberColumnInfo().has_value());
     columnReader_->setIsTopLevel();
 
     filterRowGroups();
@@ -1022,6 +1019,7 @@ class ParquetRowReader::Impl {
       return 0;
     }
     VELOX_DCHECK_GT(rowsToRead, 0);
+    columnReader_->setCurrentRowNumber(nextRowNumber());
     if (!options_.rowNumberColumnInfo().has_value()) {
       columnReader_->next(rowsToRead, result, mutation);
     } else {

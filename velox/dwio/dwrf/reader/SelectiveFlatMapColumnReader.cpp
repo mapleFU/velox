@@ -91,9 +91,7 @@ std::vector<KeyNode<T>> getKeyNodes(
         scanSpec.getOrCreateChild(common::ScanSpec::kMapValuesFieldName);
     VELOX_CHECK(!valuesSpec->hasFilter());
     keysSpec->setProjectOut(true);
-    keysSpec->setExtractValues(true);
     valuesSpec->setProjectOut(true);
-    valuesSpec->setExtractValues(true);
   } else {
     for (auto& c : scanSpec.children()) {
       T key;
@@ -213,10 +211,8 @@ class SelectiveFlatMapReader : public SelectiveStructColumnReaderBase {
             *this,
             getKeyNodes<T>(requestedType, fileType, params, scanSpec, false)) {}
 
-  void read(
-      vector_size_t offset,
-      const RowSet& rows,
-      const uint64_t* incomingNulls) override {
+  void read(int64_t offset, const RowSet& rows, const uint64_t* incomingNulls)
+      override {
     flatMap_.read(offset, rows, incomingNulls);
   }
 

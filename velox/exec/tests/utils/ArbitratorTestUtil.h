@@ -47,7 +47,7 @@ class FakeMemoryReclaimer : public exec::MemoryReclaimer {
     if (driverThreadCtx == nullptr) {
       return;
     }
-    auto* driver = driverThreadCtx->driverCtx.driver;
+    auto* driver = driverThreadCtx->driverCtx()->driver;
     ASSERT_TRUE(driver != nullptr);
     if (driver->task()->enterSuspended(driver->state()) != StopReason::kNone) {
       VELOX_FAIL("Terminate detected when entering suspension");
@@ -59,7 +59,7 @@ class FakeMemoryReclaimer : public exec::MemoryReclaimer {
     if (driverThreadCtx == nullptr) {
       return;
     }
-    auto* driver = driverThreadCtx->driverCtx.driver;
+    auto* driver = driverThreadCtx->driverCtx()->driver;
     ASSERT_TRUE(driver != nullptr);
     driver->task()->leaveSuspended(driver->state());
   }
@@ -94,7 +94,7 @@ std::shared_ptr<core::QueryCtx> newQueryCtx(
 std::unique_ptr<memory::MemoryManager> createMemoryManager(
     int64_t arbitratorCapacity = kMemoryCapacity,
     uint64_t memoryPoolInitCapacity = kMemoryPoolInitCapacity,
-    uint64_t maxReclaimWaitMs = 0,
+    uint64_t maxReclaimWaitMs = 5 * 60 * 1'000,
     uint64_t fastExponentialGrowthCapacityLimit = 0,
     double slowCapacityGrowPct = 0);
 

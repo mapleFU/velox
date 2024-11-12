@@ -42,18 +42,9 @@ class ParquetTableScanTest : public HiveConnectorTestBase {
  protected:
   using OperatorTestBase::assertQuery;
 
-  void SetUp() {
-    OperatorTestBase::SetUp();
-    registerParquetReaderFactory();
-
-    auto hiveConnector =
-        connector::getConnectorFactory(
-            connector::hive::HiveConnectorFactory::kHiveConnectorName)
-            ->newConnector(
-                kHiveConnectorId,
-                std::make_shared<config::ConfigBase>(
-                    std::unordered_map<std::string, std::string>()));
-    connector::registerConnector(hiveConnector);
+  void SetUp() override {
+    HiveConnectorTestBase::SetUp();
+    parquet::registerParquetReaderFactory();
   }
 
   void assertSelect(
@@ -1141,6 +1132,19 @@ TEST_F(ParquetTableScanTest, readParquetColumnsByIndex) {
   EXPECT_THROW(
       AssertQueryBuilder(op).split(split).copyResults(pool()),
       VeloxRuntimeError);
+}
+
+TEST_F(ParquetTableScanTest, deltaByteArray) {
+  auto a = makeFlatVector<StringView>({"axis", "axle", "babble", "babyhood"});
+  auto expected = makeRowVector({"a"}, {a});
+  createDuckDbTable("expected", {expected});
+
+  auto vector = makeFlatVector<StringView>({{}});
+  loadData(
+      getExampleFilePath("delta_byte_array.parquet"),
+      ROW({"a"}, {VARCHAR()}),
+      makeRowVector({"a"}, {vector}));
+  assertSelect({"a"}, "SELECT a from expected");
 }
 
 int main(int argc, char** argv) {

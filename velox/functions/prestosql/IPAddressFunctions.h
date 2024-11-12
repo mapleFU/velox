@@ -16,11 +16,13 @@
 #pragma once
 
 #include "velox/functions/prestosql/types/IPAddressType.h"
+#include "velox/functions/prestosql/types/IPPrefixType.h"
 
 namespace facebook::velox::functions {
 
 void registerIPAddressFunctions(const std::string& prefix) {
   registerIPAddressType();
+  registerIPPrefixType();
 }
 
 } // namespace facebook::velox::functions

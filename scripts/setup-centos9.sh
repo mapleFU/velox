@@ -44,6 +44,7 @@ FMT_VERSION="10.1.1"
 BOOST_VERSION="boost-1.84.0"
 ARROW_VERSION="15.0.0"
 STEMMER_VERSION="2.2.0"
+DUCKDB_VERSION="v0.8.1"
 
 function dnf_install {
   dnf install -y -q --setopt=install_weak_deps=False "$@"
@@ -101,7 +102,7 @@ function install_lzo {
   (
     cd ${DEPENDENCY_DIR}/lzo
     ./configure --prefix=${INSTALL_PREFIX} --enable-shared --disable-static --docdir=/usr/share/doc/lzo-2.10
-    make "-j$(nproc)"
+    make "-j${NPROC}"
     make install
   )
 }
@@ -116,10 +117,10 @@ function install_boost {
       # clang of version 15 when toolset clang-15 is used.
       # This reconciles the project-config.jam generation with what the b2 build system allows for customization.
       sed -i 's/using clang-15/using clang : 15/g' project-config.jam
-      ${SUDO} ./b2 "-j$(nproc)" -d0 install threading=multi toolset=clang-15 --without-python
+      ${SUDO} ./b2 "-j${NPROC}" -d0 install threading=multi toolset=clang-15 --without-python
     else
       ./bootstrap.sh --prefix=${INSTALL_PREFIX}
-      ${SUDO} ./b2 "-j$(nproc)" -d0 install threading=multi --without-python
+      ${SUDO} ./b2 "-j${NPROC}" -d0 install threading=multi --without-python
     fi
   )
 }
@@ -138,7 +139,7 @@ function install_protobuf {
   wget_and_untar https://github.com/protocolbuffers/protobuf/releases/download/v21.8/protobuf-all-21.8.tar.gz protobuf
   (
     cd ${DEPENDENCY_DIR}/protobuf
-    ./configure --prefix=${INSTALL_PREFIX}
+    ./configure CXXFLAGS="-fPIC" --prefix=${INSTALL_PREFIX}
     make "-j${NPROC}"
     make install
     ldconfig
@@ -173,7 +174,7 @@ function install_mvfst {
 function install_duckdb {
   if $BUILD_DUCKDB ; then
     echo 'Building DuckDB'
-    wget_and_untar https://github.com/duckdb/duckdb/archive/refs/tags/v0.8.1.tar.gz duckdb
+    wget_and_untar https://github.com/duckdb/duckdb/archive/refs/tags/${DUCKDB_VERSION}.tar.gz duckdb
     cmake_install_dir duckdb -DBUILD_UNITTESTS=OFF -DENABLE_SANITIZER=OFF -DENABLE_UBSAN=OFF -DBUILD_SHELL=OFF -DEXPORT_DLL_SYMBOLS=OFF -DCMAKE_BUILD_TYPE=Release
   fi
 }
@@ -219,7 +220,8 @@ function install_arrow {
 function install_cuda {
   # See https://developer.nvidia.com/cuda-downloads
   dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo
-  dnf install -y cuda-nvcc-$(echo $1 | tr '.' '-') cuda-cudart-devel-$(echo $1 | tr '.' '-')
+  local dashed="$(echo $1 | tr '.' '-')"
+  dnf install -y cuda-nvcc-$dashed cuda-cudart-devel-$dashed cuda-nvrtc-devel-$dashed cuda-driver-devel-$dashed 
 }
 
 function install_velox_deps {

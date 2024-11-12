@@ -81,7 +81,11 @@ class HiveConnectorSerDeTest : public exec::test::HiveConnectorTestBase {
       ASSERT_EQ(value, clone->customSplitInfo.at(key));
     }
 
-    ASSERT_EQ(*split.extraFileInfo, *clone->extraFileInfo);
+    if (split.extraFileInfo != nullptr) {
+      ASSERT_EQ(*split.extraFileInfo, *clone->extraFileInfo);
+    } else {
+      ASSERT_EQ(clone->extraFileInfo, nullptr);
+    }
     ASSERT_EQ(split.serdeParameters.size(), clone->serdeParameters.size());
     for (const auto& [key, value] : split.serdeParameters) {
       ASSERT_EQ(value, clone->serdeParameters.at(key));
@@ -129,15 +133,34 @@ TEST_F(HiveConnectorSerDeTest, hiveTableHandle) {
 }
 
 TEST_F(HiveConnectorSerDeTest, hiveColumnHandle) {
-  auto columnType = ROW(
-      {{"c0c0", BIGINT()},
-       {"c0c1",
-        ARRAY(MAP(
-            VARCHAR(), ROW({{"c0c1c0", BIGINT()}, {"c0c1c1", BIGINT()}})))}});
-  auto columnHandle = exec::test::HiveConnectorTestBase::makeColumnHandle(
-      "columnHandle", columnType, {"c0.c0c1[3][\"foo\"].c0c1c0"});
+  auto columnType = ROW({
+      {"c0c0", BIGINT()},
+      {"c0c1",
+       ARRAY(
+           MAP(VARCHAR(),
+               ROW({
+                   {"c0c1c0", BIGINT()},
+                   {"c0c1c1", BIGINT()},
+               })))},
+  });
 
-  testSerde(*columnHandle);
+  auto columnHandleTypes = {
+      HiveColumnHandle::ColumnType::kPartitionKey,
+      HiveColumnHandle::ColumnType::kRegular,
+      HiveColumnHandle::ColumnType::kSynthesized,
+      HiveColumnHandle::ColumnType::kRowIndex,
+  };
+
+  for (auto columnHandleType : columnHandleTypes) {
+    auto columnHandle = exec::test::HiveConnectorTestBase::makeColumnHandle(
+        "columnHandle",
+        columnType,
+        columnType,
+        {"c0.c0c1[3][\"foo\"].c0c1c0"},
+        columnHandleType);
+
+    testSerde(*columnHandle);
+  }
 }
 
 TEST_F(HiveConnectorSerDeTest, locationHandle) {
@@ -216,7 +239,9 @@ TEST_F(HiveConnectorSerDeTest, hiveConnectorSplit) {
   FileProperties fileProperties{
       .fileSize = 2048, .modificationTime = std::nullopt};
   const auto properties = std::optional<FileProperties>(fileProperties);
-  const auto split = HiveConnectorSplit(
+  RowIdProperties rowIdProperties{
+      .metadataVersion = 2, .partitionId = 3, .tableGuid = "test"};
+  const auto split1 = HiveConnectorSplit(
       connectorId,
       filePath,
       fileFormat,
@@ -229,8 +254,26 @@ TEST_F(HiveConnectorSerDeTest, hiveConnectorSplit) {
       serdeParameters,
       splitWeight,
       infoColumns,
+      properties,
+      rowIdProperties);
+  testSerde(split1);
+
+  const auto split2 = HiveConnectorSplit(
+      connectorId,
+      filePath,
+      fileFormat,
+      start,
+      length,
+      {},
+      tableBucketNumber,
+      customSplitInfo,
+      nullptr,
+      {},
+      splitWeight,
+      {},
+      std::nullopt,
       std::nullopt);
-  testSerde(split);
+  testSerde(split2);
 }
 
 } // namespace

@@ -26,8 +26,35 @@
 
 namespace facebook::velox::memory {
 
+#define VELOX_MEM_ARBITRATION_TIMEOUT(errorMessage)                  \
+  _VELOX_THROW(                                                      \
+      ::facebook::velox::VeloxRuntimeError,                          \
+      ::facebook::velox::error_source::kErrorSourceRuntime.c_str(),  \
+      ::facebook::velox::error_code::kMemArbitrationTimeout.c_str(), \
+      /* isRetriable */ true,                                        \
+      "{}",                                                          \
+      errorMessage);
+
+namespace test {
+class ArbitrationParticipantTestHelper;
+}
+
 class ArbitrationOperation;
 class ScopedArbitrationParticipant;
+
+/// Custom lock that keeps track of the time of the ongoing arbitration
+/// operation while waiting for the lock. The lock will identify if it needs to
+/// apply a wait timeout by checking arbitrationCtx thread local variable. If a
+/// local arbitration is ongoing on the current locking thread, timeout will
+/// automatically be applied.
+class ArbitrationOperationTimedLock {
+ public:
+  explicit ArbitrationOperationTimedLock(std::timed_mutex& mutex);
+  ~ArbitrationOperationTimedLock();
+
+ private:
+  std::timed_mutex& mutex_;
+};
 
 /// Manages the memory arbitration operations on a query memory pool. It also
 /// tracks the arbitration stats during the query memory pool's lifecycle.
@@ -79,13 +106,34 @@ class ArbitrationParticipant
     uint64_t minFreeCapacity;
     double minFreeCapacityRatio;
 
+    /// Specifies the minimum bytes to reclaim from a participant at a time. The
+    /// global arbitration also avoids to reclaim from a participant if its
+    /// reclaimable used capacity is less than this threshold. This is to
+    /// prevent inefficient memory reclaim operations on a participant with
+    /// small reclaimable used capacity which could causes a large number of
+    /// small spilled file on disk.
+    uint64_t minReclaimBytes;
+
+    /// Specifies the starting memory capacity limit for global arbitration to
+    /// search for victim participant to reclaim used memory by abort. For
+    /// participants with capacity larger than the limit, the global arbitration
+    /// choose to abort the youngest participant which has the largest
+    /// participant id. This helps to let the old queries to run to completion.
+    /// The abort capacity limit is reduced by half if couldn't find a victim
+    /// participant until reaches to zero.
+    ///
+    /// NOTE: the limit must be zero or a power of 2.
+    uint64_t abortCapacityLimit;
+
     Config(
         uint64_t _initCapacity,
         uint64_t _minCapacity,
         uint64_t _fastExponentialGrowthCapacityLimit,
         double _slowCapacityGrowRatio,
         uint64_t _minFreeCapacity,
-        double _minFreeCapacityRatio);
+        double _minFreeCapacityRatio,
+        uint64_t _minReclaimBytes,
+        uint64_t _abortCapacityLimit);
 
     std::string toString() const;
   };
@@ -120,19 +168,19 @@ class ArbitrationParticipant
   }
 
   /// Returns the duration of this arbitration participant since its creation.
-  uint64_t durationUs() const {
-    const auto now = getCurrentTimeMicro();
-    VELOX_CHECK_GE(now, createTimeUs_);
-    return now - createTimeUs_;
+  uint64_t durationNs() const {
+    const auto now = getCurrentTimeNano();
+    VELOX_CHECK_GE(now, createTimeNs_);
+    return now - createTimeNs_;
   }
 
   /// Invoked to acquire a shared reference to this arbitration participant
   /// which ensures the liveness of underlying query memory pool. If the query
   /// memory pool is being destroyed, then this function returns std::nullopt.
   ///
-  // NOTE: it is not safe to directly access arbitration participant as it only
-  // holds a weak ptr to the query memory pool. Use 'lock()' to get a scoped
-  // arbitration participant for access.
+  /// NOTE: it is not safe to directly access arbitration participant as it only
+  /// holds a weak ptr to the query memory pool. Use 'lock()' to get a scoped
+  /// arbitration participant for access.
   std::optional<ScopedArbitrationParticipant> lock();
 
   /// Returns the corresponding query memory pool.
@@ -182,9 +230,12 @@ class ArbitrationParticipant
   /// restriction.
   uint64_t shrink(bool reclaimAll = false);
 
-  // Invoked to reclaim used memory from this memory pool with specified
-  // 'targetBytes'. The function returns the actually freed capacity.
-  uint64_t reclaim(uint64_t targetBytes, uint64_t maxWaitTimeMs) noexcept;
+  /// Invoked to reclaim used memory from this memory pool with specified
+  /// 'targetBytes'. The function returns the actually freed capacity.
+  uint64_t reclaim(
+      uint64_t targetBytes,
+      uint64_t maxWaitTimeNs,
+      MemoryReclaimer::Stats& stats) noexcept;
 
   /// Invoked to abort the query memory pool and returns the reclaimed bytes
   /// after abort.
@@ -195,11 +246,6 @@ class ArbitrationParticipant
     std::lock_guard<std::mutex> l(stateLock_);
     return aborted_;
   }
-
-  /// Invoked to wait for the pending memory reclaim or abort operation to
-  /// complete within a 'maxWaitTimeMs' time window. The function returns false
-  /// if the wait has timed out.
-  bool waitForReclaimOrAbort(uint64_t maxWaitTimeMs) const;
 
   /// Invoked to start arbitration operation 'op'. The operation needs to wait
   /// for the prior arbitration operations to finish first before executing to
@@ -219,7 +265,7 @@ class ArbitrationParticipant
   size_t numWaitingOps() const;
 
   struct Stats {
-    uint64_t durationUs{0};
+    uint64_t durationNs{0};
     uint32_t numRequests{0};
     uint32_t numReclaims{0};
     uint32_t numShrinks{0};
@@ -233,7 +279,7 @@ class ArbitrationParticipant
 
   Stats stats() const {
     Stats stats;
-    stats.durationUs = durationUs();
+    stats.durationNs = durationNs();
     stats.aborted = aborted_;
     stats.numRequests = numRequests_;
     stats.numGrows = numGrows_;
@@ -276,12 +322,14 @@ class ArbitrationParticipant
   // Aborts the query memory pool and returns the reclaimed bytes after abort.
   uint64_t abortLocked(const std::exception_ptr& error) noexcept;
 
+  uint64_t shrinkLocked(bool reclaimAll);
+
   const uint64_t id_;
   const std::weak_ptr<MemoryPool> poolWeakPtr_;
   MemoryPool* const pool_;
   const Config* const config_;
   const uint64_t maxCapacity_;
-  const size_t createTimeUs_;
+  const uint64_t createTimeNs_;
 
   mutable std::mutex stateLock_;
   bool aborted_{false};
@@ -304,9 +352,10 @@ class ArbitrationParticipant
   tsan_atomic<uint64_t> reclaimedBytes_{0};
   tsan_atomic<uint64_t> growBytes_{0};
 
-  mutable std::timed_mutex reclaimLock_;
+  mutable std::timed_mutex reclaimMutex_;
 
   friend class ScopedArbitrationParticipant;
+  friend class test::ArbitrationParticipantTestHelper;
 };
 
 /// The wrapper of the arbitration participant which holds a shared reference to

@@ -133,6 +133,8 @@ MemoryManager::MemoryManager(const MemoryManagerOptions& options)
 }
 
 MemoryManager::~MemoryManager() {
+  arbitrator_->shutdown();
+
   if (pools_.size() != 0) {
     const auto errMsg = fmt::format(
         "pools_.size() != 0 ({} vs {}). There are unexpected alive memory "
@@ -184,6 +186,12 @@ MemoryManager* MemoryManager::getInstance() {
   auto* instance = singletonState().instance.load(std::memory_order_acquire);
   VELOX_CHECK_NOT_NULL(instance, "The memory manager is not set");
   return instance;
+}
+
+// static.
+bool MemoryManager::testInstance() {
+  auto* instance = singletonState().instance.load(std::memory_order_acquire);
+  return instance != nullptr;
 }
 
 // static.

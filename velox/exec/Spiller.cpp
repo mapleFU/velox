@@ -21,6 +21,7 @@
 #include "velox/common/testutil/TestValue.h"
 #include "velox/exec/Aggregate.h"
 #include "velox/exec/HashJoinBridge.h"
+#include "velox/exec/PrefixSort.h"
 #include "velox/external/timsort/TimSort.hpp"
 
 using facebook::velox::common::testutil::TestValue;
@@ -56,6 +57,7 @@ Spiller::Spiller(
           std::numeric_limits<uint64_t>::max(),
           spillConfig->writeBufferSize,
           spillConfig->compressionKind,
+          spillConfig->prefixSortConfig,
           spillConfig->executor,
           spillConfig->maxSpillRunRows,
           spillConfig->fileCreateConfig,
@@ -91,6 +93,7 @@ Spiller::Spiller(
           std::numeric_limits<uint64_t>::max(),
           spillConfig->writeBufferSize,
           spillConfig->compressionKind,
+          spillConfig->prefixSortConfig,
           spillConfig->executor,
           spillConfig->maxSpillRunRows,
           spillConfig->fileCreateConfig,
@@ -122,6 +125,7 @@ Spiller::Spiller(
           std::numeric_limits<uint64_t>::max(),
           spillConfig->writeBufferSize,
           spillConfig->compressionKind,
+          spillConfig->prefixSortConfig,
           spillConfig->executor,
           spillConfig->maxSpillRunRows,
           spillConfig->fileCreateConfig,
@@ -154,6 +158,7 @@ Spiller::Spiller(
           spillConfig->maxFileSize,
           spillConfig->writeBufferSize,
           spillConfig->compressionKind,
+          spillConfig->prefixSortConfig,
           spillConfig->executor,
           0,
           spillConfig->fileCreateConfig,
@@ -187,6 +192,7 @@ Spiller::Spiller(
           spillConfig->maxFileSize,
           spillConfig->writeBufferSize,
           spillConfig->compressionKind,
+          spillConfig->prefixSortConfig,
           spillConfig->executor,
           spillConfig->maxSpillRunRows,
           spillConfig->fileCreateConfig,
@@ -216,6 +222,7 @@ Spiller::Spiller(
           spillConfig->maxFileSize,
           spillConfig->writeBufferSize,
           spillConfig->compressionKind,
+          spillConfig->prefixSortConfig,
           spillConfig->executor,
           spillConfig->maxSpillRunRows,
           spillConfig->fileCreateConfig,
@@ -237,6 +244,7 @@ Spiller::Spiller(
     uint64_t targetFileSize,
     uint64_t writeBufferSize,
     common::CompressionKind compressionKind,
+    const std::optional<common::PrefixSortConfig>& prefixSortConfig,
     folly::Executor* executor,
     uint64_t maxSpillRunRows,
     const std::string& fileCreateConfig,
@@ -259,6 +267,7 @@ Spiller::Spiller(
           targetFileSize,
           writeBufferSize,
           compressionKind,
+          prefixSortConfig,
           memory::spillMemoryPool(),
           spillStats,
           fileCreateConfig) {
@@ -347,7 +356,7 @@ class RowContainerSpillMergeStream : public SpillMergeStream {
         rows_(std::move(rows)),
         spiller_(spiller) {
     if (!rows_.empty()) {
-      nextBatch();
+      RowContainerSpillMergeStream::nextBatch();
     }
   }
 
@@ -421,13 +430,24 @@ void Spiller::ensureSorted(SpillRun& run) {
   uint64_t sortTimeNs{0};
   {
     NanosecondTimer timer(&sortTimeNs);
-    gfx::timsort(
-        run.rows.begin(),
-        run.rows.end(),
-        [&](const char* left, const char* right) {
-          return container_->compareRows(
-                     left, right, state_.sortCompareFlags()) < 0;
-        });
+
+    if (!state_.prefixSortConfig().has_value()) {
+      gfx::timsort(
+          run.rows.begin(),
+          run.rows.end(),
+          [&](const char* left, const char* right) {
+            return container_->compareRows(
+                       left, right, state_.sortCompareFlags()) < 0;
+          });
+    } else {
+      PrefixSort::sort(
+          container_,
+          state_.sortCompareFlags(),
+          state_.prefixSortConfig().value(),
+          memory::spillMemoryPool(),
+          run.rows);
+    }
+
     run.sorted = true;
   }
 
@@ -581,7 +601,7 @@ void Spiller::spill(const RowContainerIterator* startRowIter) {
   checkEmptySpillRuns();
 }
 
-void Spiller::spill(std::vector<char*>& rows) {
+void Spiller::spill(SpillRows& rows) {
   CHECK_NOT_FINALIZED();
   VELOX_CHECK_EQ(type_, Type::kOrderByOutput);
   VELOX_CHECK(!rows.empty());
@@ -705,7 +725,7 @@ bool Spiller::fillSpillRuns(RowContainerIterator* iterator) {
   return lastRun;
 }
 
-void Spiller::fillSpillRun(std::vector<char*>& rows) {
+void Spiller::fillSpillRun(SpillRows& rows) {
   VELOX_CHECK_EQ(bits_.numPartitions(), 1);
   checkEmptySpillRuns();
   uint64_t execTimeNs{0};

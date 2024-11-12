@@ -12,8 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_executable(velox_tool_trace_test TableWriterReplayerTest.cpp
-                                     AggregationReplayerTest.cpp)
+add_executable(
+  velox_tool_trace_test
+  AggregationReplayerTest.cpp
+  FilterProjectReplayerTest.cpp
+  HashJoinReplayerTest.cpp
+  PartitionedOutputReplayerTest.cpp
+  TableScanReplayerTest.cpp
+  TableWriterReplayerTest.cpp)
 
 add_test(
   NAME velox_tool_trace_test

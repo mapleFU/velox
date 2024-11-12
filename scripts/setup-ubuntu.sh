@@ -41,9 +41,16 @@ SUDO="${SUDO:-"sudo --preserve-env"}"
 USE_CLANG="${USE_CLANG:-false}"
 export INSTALL_PREFIX=${INSTALL_PREFIX:-"/usr/local"}
 DEPENDENCY_DIR=${DEPENDENCY_DIR:-$(pwd)/deps-download}
+VERSION=$(cat /etc/os-release | grep VERSION_ID)
+
+# On Ubuntu 20.04 dependencies need to be built using gcc11.
+# On Ubuntu 22.04 gcc11 is already the system gcc installed.
+if [[ ${VERSION} =~ "20.04" ]]; then
+  export CC=/usr/bin/gcc-11
+  export CXX=/usr/bin/g++-11
+fi
 
 function install_clang15 {
-  VERSION=`cat /etc/os-release | grep VERSION_ID`
   if [[ ! ${VERSION} =~ "22.04" && ! ${VERSION} =~ "24.04" ]]; then
     echo "Warning: using the Clang configuration is for Ubuntu 22.04 and 24.04. Errors might occur."
   fi
@@ -54,11 +61,21 @@ function install_clang15 {
   ${SUDO} apt install ${CLANG_PACKAGE_LIST} -y
 }
 
+# For Ubuntu 20.04 we need add the toolchain PPA to get access to gcc11.
+function install_gcc11_if_needed {
+  if [[ ${VERSION} =~ "20.04" ]]; then
+    ${SUDO} add-apt-repository ppa:ubuntu-toolchain-r/test -y
+    ${SUDO} apt update
+    ${SUDO} apt install gcc-11 g++-11 -y
+  fi
+}
+
 FB_OS_VERSION="v2024.07.01.00"
 FMT_VERSION="10.1.1"
 BOOST_VERSION="boost-1.84.0"
 ARROW_VERSION="15.0.0"
 STEMMER_VERSION="2.2.0"
+DUCKDB_VERSION="v0.8.1"
 
 # Install packages required for build.
 function install_build_prerequisites {
@@ -74,14 +91,18 @@ function install_build_prerequisites {
     ninja-build \
     checkinstall \
     git \
+    pkg-config \
     wget
 
   # Install to /usr/local to make it available to all users.
   ${SUDO} pip3 install cmake==3.28.3
 
+  install_gcc11_if_needed
+
   if [[ ${USE_CLANG} != "false" ]]; then
     install_clang15
   fi
+
 }
 
 # Install packages required for build.
@@ -127,11 +148,22 @@ function install_boost {
       # clang of version 15 when toolset clang-15 is used.
       # This reconciles the project-config.jam generation with what the b2 build system allows for customization.
       sed -i 's/using clang-15/using clang : 15/g' project-config.jam
-      ${SUDO} ./b2 "-j$(nproc)" -d0 install threading=multi toolset=clang-15 --without-python
+      ${SUDO} ./b2 "-j${NPROC}" -d0 install threading=multi toolset=clang-15 --without-python
     else
       ./bootstrap.sh --prefix=${INSTALL_PREFIX}
-      ${SUDO} ./b2 "-j$(nproc)" -d0 install threading=multi --without-python
+      ${SUDO} ./b2 "-j${NPROC}" -d0 install threading=multi --without-python
     fi
+  )
+}
+
+function install_protobuf {
+  wget_and_untar https://github.com/protocolbuffers/protobuf/releases/download/v21.8/protobuf-all-21.8.tar.gz protobuf
+  (
+    cd ${DEPENDENCY_DIR}/protobuf
+    ./configure CXXFLAGS="-fPIC" --prefix=${INSTALL_PREFIX}
+    make "-j${NPROC}"
+    make install
+    ldconfig
   )
 }
 
@@ -181,7 +213,7 @@ function install_conda {
 function install_duckdb {
   if $BUILD_DUCKDB ; then
     echo 'Building DuckDB'
-    wget_and_untar https://github.com/duckdb/duckdb/archive/refs/tags/v0.8.1.tar.gz duckdb
+    wget_and_untar https://github.com/duckdb/duckdb/archive/refs/tags/${DUCKDB_VERSION}.tar.gz duckdb
     cmake_install_dir duckdb -DBUILD_UNITTESTS=OFF -DENABLE_SANITIZER=OFF -DENABLE_UBSAN=OFF -DBUILD_SHELL=OFF -DEXPORT_DLL_SYMBOLS=OFF -DCMAKE_BUILD_TYPE=Release
   fi
 }
@@ -232,12 +264,14 @@ function install_cuda {
     rm cuda-keyring_1.1-1_all.deb
     $SUDO apt update
   fi
-  $SUDO apt install -y cuda-nvcc-$(echo $1 | tr '.' '-') cuda-cudart-dev-$(echo $1 | tr '.' '-')
+  local dashed="$(echo $1 | tr '.' '-')"
+  $SUDO apt install -y cuda-nvcc-$dashed cuda-cudart-dev-$dashed cuda-nvrtc-dev-$dashed cuda-driver-dev-$dashed
 }
 
 function install_velox_deps {
   run_and_time install_velox_deps_from_apt
   run_and_time install_fmt
+  run_and_time install_protobuf
   run_and_time install_boost
   run_and_time install_folly
   run_and_time install_fizz
@@ -281,6 +315,10 @@ function install_apt_deps {
       echo "  export CC=/usr/bin/clang-15"
       echo "  export CXX=/usr/bin/clang++-15"
     fi
+    if [[ ${VERSION} =~ "20.04" && ${USE_CLANG} == "false" ]]; then
+      echo "To build Velox gcc-11/g++11 is required. Set the CC and CXX environment variables in your session."
+      echo "  export CC=/usr/bin/gcc-11"
+      echo "  export CXX=/usr/bin/g++-11"
+    fi
   fi
 )
-

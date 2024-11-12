@@ -71,76 +71,8 @@ bool HiveConfig::immutablePartitions() const {
   return config_->get<bool>(kImmutablePartitions, false);
 }
 
-bool HiveConfig::s3UseVirtualAddressing() const {
-  return !config_->get(kS3PathStyleAccess, false);
-}
-
-std::string HiveConfig::s3GetLogLevel() const {
-  return config_->get(kS3LogLevel, std::string("FATAL"));
-}
-
-bool HiveConfig::s3UseSSL() const {
-  return config_->get(kS3SSLEnabled, true);
-}
-
-bool HiveConfig::s3UseInstanceCredentials() const {
-  return config_->get(kS3UseInstanceCredentials, false);
-}
-
-std::string HiveConfig::s3Endpoint() const {
-  return config_->get(kS3Endpoint, std::string(""));
-}
-
-std::optional<std::string> HiveConfig::s3AccessKey() const {
-  return static_cast<std::optional<std::string>>(
-      config_->get<std::string>(kS3AwsAccessKey));
-}
-
-std::optional<std::string> HiveConfig::s3SecretKey() const {
-  return static_cast<std::optional<std::string>>(
-      config_->get<std::string>(kS3AwsSecretKey));
-}
-
-std::optional<std::string> HiveConfig::s3IAMRole() const {
-  return static_cast<std::optional<std::string>>(
-      config_->get<std::string>(kS3IamRole));
-}
-
-std::string HiveConfig::s3IAMRoleSessionName() const {
-  return config_->get(kS3IamRoleSessionName, std::string("velox-session"));
-}
-
-std::optional<std::string> HiveConfig::s3ConnectTimeout() const {
-  return static_cast<std::optional<std::string>>(
-      config_->get<std::string>(kS3ConnectTimeout));
-}
-
-std::optional<std::string> HiveConfig::s3SocketTimeout() const {
-  return static_cast<std::optional<std::string>>(
-      config_->get<std::string>(kS3SocketTimeout));
-}
-
-std::optional<uint32_t> HiveConfig::s3MaxConnections() const {
-  return static_cast<std::optional<std::uint32_t>>(
-      config_->get<uint32_t>(kS3MaxConnections));
-}
-
-std::optional<int32_t> HiveConfig::s3MaxAttempts() const {
-  return static_cast<std::optional<std::int32_t>>(
-      config_->get<int32_t>(kS3MaxAttempts));
-}
-
-std::optional<std::string> HiveConfig::s3RetryMode() const {
-  return static_cast<std::optional<std::string>>(
-      config_->get<std::string>(kS3RetryMode));
-}
-
 std::string HiveConfig::gcsEndpoint() const {
   return config_->get<std::string>(kGCSEndpoint, std::string(""));
-}
-
-std::string HiveConfig::gcsScheme() const {
-  return config_->get<std::string>(kGCSScheme, std::string("https"));
 }
 
 std::string HiveConfig::gcsCredentialsPath() const {
@@ -314,16 +246,19 @@ uint64_t HiveConfig::sortWriterMaxOutputBytes(
       config::CapacityUnit::BYTE);
 }
 
+uint64_t HiveConfig::sortWriterFinishTimeSliceLimitMs(
+    const config::ConfigBase* session) const {
+  return session->get<uint64_t>(
+      kSortWriterFinishTimeSliceLimitMsSession,
+      config_->get<uint64_t>(kSortWriterFinishTimeSliceLimitMs, 5'000));
+}
+
 uint64_t HiveConfig::footerEstimatedSize() const {
   return config_->get<uint64_t>(kFooterEstimatedSize, 1UL << 20);
 }
 
 uint64_t HiveConfig::filePreloadThreshold() const {
   return config_->get<uint64_t>(kFilePreloadThreshold, 8UL << 20);
-}
-
-bool HiveConfig::s3UseProxyFromEnv() const {
-  return config_->get<bool>(kS3UseProxyFromEnv, false);
 }
 
 uint8_t HiveConfig::readTimestampUnit(const config::ConfigBase* session) const {

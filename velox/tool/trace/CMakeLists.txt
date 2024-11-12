@@ -12,8 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-velox_add_library(velox_query_trace_replayer_base OperatorReplayerBase.cpp
-                  TableWriterReplayer.cpp AggregationReplayer.cpp)
+velox_add_library(
+  velox_query_trace_replayer_base
+  AggregationReplayer.cpp
+  FilterProjectReplayer.cpp
+  HashJoinReplayer.cpp
+  OperatorReplayerBase.cpp
+  PartitionedOutputReplayer.cpp
+  TableScanReplayer.cpp
+  TableWriterReplayer.cpp
+  TraceReplayRunner.cpp)
+
 velox_link_libraries(
   velox_query_trace_replayer_base
   velox_aggregates
@@ -22,13 +31,14 @@ velox_link_libraries(
   velox_vector_test_lib
   velox_exec
   velox_exec_test_lib
+  velox_hive_connector
   velox_tpch_connector
   velox_memory
   Folly::folly
   glog::glog
   gflags::gflags)
 
-add_executable(velox_query_replayer QueryReplayer.cpp)
+add_executable(velox_query_replayer TraceReplayerMain.cpp)
 
 target_link_libraries(
   velox_query_replayer

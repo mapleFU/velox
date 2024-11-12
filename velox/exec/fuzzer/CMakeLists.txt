@@ -20,6 +20,8 @@ target_link_libraries(
   velox_vector_fuzzer
   velox_core
   velox_exec_test_lib
+  velox_expression_functions
+  velox_presto_types
   cpr::cpr
   Boost::regex
   velox_type_parser
@@ -27,7 +29,8 @@ target_link_libraries(
   velox_hive_connector
   velox_dwio_dwrf_reader
   velox_dwio_dwrf_writer
-  velox_dwio_catalog_fbhive)
+  velox_dwio_catalog_fbhive
+  velox_dwio_faulty_file_sink)
 
 add_library(velox_aggregation_fuzzer_base AggregationFuzzerBase.cpp)
 
@@ -100,7 +103,9 @@ target_link_libraries(
   velox_exec_test_lib
   velox_expression_test_utility
   velox_temp_path
-  velox_vector_test_lib)
+  velox_vector_test_lib
+  velox_dwio_faulty_file_sink
+  velox_file_test_utils)
 
 add_library(velox_memory_arbitration_fuzzer MemoryArbitrationFuzzer.cpp)
 

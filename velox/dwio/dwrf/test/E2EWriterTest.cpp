@@ -18,20 +18,19 @@
 #include <random>
 #include "velox/common/base/SpillConfig.h"
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/common/memory/tests/SharedArbitratorTestUtil.h"
 #include "velox/common/testutil/TestValue.h"
 #include "velox/dwio/common/Options.h"
 #include "velox/dwio/common/Statistics.h"
-#include "velox/dwio/common/TypeWithId.h"
 #include "velox/dwio/common/encryption/TestProvider.h"
 #include "velox/dwio/common/tests/utils/BatchMaker.h"
 #include "velox/dwio/common/tests/utils/MapBuilder.h"
 #include "velox/dwio/dwrf/common/Config.h"
+#include "velox/dwio/dwrf/reader/ColumnReader.h"
 #include "velox/dwio/dwrf/reader/DwrfReader.h"
 #include "velox/dwio/dwrf/test/OrcTest.h"
 #include "velox/dwio/dwrf/test/utils/E2EWriterTestUtil.h"
-#include "velox/dwio/dwrf/writer/Writer.h"
 #include "velox/type/fbhive/HiveTypeParser.h"
-#include "velox/vector/FlatVector.h"
 #include "velox/vector/fuzzer/VectorFuzzer.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
 
@@ -62,7 +61,7 @@ class E2EWriterTest : public testing::Test {
     leafPool_ = rootPool_->addLeafChild("leaf");
   }
 
-  std::unique_ptr<dwrf::DwrfReader> createReader(
+  static std::unique_ptr<dwrf::DwrfReader> createReader(
       const MemorySink& sink,
       const dwio::common::ReaderOptions& opts) {
     std::string_view data(sink.data(), sink.size());
@@ -1736,7 +1735,11 @@ DEBUG_ONLY_TEST_F(E2EWriterTest, memoryReclaimOnWrite) {
     const auto oldReservedBytes = writerPool->reservedBytes();
     const auto oldUsedBytes = writerPool->usedBytes();
     {
-      memory::ScopedMemoryArbitrationContext arbitrationCtx(writerPool.get());
+      auto arbitrationStructs =
+          memory::test::ArbitrationTestStructs::createArbitrationTestStructs(
+              writerPool);
+      memory::ScopedMemoryArbitrationContext arbitrationCtx(
+          writerPool.get(), arbitrationStructs.operation.get());
       writerPool->reclaim(1L << 30, 0, stats);
     }
     ASSERT_EQ(stats.numNonReclaimableAttempts, 0);
@@ -1775,7 +1778,11 @@ DEBUG_ONLY_TEST_F(E2EWriterTest, memoryReclaimOnWrite) {
       writer->testingNonReclaimableSection() = false;
       stats.numNonReclaimableAttempts = 0;
       {
-        memory::ScopedMemoryArbitrationContext arbitrationCtx(writerPool.get());
+        auto arbitrationStructs =
+            memory::test::ArbitrationTestStructs::createArbitrationTestStructs(
+                writerPool);
+        memory::ScopedMemoryArbitrationContext arbitrationCtx(
+            writerPool.get(), arbitrationStructs.operation.get());
         const auto reclaimedBytes = writerPool->reclaim(1L << 30, 0, stats);
         ASSERT_GT(reclaimedBytes, 0);
       }
@@ -2117,7 +2124,11 @@ DEBUG_ONLY_TEST_F(E2EWriterTest, memoryReclaimThreshold) {
           *writerPool, reclaimableBytes));
       ASSERT_GT(reclaimableBytes, 0);
       {
-        memory::ScopedMemoryArbitrationContext arbitrationCtx(writerPool.get());
+        auto arbitrationStructs =
+            memory::test::ArbitrationTestStructs::createArbitrationTestStructs(
+                writerPool);
+        memory::ScopedMemoryArbitrationContext arbitrationCtx(
+            writerPool.get(), arbitrationStructs.operation.get());
         ASSERT_GT(writerPool->reclaim(1L << 30, 0, stats), 0);
       }
       ASSERT_GT(stats.reclaimExecTimeUs, 0);
@@ -2127,7 +2138,11 @@ DEBUG_ONLY_TEST_F(E2EWriterTest, memoryReclaimThreshold) {
           *writerPool, reclaimableBytes));
       ASSERT_EQ(reclaimableBytes, 0);
       {
-        memory::ScopedMemoryArbitrationContext arbitrationCtx(writerPool.get());
+        auto arbitrationStructs =
+            memory::test::ArbitrationTestStructs::createArbitrationTestStructs(
+                writerPool);
+        memory::ScopedMemoryArbitrationContext arbitrationCtx(
+            writerPool.get(), arbitrationStructs.operation.get());
         ASSERT_EQ(writerPool->reclaim(1L << 30, 0, stats), 0);
       }
       ASSERT_EQ(stats.numNonReclaimableAttempts, 0);

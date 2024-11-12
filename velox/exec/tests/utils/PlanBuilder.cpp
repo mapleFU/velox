@@ -37,7 +37,6 @@ using namespace facebook::velox::connector;
 using namespace facebook::velox::connector::hive;
 
 namespace facebook::velox::exec::test {
-
 namespace {
 
 core::TypedExprPtr parseExpr(
@@ -133,6 +132,26 @@ PlanBuilder& PlanBuilder::tpchTableScan(
       .endTableScan();
 }
 
+PlanBuilder::TableScanBuilder& PlanBuilder::TableScanBuilder::subfieldFilters(
+    std::vector<std::string> subfieldFilters) {
+  subfieldFilters_.clear();
+  subfieldFilters_.reserve(subfieldFilters.size());
+
+  for (const auto& filter : subfieldFilters) {
+    subfieldFilters_.emplace_back(
+        parse::parseExpr(filter, planBuilder_.options_));
+  }
+  return *this;
+}
+
+PlanBuilder::TableScanBuilder& PlanBuilder::TableScanBuilder::remainingFilter(
+    std::string remainingFilter) {
+  if (!remainingFilter.empty()) {
+    remainingFilter_ = parse::parseExpr(remainingFilter, planBuilder_.options_);
+  }
+  return *this;
+}
+
 core::PlanNodePtr PlanBuilder::TableScanBuilder::build(core::PlanNodeId id) {
   VELOX_CHECK_NOT_NULL(outputType_, "outputType must be specified");
   std::unordered_map<std::string, core::TypedExprPtr> typedMapping;
@@ -167,9 +186,10 @@ core::PlanNodePtr PlanBuilder::TableScanBuilder::build(core::PlanNodeId id) {
   filters.reserve(subfieldFilters_.size());
   auto queryCtx = core::QueryCtx::create();
   exec::SimpleExpressionEvaluator evaluator(queryCtx.get(), planBuilder_.pool_);
+
   for (const auto& filter : subfieldFilters_) {
     auto filterExpr =
-        parseExpr(filter, parseType, planBuilder_.options_, planBuilder_.pool_);
+        core::Expressions::inferTypes(filter, parseType, planBuilder_.pool_);
     auto [subfield, subfieldFilter] =
         exec::toSubfieldFilter(filterExpr, &evaluator);
 
@@ -187,12 +207,9 @@ core::PlanNodePtr PlanBuilder::TableScanBuilder::build(core::PlanNodeId id) {
   }
 
   core::TypedExprPtr remainingFilterExpr;
-  if (!remainingFilter_.empty()) {
-    remainingFilterExpr = parseExpr(
-                              remainingFilter_,
-                              parseType,
-                              planBuilder_.options_,
-                              planBuilder_.pool_)
+  if (remainingFilter_) {
+    remainingFilterExpr = core::Expressions::inferTypes(
+                              remainingFilter_, parseType, planBuilder_.pool_)
                               ->rewriteInputNames(typedMapping);
   }
 
@@ -222,16 +239,19 @@ PlanBuilder& PlanBuilder::values(
 
 PlanBuilder& PlanBuilder::traceScan(
     const std::string& traceNodeDir,
+    uint32_t pipelineId,
     const RowTypePtr& outputType) {
-  planNode_ = std::make_shared<core::QueryTraceScanNode>(
-      nextPlanNodeId(), traceNodeDir, outputType);
+  planNode_ = std::make_shared<core::TraceScanNode>(
+      nextPlanNodeId(), traceNodeDir, pipelineId, outputType);
   return *this;
 }
 
-PlanBuilder& PlanBuilder::exchange(const RowTypePtr& outputType) {
+PlanBuilder& PlanBuilder::exchange(
+    const RowTypePtr& outputType,
+    VectorSerde::Kind serdeKind) {
   VELOX_CHECK_NULL(planNode_, "Exchange must be the source node");
-  planNode_ =
-      std::make_shared<core::ExchangeNode>(nextPlanNodeId(), outputType);
+  planNode_ = std::make_shared<core::ExchangeNode>(
+      nextPlanNodeId(), outputType, serdeKind);
   return *this;
 }
 
@@ -266,13 +286,14 @@ parseOrderByClauses(
 
 PlanBuilder& PlanBuilder::mergeExchange(
     const RowTypePtr& outputType,
-    const std::vector<std::string>& keys) {
+    const std::vector<std::string>& keys,
+    VectorSerde::Kind serdeKind) {
   VELOX_CHECK_NULL(planNode_, "MergeExchange must be the source node");
   auto [sortingKeys, sortingOrders] =
       parseOrderByClauses(keys, outputType, pool_);
 
   planNode_ = std::make_shared<core::MergeExchangeNode>(
-      nextPlanNodeId(), outputType, sortingKeys, sortingOrders);
+      nextPlanNodeId(), outputType, sortingKeys, sortingOrders, serdeKind);
 
   return *this;
 }
@@ -1164,15 +1185,17 @@ core::PlanNodePtr createLocalPartitionNode(
 PlanBuilder& PlanBuilder::partitionedOutput(
     const std::vector<std::string>& keys,
     int numPartitions,
-    const std::vector<std::string>& outputLayout) {
-  return partitionedOutput(keys, numPartitions, false, outputLayout);
+    const std::vector<std::string>& outputLayout,
+    VectorSerde::Kind serdeKind) {
+  return partitionedOutput(keys, numPartitions, false, outputLayout, serdeKind);
 }
 
 PlanBuilder& PlanBuilder::partitionedOutput(
     const std::vector<std::string>& keys,
     int numPartitions,
     bool replicateNullsAndAny,
-    const std::vector<std::string>& outputLayout) {
+    const std::vector<std::string>& outputLayout,
+    VectorSerde::Kind serdeKind) {
   VELOX_CHECK_NOT_NULL(
       planNode_, "PartitionedOutput cannot be the source node");
 
@@ -1182,7 +1205,8 @@ PlanBuilder& PlanBuilder::partitionedOutput(
       numPartitions,
       replicateNullsAndAny,
       createPartitionFunctionSpec(planNode_->outputType(), keyExprs, pool_),
-      outputLayout);
+      outputLayout,
+      serdeKind);
 }
 
 PlanBuilder& PlanBuilder::partitionedOutput(
@@ -1190,7 +1214,8 @@ PlanBuilder& PlanBuilder::partitionedOutput(
     int numPartitions,
     bool replicateNullsAndAny,
     core::PartitionFunctionSpecPtr partitionFunctionSpec,
-    const std::vector<std::string>& outputLayout) {
+    const std::vector<std::string>& outputLayout,
+    VectorSerde::Kind serdeKind) {
   VELOX_CHECK_NOT_NULL(
       planNode_, "PartitionedOutput cannot be the source node");
   auto outputType = outputLayout.empty()
@@ -1204,31 +1229,34 @@ PlanBuilder& PlanBuilder::partitionedOutput(
       replicateNullsAndAny,
       std::move(partitionFunctionSpec),
       outputType,
+      serdeKind,
       planNode_);
   return *this;
 }
 
 PlanBuilder& PlanBuilder::partitionedOutputBroadcast(
-    const std::vector<std::string>& outputLayout) {
+    const std::vector<std::string>& outputLayout,
+    VectorSerde::Kind serdeKind) {
   VELOX_CHECK_NOT_NULL(
       planNode_, "PartitionedOutput cannot be the source node");
   auto outputType = outputLayout.empty()
       ? planNode_->outputType()
       : extract(planNode_->outputType(), outputLayout);
   planNode_ = core::PartitionedOutputNode::broadcast(
-      nextPlanNodeId(), 1, outputType, planNode_);
+      nextPlanNodeId(), 1, outputType, serdeKind, planNode_);
   return *this;
 }
 
 PlanBuilder& PlanBuilder::partitionedOutputArbitrary(
-    const std::vector<std::string>& outputLayout) {
+    const std::vector<std::string>& outputLayout,
+    VectorSerde::Kind serdeKind) {
   VELOX_CHECK_NOT_NULL(
       planNode_, "PartitionedOutput cannot be the source node");
   auto outputType = outputLayout.empty()
       ? planNode_->outputType()
       : extract(planNode_->outputType(), outputLayout);
   planNode_ = core::PartitionedOutputNode::arbitrary(
-      nextPlanNodeId(), outputType, planNode_);
+      nextPlanNodeId(), outputType, serdeKind, planNode_);
   return *this;
 }
 
@@ -1247,6 +1275,21 @@ PlanBuilder& PlanBuilder::localPartition(const std::vector<std::string>& keys) {
       exprs(keys, planNode_->outputType()),
       {planNode_},
       pool_);
+  return *this;
+}
+
+PlanBuilder& PlanBuilder::localPartition(
+    int numBuckets,
+    const std::vector<column_index_t>& bucketChannels,
+    const std::vector<VectorPtr>& constValues) {
+  auto hivePartitionFunctionFactory =
+      std::make_shared<HivePartitionFunctionSpec>(
+          numBuckets, bucketChannels, constValues);
+  planNode_ = std::make_shared<core::LocalPartitionNode>(
+      nextPlanNodeId(),
+      core::LocalPartitionNode::Type::kRepartition,
+      std::move(hivePartitionFunctionFactory),
+      std::vector<core::PlanNodePtr>{planNode_});
   return *this;
 }
 
@@ -1323,7 +1366,8 @@ class RoundRobinRowPartitionFunction : public core::PartitionFunction {
 class RoundRobinRowPartitionFunctionSpec : public core::PartitionFunctionSpec {
  public:
   std::unique_ptr<core::PartitionFunction> create(
-      int numPartitions) const override {
+      int numPartitions,
+      bool /*localExchange*/) const override {
     return std::make_unique<RoundRobinRowPartitionFunction>(numPartitions);
   }
 

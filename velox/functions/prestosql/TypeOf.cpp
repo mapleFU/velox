@@ -16,6 +16,7 @@
 #include "velox/expression/VectorFunction.h"
 #include "velox/functions/prestosql/types/HyperLogLogType.h"
 #include "velox/functions/prestosql/types/IPAddressType.h"
+#include "velox/functions/prestosql/types/IPPrefixType.h"
 #include "velox/functions/prestosql/types/JsonType.h"
 #include "velox/functions/prestosql/types/TimestampWithTimeZoneType.h"
 #include "velox/functions/prestosql/types/UuidType.h"
@@ -90,6 +91,9 @@ std::string typeName(const TypePtr& type) {
           typeName(type->childAt(0)),
           typeName(type->childAt(1)));
     case TypeKind::ROW: {
+      if (isIPPrefixType(type)) {
+        return "ipprefix";
+      }
       const auto& rowType = type->asRow();
       std::ostringstream out;
       out << "row(";

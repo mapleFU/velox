@@ -54,6 +54,11 @@ class SwitchExpr : public SpecialForm {
     return true;
   }
 
+  void clearCache() override {
+    Expr::clearCache();
+    tempValues_.reset();
+  }
+
  private:
   static TypePtr resolveType(const std::vector<TypePtr>& argTypes);
 

@@ -22,7 +22,6 @@
 
 #include "velox/common/testutil/TestValue.h"
 #include "velox/connectors/hive/HiveConfig.h"
-#include "velox/connectors/hive/HiveConnectorUtil.h"
 #include "velox/dwio/common/ReaderFactory.h"
 #include "velox/expression/FieldReference.h"
 
@@ -83,18 +82,21 @@ HiveDataSource::HiveDataSource(
         handle,
         "ColumnHandle must be an instance of HiveColumnHandle for {}",
         canonicalizedName);
-
-    if (handle->columnType() == HiveColumnHandle::ColumnType::kPartitionKey) {
-      partitionKeys_.emplace(handle->name(), handle);
-    }
-
-    if (handle->columnType() == HiveColumnHandle::ColumnType::kSynthesized) {
-      infoColumns_.emplace(handle->name(), handle);
-    }
-
-    if (handle->columnType() == HiveColumnHandle::ColumnType::kRowIndex) {
-      VELOX_CHECK_NULL(rowIndexColumn_);
-      rowIndexColumn_ = handle;
+    switch (handle->columnType()) {
+      case HiveColumnHandle::ColumnType::kRegular:
+        break;
+      case HiveColumnHandle::ColumnType::kPartitionKey:
+        partitionKeys_.emplace(handle->name(), handle);
+        break;
+      case HiveColumnHandle::ColumnType::kSynthesized:
+        infoColumns_.emplace(handle->name(), handle);
+        break;
+      case HiveColumnHandle::ColumnType::kRowIndex:
+        specialColumns_.rowIndex = handle->name();
+        break;
+      case HiveColumnHandle::ColumnType::kRowId:
+        specialColumns_.rowId = handle->name();
+        break;
     }
   }
 
@@ -182,10 +184,12 @@ HiveDataSource::HiveDataSource(
       const auto& name = getColumnName(subfield);
       auto it = subfields_.find(name);
       if (it != subfields_.end()) {
-        // Only subfields of the column are projected out.
+        // Some subfields of the column are already projected out, we append the
+        // remainingFilter subfield
         it->second.push_back(&subfield);
       } else if (columnNames.count(name) == 0) {
-        // Column appears only in remaining filter.
+        // remainingFilter subfield's column is not projected out, we add the
+        // column and append the subfield
         subfields_[name].push_back(&subfield);
       }
     }
@@ -200,7 +204,7 @@ HiveDataSource::HiveDataSource(
       hiveTableHandle_->dataColumns(),
       partitionKeys_,
       infoColumns_,
-      rowIndexColumn_,
+      specialColumns_,
       pool_);
   if (remainingFilter) {
     metadataFilter_ = std::make_shared<common::MetadataFilter>(
@@ -265,13 +269,37 @@ std::unique_ptr<HivePartitionFunction> HiveDataSource::setupBucketConversion() {
         hiveTableHandle_->dataColumns(),
         partitionKeys_,
         infoColumns_,
-        rowIndexColumn_,
+        specialColumns_,
         pool_);
     newScanSpec->moveAdaptationFrom(*scanSpec_);
     scanSpec_ = std::move(newScanSpec);
   }
   return std::make_unique<HivePartitionFunction>(
       split_->bucketConversion->tableBucketCount, std::move(bucketChannels));
+}
+
+void HiveDataSource::setupRowIdColumn() {
+  VELOX_CHECK(split_->rowIdProperties.has_value());
+  const auto& props = *split_->rowIdProperties;
+  auto* rowId = scanSpec_->childByName(*specialColumns_.rowId);
+  VELOX_CHECK_NOT_NULL(rowId);
+  auto& rowIdType =
+      readerOutputType_->findChild(*specialColumns_.rowId)->asRow();
+  auto rowGroupId = split_->getFileName();
+  rowId->childByName(rowIdType.nameOf(1))
+      ->setConstantValue<StringView>(
+          StringView(rowGroupId), VARCHAR(), connectorQueryCtx_->memoryPool());
+  rowId->childByName(rowIdType.nameOf(2))
+      ->setConstantValue<int64_t>(
+          props.metadataVersion, BIGINT(), connectorQueryCtx_->memoryPool());
+  rowId->childByName(rowIdType.nameOf(3))
+      ->setConstantValue<int64_t>(
+          props.partitionId, BIGINT(), connectorQueryCtx_->memoryPool());
+  rowId->childByName(rowIdType.nameOf(4))
+      ->setConstantValue<StringView>(
+          StringView(props.tableGuid),
+          VARCHAR(),
+          connectorQueryCtx_->memoryPool());
 }
 
 void HiveDataSource::addSplit(std::shared_ptr<ConnectorSplit> split) {
@@ -292,12 +320,15 @@ void HiveDataSource::addSplit(std::shared_ptr<ConnectorSplit> split) {
   } else {
     partitionFunction_.reset();
   }
+  if (specialColumns_.rowId.has_value()) {
+    setupRowIdColumn();
+  }
 
   splitReader_ = createSplitReader();
   // Split reader subclasses may need to use the reader options in prepareSplit
   // so we initialize it beforehand.
   splitReader_->configureReaderOptions(randomSkip_);
-  splitReader_->prepareSplit(metadataFilter_, runtimeStats_, rowIndexColumn_);
+  splitReader_->prepareSplit(metadataFilter_, runtimeStats_);
 }
 
 vector_size_t HiveDataSource::applyBucketConversion(

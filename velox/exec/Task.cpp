@@ -24,14 +24,14 @@
 #include "velox/common/testutil/TestValue.h"
 #include "velox/common/time/Timer.h"
 #include "velox/exec/Exchange.h"
-#include "velox/exec/HashBuild.h"
+#include "velox/exec/HashJoinBridge.h"
 #include "velox/exec/LocalPlanner.h"
 #include "velox/exec/MemoryReclaimer.h"
 #include "velox/exec/NestedLoopJoinBuild.h"
 #include "velox/exec/OperatorUtils.h"
 #include "velox/exec/OutputBufferManager.h"
-#include "velox/exec/QueryTraceUtil.h"
 #include "velox/exec/Task.h"
+#include "velox/exec/TraceUtil.h"
 
 using facebook::velox::common::testutil::TestValue;
 
@@ -304,7 +304,7 @@ Task::Task(
         dynamic_cast<const folly::InlineLikeExecutor*>(queryCtx_->executor()));
   }
 
-  maybeInitQueryTrace();
+  maybeInitTrace();
 }
 
 Task::~Task() {
@@ -483,7 +483,10 @@ velox::memory::MemoryPool* Task::getOrAddNodePool(
     return nodePools_[planNodeId];
   }
   childPools_.push_back(pool_->addAggregateChild(
-      fmt::format("node.{}", planNodeId), createNodeReclaimer(false)));
+      fmt::format("node.{}", planNodeId), createNodeReclaimer([&]() {
+        return exec::ParallelMemoryReclaimer::create(
+            queryCtx_->spillExecutor());
+      })));
   auto* nodePool = childPools_.back().get();
   nodePools_[planNodeId] = nodePool;
   return nodePool;
@@ -499,22 +502,24 @@ memory::MemoryPool* Task::getOrAddJoinNodePool(
     return nodePools_[nodeId];
   }
   childPools_.push_back(pool_->addAggregateChild(
-      fmt::format("node.{}", nodeId), createNodeReclaimer(true)));
+      fmt::format("node.{}", nodeId), createNodeReclaimer([&]() {
+        return HashJoinMemoryReclaimer::create(
+            getHashJoinBridgeLocked(splitGroupId, planNodeId));
+      })));
   auto* nodePool = childPools_.back().get();
   nodePools_[nodeId] = nodePool;
   return nodePool;
 }
 
 std::unique_ptr<memory::MemoryReclaimer> Task::createNodeReclaimer(
-    bool isHashJoinNode) const {
+    const std::function<std::unique_ptr<memory::MemoryReclaimer>()>&
+        reclaimerFactory) const {
   if (pool()->reclaimer() == nullptr) {
     return nullptr;
   }
   // Sets memory reclaimer for the parent node memory pool on the first child
   // operator construction which has set memory reclaimer.
-  return isHashJoinNode
-      ? HashJoinMemoryReclaimer::create()
-      : exec::ParallelMemoryReclaimer::create(queryCtx_->spillExecutor());
+  return reclaimerFactory();
 }
 
 std::unique_ptr<memory::MemoryReclaimer> Task::createExchangeClientReclaimer()
@@ -1684,7 +1689,7 @@ int Task::getOutputPipelineId() const {
     }
   }
 
-  VELOX_FAIL("Output pipeline not found");
+  VELOX_FAIL("Output pipeline not found for task {}", taskId_);
 }
 
 void Task::setAllOutputConsumed() {
@@ -1730,7 +1735,7 @@ bool Task::checkIfFinishedLocked() {
   }
 
   if (allFinished) {
-    if ((not hasPartitionedOutput()) || partitionedOutputConsumed_) {
+    if (!hasPartitionedOutput() || partitionedOutputConsumed_) {
       taskStats_.endTimeMs = getCurrentTimeMs();
       return true;
     }
@@ -2359,7 +2364,8 @@ ContinueFuture Task::taskDeletionFuture() {
 std::string Task::toString() const {
   std::lock_guard<std::timed_mutex> l(mutex_);
   std::stringstream out;
-  out << "{Task " << shortId(taskId_) << " (" << taskId_ << ")" << std::endl;
+  out << "{Task " << shortId(taskId_) << " (" << taskId_ << ") "
+      << taskStateString(state_) << std::endl;
 
   if (exception_) {
     out << "Error: " << errorMessageLocked() << std::endl;
@@ -2891,7 +2897,7 @@ std::shared_ptr<ExchangeClient> Task::getExchangeClientLocked(
   return exchangeClients_[pipelineId];
 }
 
-std::optional<trace::QueryTraceConfig> Task::maybeMakeTraceConfig() const {
+std::optional<trace::TraceConfig> Task::maybeMakeTraceConfig() const {
   const auto& queryConfig = queryCtx_->queryConfig();
   if (!queryConfig.queryTraceEnabled()) {
     return std::nullopt;
@@ -2909,41 +2915,62 @@ std::optional<trace::QueryTraceConfig> Task::maybeMakeTraceConfig() const {
     return std::nullopt;
   }
 
-  const auto traceDir =
-      fmt::format("{}/{}", queryConfig.queryTraceDir(), taskId_);
-  const auto queryTraceNodes = queryConfig.queryTraceNodeIds();
-  if (queryTraceNodes.empty()) {
-    LOG(INFO) << "Trace metadata for task: " << taskId_;
-    return trace::QueryTraceConfig(traceDir);
-  }
+  const auto traceNodes = queryConfig.queryTraceNodeIds();
+  VELOX_USER_CHECK(!traceNodes.empty(), "Query trace nodes are not set");
 
-  std::vector<std::string> nodes;
-  folly::split(',', queryTraceNodes, nodes);
-  std::unordered_set<std::string> nodeSet(nodes.begin(), nodes.end());
-  VELOX_CHECK_EQ(nodeSet.size(), nodes.size());
-  LOG(INFO) << "Trace data for task " << taskId_ << " with plan nodes "
-            << queryTraceNodes;
+  const auto traceDir = trace::getTaskTraceDirectory(
+      queryConfig.queryTraceDir(), queryCtx_->queryId(), taskId_);
+
+  std::vector<std::string> traceNodeIds;
+  folly::split(',', traceNodes, traceNodeIds);
+  std::unordered_set<std::string> traceNodeIdSet(
+      traceNodeIds.begin(), traceNodeIds.end());
+  VELOX_USER_CHECK_EQ(
+      traceNodeIdSet.size(),
+      traceNodeIds.size(),
+      "Duplicate trace nodes found: {}",
+      folly::join(", ", traceNodeIds));
+
+  bool foundTraceNode{false};
+  for (const auto& traceNodeId : traceNodeIds) {
+    if (core::PlanNode::findFirstNode(
+            planFragment_.planNode.get(),
+            [traceNodeId](const core::PlanNode* node) -> bool {
+              return node->id() == traceNodeId;
+            })) {
+      foundTraceNode = true;
+      break;
+    }
+  }
+  VELOX_USER_CHECK(
+      foundTraceNode,
+      "Trace plan nodes not found from task {}: {}",
+      taskId_,
+      folly::join(",", traceNodeIdSet));
+
+  LOG(INFO) << "Trace input for plan nodes " << traceNodes << " from task "
+            << taskId_;
 
   trace::UpdateAndCheckTraceLimitCB updateAndCheckTraceLimitCB =
       [this](uint64_t bytes) {
-        return queryCtx_->updateTracedBytesAndCheckLimit(bytes);
+        queryCtx_->updateTracedBytesAndCheckLimit(bytes);
       };
-  return trace::QueryTraceConfig(
-      std::move(nodeSet),
+  return trace::TraceConfig(
+      std::move(traceNodeIdSet),
       traceDir,
       std::move(updateAndCheckTraceLimitCB),
       queryConfig.queryTraceTaskRegExp());
 }
 
-void Task::maybeInitQueryTrace() {
+void Task::maybeInitTrace() {
   if (!traceConfig_) {
     return;
   }
 
   trace::createTraceDirectory(traceConfig_->queryTraceDir);
-  const auto queryMetadatWriter = std::make_unique<trace::QueryMetadataWriter>(
+  const auto metadataWriter = std::make_unique<trace::TaskTraceMetadataWriter>(
       traceConfig_->queryTraceDir, memory::traceMemoryPool());
-  queryMetadatWriter->write(queryCtx_, planFragment_.planNode);
+  metadataWriter->write(queryCtx_, planFragment_.planNode);
 }
 
 void Task::testingVisitDrivers(const std::function<void(Driver*)>& callback) {
