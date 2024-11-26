@@ -30,6 +30,9 @@ namespace facebook::velox::dwio::common {
 /// "文件" ( 或者至少是 split 吧, 一个 split 最多一个 file?) 的 io.
 ///
 /// 外部的请求按照 `Region` 来切分, Region 带上了对应的 Label.
+///
+/// createBufferedInput() 能创建对应的 BufferedInput, 我总觉得这里抽象真的
+/// 像是一坨屎.
 class BufferedInput {
  public:
   // 默认合并 1.25MB 的距离
@@ -87,7 +90,7 @@ class BufferedInput {
   /// Returns true if load synchronously.
   ///
   /// https://github.com/facebookincubator/velox/commit/ca5e409aad91462b0f4280b5ee24358deb9f97a1
-  /// 这个感觉就是额外开一个 Load 吧..
+  /// 这个感觉就是额外开一个 Load 吧...
   virtual bool supportSyncLoad() const {
     return true;
   }

@@ -634,14 +634,9 @@ StopReason Driver::runInternal(
                   lockedStats->addOutputVector(
                       resultBytes, intermediateResult->size());
                 }
-<<<<<<< HEAD
-              });
-            }
-            // TODO(mwish): 计算玩 Input 之后, 尝试 PushDown Filter?
-=======
               }
             });
->>>>>>> main
+            // TODO(mwish): 计算玩 Input 之后, 尝试 PushDown Filter?
             pushdownFilters(i);
             if (intermediateResult) {
               withDeltaCpuWallTimer(op, &OperatorStats::addInputTiming, [&]() {
@@ -692,14 +687,6 @@ StopReason Driver::runInternal(
               }
 
               bool finished{false};
-<<<<<<< HEAD
-              CALL_OPERATOR(
-                  finished = op->isFinished(),
-                  op,
-                  curOperatorId_,
-                  kOpMethodIsFinished);
-              // 推进 Op, 设置没有更多 Input 了.
-=======
               withDeltaCpuWallTimer(op, &OperatorStats::finishTiming, [&]() {
                 CALL_OPERATOR(
                     finished = op->isFinished(),
@@ -707,7 +694,7 @@ StopReason Driver::runInternal(
                     curOperatorId_,
                     kOpMethodIsFinished);
               });
->>>>>>> main
+              // 推进 Op, 设置没有更多 Input 了.
               if (finished) {
                 withDeltaCpuWallTimer(
                     op, &OperatorStats::finishTiming, [this, &nextOp]() {
