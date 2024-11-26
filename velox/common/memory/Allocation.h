@@ -67,6 +67,7 @@ class Allocation {
   /// bytes.
   class PageRun {
    public:
+    // 只用了 48 位指针.
     static constexpr uint8_t kPointerSignificantBits = 48;
     static constexpr uint64_t kPointerMask = 0xffffffffffff;
     static constexpr uint32_t kMaxPagesInRun =

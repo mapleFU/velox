@@ -150,6 +150,7 @@ class ReaderBase {
     return *input_;
   }
 
+  // 全局的 Metadata cache
   const std::unique_ptr<StripeMetadataCache>& metadataCache() const {
     return cache_;
   }

@@ -278,6 +278,7 @@ bool CoalescedLoad::loadOrFuture(
     folly::SemiFuture<bool>* wait,
     bool ssdSavable) {
   {
+    // 在锁内争抢 `state_` 状态, 做一个 SingleFlight 逻辑
     std::lock_guard<std::mutex> l(mutex_);
     if (state_ == State::kCancelled || state_ == State::kLoaded) {
       return true;
@@ -318,6 +319,7 @@ bool CoalescedLoad::loadOrFuture(
   return true;
 }
 
+// 结束请求并通知 Future.
 void CoalescedLoad::setEndState(State endState) {
   std::unique_ptr<folly::SharedPromise<bool>> promise;
   {

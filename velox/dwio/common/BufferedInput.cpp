@@ -46,7 +46,7 @@ uint64_t BufferedInput::nextFetchSize() const {
 
 void BufferedInput::load(const LogType logType) {
   // no regions to load
-  if (regions_.size() == 0) {
+  if (regions_.empty()) {
     return;
   }
 
@@ -54,6 +54,7 @@ void BufferedInput::load(const LogType logType) {
   buffers_.clear();
   allocPool_->clear();
 
+  // Sort and merge regions
   sortRegions();
   mergeRegions();
 
@@ -129,6 +130,8 @@ bool BufferedInput::useVRead() const {
   // to wsVRLoad=true we may change the value of this GFLAG programatically from
   // a config update so we can rollback fast from config without the need of a
   // deployment
+  //
+  // 在存储的接口上使用 vread.
   return wsVRLoad_.value_or(FLAGS_wsVRLoad);
 }
 
@@ -178,6 +181,7 @@ void BufferedInput::mergeRegions() {
   VELOX_CHECK_GT(r[ia].length, 0, "invalid region");
   for (size_t ib = 1; ib < r.size(); ++ib) {
     VELOX_CHECK_GT(r[ib].length, 0, "invalid region");
+    // 用 tryMerge 尝试 merge 相邻的 Region.
     if (!tryMerge(r[ia], r[ib])) {
       r[++ia] = r[ib];
     }
@@ -200,6 +204,8 @@ bool BufferedInput::tryMerge(Region& first, const Region& second) {
   }
 
   // compare with 0 since it's comparison in different types
+  //
+  // 吐槽: 这里给的 gap 还挺大的, 默认竟然有 1.5MB.
   if (gap < 0 || gap <= maxMergeDistance_) {
     // the second region is inside first one if extension is negative
     if (extension > 0) {
@@ -224,6 +230,7 @@ std::unique_ptr<SeekableInputStream> BufferedInput::readBuffer(
   return std::make_unique<SeekableArrayInputStream>(std::get<0>(result), size);
 }
 
+// i 是一个 enqueue 拿到的 hint, 用于快速定位到 buffer
 std::tuple<const char*, uint64_t> BufferedInput::readInternal(
     uint64_t offset,
     uint64_t length,

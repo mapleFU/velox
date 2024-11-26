@@ -54,6 +54,7 @@ std::unique_ptr<FileHandle> FileHandleGenerator::operator()(
     if (properties) {
       options.fileSize = properties->fileSize;
     }
+    // 打开对应的 file, 然后生成对应的 uuid 和 groupId, 这两个都是静态规则.
     fileHandle->file = filesystems::getFileSystem(filename, properties_)
                            ->openFileForRead(filename, options);
     fileHandle->uuid = StringIdLease(fileIds(), filename);

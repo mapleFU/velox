@@ -40,6 +40,9 @@ using namespace facebook::velox::io;
 
 /**
  * An abstract interface for providing readers a stream of bytes.
+ *
+ * Stream 抽象的读接口. 这里感觉抽象很奇怪, 把 FilePath 丢进去了...
+ * 提供了: read, readv, readAsync.
  */
 class InputStream {
  public:
@@ -135,6 +138,10 @@ class InputStream {
 };
 
 /// An input stream that reads from an already opened ReadFile.
+///
+/// 把 `ReadFile` 包装成 `InputStream`, 把这里的 async 分发给哪里的
+/// async...
+/// (nmd 这接口比 Arrow 抽象多了)
 class ReadFileInputStream final : public InputStream {
  public:
   /// Takes shared ownership of |readFile|.
