@@ -118,7 +118,7 @@ void SparseHll::serialize(int8_t indexBitLength, char* output) const {
   common::OutputByteStream stream(output);
   stream.appendOne(kPrestoSparseV2);
   stream.appendOne(indexBitLength);
-  stream.appendOne((int16_t)entries_.size());
+  stream.appendOne(static_cast<int16_t>(entries_.size()));
   for (auto entry : entries_) {
     stream.appendOne(entry);
   }
@@ -134,7 +134,7 @@ std::string SparseHll::serializeEmpty(int8_t indexBitLength) {
   common::OutputByteStream stream(serialized.data());
   stream.appendOne(kPrestoSparseV2);
   stream.appendOne(indexBitLength);
-  stream.appendOne((int16_t)0);
+  stream.appendOne(static_cast<int16_t>(0));
   return serialized;
 }
 

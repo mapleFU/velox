@@ -112,28 +112,13 @@ toInt64List(const VectorPtr& vector, vector_size_t start, vector_size_t size) {
   return values;
 }
 
+static std::shared_ptr<ExprToSubfieldFilterParser> defaultParser =
+    std::make_shared<PrestoExprToSubfieldFilterParser>();
+
 } // namespace
 
-std::function<std::unique_ptr<ExprToSubfieldFilterParser>()>
-    ExprToSubfieldFilterParser::parserFactory_ = nullptr;
-
-// static
-std::unique_ptr<ExprToSubfieldFilterParser>
-ExprToSubfieldFilterParser::getInstance() {
-  if (!parserFactory_) {
-    parserFactory_ = []() {
-      return std::make_unique<PrestoExprToSubfieldFilterParser>();
-    };
-  }
-  return parserFactory_();
-}
-
-// static
-void ExprToSubfieldFilterParser::registerParserFactory(
-    std::function<std::unique_ptr<ExprToSubfieldFilterParser>()>
-        parserFactory) {
-  parserFactory_ = parserFactory;
-}
+std::function<std::shared_ptr<ExprToSubfieldFilterParser>()>
+    ExprToSubfieldFilterParser::parserFactory_ = [] { return defaultParser; };
 
 /// SubField 的形式可能是表达式上的几层表达式, 这里需要从 `const
 /// core::ITypedExpr*` 抽出 subfield 对象.

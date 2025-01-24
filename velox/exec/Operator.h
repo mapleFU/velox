@@ -27,19 +27,19 @@
 
 namespace facebook::velox::exec {
 
-// Represents a column that is copied from input to output, possibly
-// with cardinality change, i.e. values removed or duplicated.
-//
-// 自身的 Projection 列表, 应该不包括计算的结果那种列, 这个 Projection 就单纯是
-// 给一些地方做的计算吧.
+/// Represents a column that is copied from input to output, possibly
+/// with cardinality change, i.e. values removed or duplicated.
+///
+/// 自身的 Projection 列表, 应该不包括计算的结果那种列, 这个 Projection 就单纯是
+/// 给一些地方做的计算吧.
 struct IdentityProjection {
   IdentityProjection(
       column_index_t _inputChannel,
       column_index_t _outputChannel)
       : inputChannel(_inputChannel), outputChannel(_outputChannel) {}
 
-  const column_index_t inputChannel;
-  const column_index_t outputChannel;
+  column_index_t inputChannel;
+  column_index_t outputChannel;
 };
 
 struct MemoryStats {
@@ -370,6 +370,11 @@ class Operator : public BaseRuntimeStatWriter {
   /// runtime stats value is the corresponding enum value.
   static inline const std::string kShuffleSerdeKind{"shuffleSerdeKind"};
 
+  /// The compression kind used by an operator for shuffle. The recorded
+  /// runtime stats value is the corresponding enum value.
+  static inline const std::string kShuffleCompressionKind{
+      "shuffleCompressionKind"};
+
   /// 'operatorId' is the initial index of the 'this' in the Driver's list of
   /// Operators. This is used as in index into OperatorStats arrays in the Task.
   /// 'planNodeId' is a query-level unique identifier of the PlanNode to which
@@ -498,8 +503,8 @@ class Operator : public BaseRuntimeStatWriter {
   /// should be called after this.
   virtual void close();
 
-  // (下面的注释好微妙)
-  // Returns true if 'this' never has more output rows than input rows.
+  /// (下面的注释好微妙)
+  /// Returns true if 'this' never has more output rows than input rows.
   virtual bool isFilter() const {
     return false;
   }
@@ -719,7 +724,7 @@ class Operator : public BaseRuntimeStatWriter {
 
    protected:
     MemoryReclaimer(const std::shared_ptr<Driver>& driver, Operator* op)
-        : driver_(driver), op_(op) {
+        : memory::MemoryReclaimer(0), driver_(driver), op_(op) {
       VELOX_CHECK_NOT_NULL(op_);
     }
 
@@ -843,11 +848,11 @@ std::vector<column_index_t> calculateOutputChannels(
     const RowTypePtr& targetInputType,
     const RowTypePtr& targetOutputType);
 
-// A first operator in a Driver, e.g. table scan or exchange client.
-//
-// SourceOperator, 产生数据的 Operator, 其实下面 Doc 写了不少:
-// https://facebookincubator.github.io/velox/develop/operators.html
-// ( 这里 Exchange 包含 LocalExchange 和 Exchange ).
+/// A first operator in a Driver, e.g. table scan or exchange client.
+///
+/// SourceOperator, 产生数据的 Operator, 其实下面 Doc 写了不少:
+/// https://facebookincubator.github.io/velox/develop/operators.html
+/// ( 这里 Exchange 包含 LocalExchange 和 Exchange ).
 class SourceOperator : public Operator {
  public:
   SourceOperator(

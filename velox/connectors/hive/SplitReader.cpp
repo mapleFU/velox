@@ -42,7 +42,7 @@ VectorPtr newConstantFromString(
   }
 
   if (type->isDate()) {
-    auto days = DATE()->toDays((folly::StringPiece)value.value());
+    auto days = DATE()->toDays(static_cast<folly::StringPiece>(value.value()));
     return std::make_shared<ConstantVector<int32_t>>(
         pool, size, false, type, std::move(days));
   }
@@ -134,19 +134,20 @@ SplitReader::SplitReader(
 void SplitReader::configureReaderOptions(
     std::shared_ptr<velox::random::RandomSkipTracker> randomSkip) {
   hive::configureReaderOptions(
-      baseReaderOpts_,
       hiveConfig_,
       connectorQueryCtx_,
       hiveTableHandle_,
-      hiveSplit_);
+      hiveSplit_,
+      baseReaderOpts_);
   baseReaderOpts_.setRandomSkip(std::move(randomSkip));
   baseReaderOpts_.setScanSpec(scanSpec_);
+  baseReaderOpts_.setFileFormat(hiveSplit_->fileFormat);
 }
 
 void SplitReader::prepareSplit(
     std::shared_ptr<common::MetadataFilter> metadataFilter,
     dwio::common::RuntimeStatistics& runtimeStats) {
-  createReader(std::move(metadataFilter));
+  auto rowType = createReader();
 
   // 尝试 Prune 掉整个 split, 如果失败就去创建 RowReader.
   if (checkIfSplitIsEmpty(runtimeStats)) {
@@ -154,7 +155,7 @@ void SplitReader::prepareSplit(
     return;
   }
 
-  createRowReader();
+  createRowReader(std::move(metadataFilter), std::move(rowType));
 }
 
 uint64_t SplitReader::next(uint64_t size, VectorPtr& output) {
@@ -221,8 +222,7 @@ std::string SplitReader::toString() const {
       static_cast<const void*>(baseRowReader_.get()));
 }
 
-void SplitReader::createReader(
-    std::shared_ptr<common::MetadataFilter> metadataFilter) {
+RowTypePtr SplitReader::createReader() {
   VELOX_CHECK_NE(
       baseReaderOpts_.fileFormat(), dwio::common::FileFormat::UNKNOWN);
 
@@ -238,7 +238,7 @@ void SplitReader::createReader(
         hiveConfig_->ignoreMissingFiles(
             connectorQueryCtx_->sessionProperties())) {
       emptySplit_ = true;
-      return;
+      return nullptr;
     }
     throw;
   }
@@ -267,15 +267,22 @@ void SplitReader::createReader(
   auto& fileType = baseReader_->rowType();
   auto columnTypes = adaptColumns(fileType, baseReaderOpts_.fileSchema());
   auto columnNames = fileType->names();
-  configureRowReaderOptions(
-      hiveTableHandle_->tableParameters(),
-      scanSpec_,
-      std::move(metadataFilter),
-      ROW(std::move(columnNames), std::move(columnTypes)),
-      hiveSplit_,
-      hiveConfig_,
-      connectorQueryCtx_->sessionProperties(),
-      baseRowReaderOpts_);
+  return ROW(std::move(columnNames), std::move(columnTypes));
+}
+
+bool SplitReader::filterOnStats(
+    dwio::common::RuntimeStatistics& runtimeStats) const {
+  if (testFilters(
+          scanSpec_.get(),
+          baseReader_.get(),
+          hiveSplit_->filePath,
+          hiveSplit_->partitionKeys,
+          *partitionKeys_)) {
+    return true;
+  }
+  ++runtimeStats.skippedSplits;
+  runtimeStats.skippedSplitBytes += hiveSplit_->length;
+  return false;
 }
 
 bool SplitReader::checkIfSplitIsEmpty(
@@ -285,37 +292,32 @@ bool SplitReader::checkIfSplitIsEmpty(
   if (emptySplit_) {
     return true;
   }
-
-  if (!baseReader_ || baseReader_->numberOfRows() == 0) {
+  if (!baseReader_ || baseReader_->numberOfRows() == 0 ||
+      !filterOnStats(runtimeStats)) {
     emptySplit_ = true;
-  } else {
-    // Check filters and see if the whole split can be skipped. Note that this
-    // doesn't apply to Hudi tables.
-    //
-    // 尝试走 Filter 裁剪整个 Split.
-    if (!testFilters(
-            scanSpec_.get(),
-            baseReader_.get(),
-            hiveSplit_->filePath,
-            hiveSplit_->partitionKeys,
-            *partitionKeys_)) {
-      ++runtimeStats.skippedSplits;
-      runtimeStats.skippedSplitBytes += hiveSplit_->length;
-      emptySplit_ = true;
-    }
   }
-
   return emptySplit_;
 }
 
-void SplitReader::createRowReader() {
+void SplitReader::createRowReader(
+    std::shared_ptr<common::MetadataFilter> metadataFilter,
+    RowTypePtr rowType) {
   VELOX_CHECK_NULL(baseRowReader_);
+  configureRowReaderOptions(
+      hiveTableHandle_->tableParameters(),
+      scanSpec_,
+      std::move(metadataFilter),
+      std::move(rowType),
+      hiveSplit_,
+      hiveConfig_,
+      connectorQueryCtx_->sessionProperties(),
+      baseRowReaderOpts_);
   baseRowReader_ = baseReader_->createRowReader(baseRowReaderOpts_);
 }
 
 std::vector<TypePtr> SplitReader::adaptColumns(
     const RowTypePtr& fileType,
-    const std::shared_ptr<const velox::RowType>& tableSchema) {
+    const std::shared_ptr<const velox::RowType>& tableSchema) const {
   // Keep track of schema types for columns in file, used by ColumnSelector.
   std::vector<TypePtr> columnTypes = fileType->children();
 
@@ -345,7 +347,7 @@ std::vector<TypePtr> SplitReader::adaptColumns(
       auto fileTypeIdx = fileType->getChildIdxIfExists(fieldName);
       if (!fileTypeIdx.has_value()) {
         // Column is missing. Most likely due to schema evolution.
-        VELOX_CHECK(tableSchema);
+        VELOX_CHECK(tableSchema, "Unable to resolve column '{}'", fieldName);
         childSpec->setConstantValue(BaseVector::createNullConstant(
             tableSchema->findChild(fieldName),
             1,

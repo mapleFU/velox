@@ -285,6 +285,8 @@ class CompiledKernel {
       int32_t shared,
       Stream* stream,
       void** args) = 0;
+
+  virtual KernelInfo info(int32_t kernelIdx) = 0;
 };
 
 KernelInfo getRegisteredKernelInfo(const char* name);
@@ -294,5 +296,15 @@ KernelInfo kernelInfo(const void* func);
 std::unordered_map<std::string, KernelInfo>& kernelRegistry();
 /// Prints summary of registered kernels.
 void printKernels();
+
+/// Registers an inline string as a header for use with KernelSpec and
+/// CompiledModule. The first line is the header path, the rest is the text of
+/// the header.
+bool registerHeader(const char* text);
+
+/// Returns the names and contents of headers registered with registerHeader().
+void getRegisteredHeaders(
+    std::vector<const char*>& names,
+    std::vector<const char*>& text);
 
 } // namespace facebook::velox::wave

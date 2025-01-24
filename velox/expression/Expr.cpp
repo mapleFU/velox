@@ -550,6 +550,8 @@ void Expr::evalSimplifiedImpl(
         inputValue->encoding() == VectorEncoding::Simple::ROW ||
         inputValue->encoding() == VectorEncoding::Simple::FUNCTION);
   };
+  auto releaseInputsGuard =
+      folly::makeGuard([&]() { releaseInputValues(context); });
 
   if (defaultNulls) {
     if (!evalArgsDefaultNulls(remainingRows, evalArg, context, result)) {
@@ -573,7 +575,6 @@ void Expr::evalSimplifiedImpl(
 
   // Make sure the returned vector has its null bitmap properly set.
   addNulls(rows, remainingRows.rows().asRange().bits(), context, result);
-  releaseInputValues(context);
 }
 
 namespace {
@@ -784,7 +785,8 @@ void Expr::evalFlatNoNullsImpl(
       {.messageFunc = parentExprSet ? onTopLevelException : onException,
        .arg = parentExprSet ? (void*)&exprExceptionContext : this,
        .isEssential = parentExprSet != nullptr});
-
+  auto releaseInputsGuard =
+      folly::makeGuard([&]() { releaseInputValues(context); });
   if (!rows.hasSelections()) {
     checkOrSetEmptyResult(type(), context.pool(), result);
     return;
@@ -826,15 +828,6 @@ void Expr::evalFlatNoNullsImpl(
       VELOX_CHECK_NULL(inputValues_[i]);
     }
   }
-
-  // 处理掉非 Const 的 Input Value, 这些来自表达式的生成.
-  //
-  // Q: reuse input 会怎么处理这些?
-  // A: reuse input 要求输入和输出列类型相同, 然后是 unique 的.
-  //    结果它会 reuse 相同的内存. 
-  //    重点是 `releaseInputValues` 下层 `VectorPool::release`
-  //    的时候, 如果 !unique, 就不会把这个内存释放掉.
-  releaseInputValues(context);
 }
 
 void Expr::eval(
@@ -1088,7 +1081,7 @@ Expr::PeelEncodingsResult Expr::peelEncodings(
   // 生成更多的 rows, 用来做 Peel.
   const auto& rowsToPeel =
       context.isFinalSelection() ? rows : *context.finalSelection();
-  auto numFields = context.row()->childrenSize();
+  [[maybe_unused]] auto numFields = context.row()->childrenSize();
   std::vector<VectorPtr> vectorsToPeel;
   vectorsToPeel.reserve(distinctFields_.size());
   // 对所有的输入尝试 Peel 出公共的表达式.
@@ -1539,7 +1532,15 @@ void Expr::evalAllImpl(
     EvalCtx& context,
     VectorPtr& result) {
   VELOX_DCHECK(rows.hasSelections());
-
+  // Defer 里面处理掉非 Const 的 Input Value, 这些来自表达式的生成.
+  //
+  // Q: reuse input 会怎么处理这些?
+  // A: reuse input 要求输入和输出列类型相同, 然后是 unique 的.
+  //    结果它会 reuse 相同的内存.
+  //    重点是 `releaseInputValues` 下层 `VectorPool::release`
+  //    的时候, 如果 !unique, 就不会把这个内存释放掉.
+  auto releaseInputsGuard =
+      folly::makeGuard([&]() { releaseInputValues(context); });
   if (isSpecialForm()) {
     // 开洞执行, 我也不知道咋搞的.
     evalSpecialFormWithStats(rows, context, result);
@@ -1602,7 +1603,6 @@ void Expr::evalAllImpl(
   if (remainingRows.hasChanged()) {
     addNulls(rows, remainingRows.rows().asRange().bits(), context, result);
   }
-  releaseInputValues(context);
 }
 
 bool Expr::applyFunctionWithPeeling(
@@ -1612,10 +1612,14 @@ bool Expr::applyFunctionWithPeeling(
   LocalDecodedVector localDecoded(context);
   LocalSelectivityVector newRowsHolder(context);
   if (!context.peelingEnabled()) {
-    if (inputValues_.size() == 1) {
+    if (distinctFields_.size() < 2) {
       // If we have a single input, velox needs to ensure that the
-      // vectorFunction would receive a flat input.
-      BaseVector::flattenVector(inputValues_[0]);
+      // vectorFunction would receive a flat or constant input.
+      for (int i = 0; i < inputValues_.size(); ++i) {
+        if (inputValues_[i]->encoding() == VectorEncoding::Simple::DICTIONARY) {
+          BaseVector::flattenVector(inputValues_[i]);
+        }
+      }
       applyFunction(applyRows, context, result);
       return true;
     }

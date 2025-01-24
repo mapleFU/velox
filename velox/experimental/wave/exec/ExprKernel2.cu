@@ -16,7 +16,6 @@
 
 #include "velox/experimental/wave/exec/ExprKernel.h"
 
-#include <gflags/gflags.h>
 #include "velox/experimental/wave/common/Block.cuh"
 #include "velox/experimental/wave/common/CudaUtil.cuh"
 #include "velox/experimental/wave/exec/Aggregate.cuh"

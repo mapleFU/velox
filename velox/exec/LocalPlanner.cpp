@@ -35,7 +35,9 @@
 #include "velox/exec/OperatorTraceScan.h"
 #include "velox/exec/OrderBy.h"
 #include "velox/exec/PartitionedOutput.h"
+#include "velox/exec/RoundRobinPartitionFunction.h"
 #include "velox/exec/RowNumber.h"
+#include "velox/exec/ScaleWriterLocalPartition.h"
 #include "velox/exec/StreamingAggregation.h"
 #include "velox/exec/TableScan.h"
 #include "velox/exec/TableWriteMerge.h"
@@ -73,6 +75,21 @@ bool mustStartNewPipeline(
   return sourceId != 0;
 }
 
+// Creates the customized local partition operator for table writer scaling.
+std::unique_ptr<Operator> createScaleWriterLocalPartition(
+    const std::shared_ptr<const core::LocalPartitionNode>& localPartitionNode,
+    int32_t operatorId,
+    DriverCtx* ctx) {
+  if (dynamic_cast<const RoundRobinPartitionFunctionSpec*>(
+          &localPartitionNode->partitionFunctionSpec())) {
+    return std::make_unique<ScaleWriterLocalPartition>(
+        operatorId, ctx, localPartitionNode);
+  }
+
+  return std::make_unique<ScaleWriterPartitioningLocalPartition>(
+      operatorId, ctx, localPartitionNode);
+}
+
 /// 把 ConsumerSupplier 适配成 OperatorSupplier, 作为 Operator 的输出性下游.
 OperatorSupplier makeConsumerSupplier(ConsumerSupplier consumerSupplier) {
   if (consumerSupplier) {
@@ -108,6 +125,12 @@ OperatorSupplier makeConsumerSupplier(
 
   if (auto localPartitionNode =
           std::dynamic_pointer_cast<const core::LocalPartitionNode>(planNode)) {
+    if (localPartitionNode->scaleWriter()) {
+      return [localPartitionNode](int32_t operatorId, DriverCtx* ctx) {
+        return createScaleWriterLocalPartition(
+            localPartitionNode, operatorId, ctx);
+      };
+    }
     return [localPartitionNode](int32_t operatorId, DriverCtx* ctx) {
       return std::make_unique<LocalPartition>(
           operatorId, ctx, localPartitionNode);

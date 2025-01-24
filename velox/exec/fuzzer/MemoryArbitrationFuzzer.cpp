@@ -15,23 +15,21 @@
  */
 
 #include "velox/exec/fuzzer/MemoryArbitrationFuzzer.h"
-
 #include <boost/random/uniform_int_distribution.hpp>
 
 #include "velox/common/file/FileSystems.h"
+#include "velox/common/file/tests/FaultyFileSystem.h"
+#include "velox/common/fuzzer/Utils.h"
 #include "velox/common/memory/SharedArbitrator.h"
 #include "velox/connectors/hive/HiveConnector.h"
-#include "velox/connectors/hive/HiveConnectorSplit.h"
 #include "velox/dwio/dwrf/RegisterDwrfReader.h" // @manual
 #include "velox/dwio/dwrf/RegisterDwrfWriter.h" // @manual
 #include "velox/exec/MemoryReclaimer.h"
-#include "velox/exec/TableWriter.h"
 #include "velox/exec/fuzzer/FuzzerUtil.h"
 #include "velox/exec/tests/utils/ArbitratorTestUtil.h"
 #include "velox/exec/tests/utils/AssertQueryBuilder.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
 #include "velox/exec/tests/utils/TempDirectoryPath.h"
-#include "velox/functions/lib/aggregates/AverageAggregateBase.h"
 #include "velox/functions/sparksql/aggregates/Register.h"
 #include "velox/serializers/CompactRowSerializer.h"
 #include "velox/serializers/PrestoSerializer.h"
@@ -74,18 +72,35 @@ DEFINE_int32(
 DEFINE_int64(arbitrator_capacity, 256L << 20, "Arbitrator capacity in bytes.");
 
 DEFINE_int32(
-    abort_injection_pct,
-    5,
-    "The percentage chance of triggering task abort");
-
-DEFINE_int32(
     global_arbitration_pct,
     5,
     "Each second, the percentage chance of triggering global arbitration by "
     "calling shrinking pools globally.");
 
+DEFINE_double(
+    spill_faulty_fs_ratio,
+    0.1,
+    "Chance of spill filesystem being faulty(expressed as double from 0 to 1)");
+
+DEFINE_int32(
+    spill_fs_fault_injection_ratio,
+    0.01,
+    "The chance of actually injecting fault in file operations for spill "
+    "filesystem. This is only applicable when 'spill_faulty_fs_ratio' is "
+    "larger than 0");
+
+DEFINE_int32(
+    task_abort_interval_ms,
+    1000,
+    "After each specified number of milliseconds, abort a random task."
+    "If given 0, no task will be aborted.");
+
+using namespace facebook::velox::tests::utils;
+
 namespace facebook::velox::exec::test {
 namespace {
+
+using fuzzer::coinToss;
 
 class MemoryArbitrationFuzzer {
  public:
@@ -130,6 +145,8 @@ class MemoryArbitrationFuzzer {
   int32_t randInt(int32_t min, int32_t max) {
     return boost::random::uniform_int_distribution<int32_t>(min, max)(rng_);
   }
+
+  std::shared_ptr<TempDirectoryPath> maybeGenerateFaultySpillDirectory();
 
   // Returns a list of randomly generated key types for join and aggregation.
   std::vector<TypePtr> generateKeyTypes(int32_t numKeys);
@@ -683,22 +700,53 @@ MemoryArbitrationFuzzer::orderByPlans(const std::string& tableDir) {
 }
 
 struct ThreadLocalStats {
-  uint64_t taskAbortCount{0};
+  uint64_t spillFsFaultCount{0};
 };
 
 // Stats that keeps track of per thread execution status in verify()
 thread_local ThreadLocalStats threadLocalStats;
+std::atomic_uint32_t taskAbortRequestCount{0};
+
+std::shared_ptr<TempDirectoryPath>
+MemoryArbitrationFuzzer::maybeGenerateFaultySpillDirectory() {
+  FuzzerGenerator fsRng(rng_());
+  const auto injectFsFault =
+      coinToss(fsRng, FLAGS_spill_fs_fault_injection_ratio);
+  if (!injectFsFault) {
+    return exec::test::TempDirectoryPath::create(false);
+  }
+  using OpType = FaultFileOperation::Type;
+  static const std::vector<std::unordered_set<OpType>> opTypes{
+      {OpType::kRead},
+      {OpType::kReadv},
+      {OpType::kWrite},
+      {OpType::kRead, OpType::kReadv},
+      {OpType::kRead, OpType::kWrite},
+      {OpType::kReadv, OpType::kWrite}};
+
+  const auto directory = exec::test::TempDirectoryPath::create(true);
+  auto faultyFileSystem = std::dynamic_pointer_cast<FaultyFileSystem>(
+      filesystems::getFileSystem(directory->getPath(), nullptr));
+  faultyFileSystem->setFileInjectionHook(
+      [this, injectTypes = opTypes[getRandomIndex(fsRng, opTypes.size() - 1)]](
+          FaultFileOperation* op) {
+        if (injectTypes.count(op->type) == 0) {
+          return;
+        }
+        FuzzerGenerator fsRng(rng_());
+        if (coinToss(fsRng, FLAGS_spill_fs_fault_injection_ratio)) {
+          ++threadLocalStats.spillFsFaultCount;
+          VELOX_FAIL(
+              "Fault file injection on {}",
+              FaultFileOperation::typeString(op->type));
+        }
+      });
+  return directory;
+}
 
 void MemoryArbitrationFuzzer::verify() {
-  const auto outputDirectory = TempDirectoryPath::create();
-  const auto spillDirectory = exec::test::TempDirectoryPath::create();
-  const auto tableScanDir = exec::test::TempDirectoryPath::create();
-
-  // Set a percentage chance for the task to be externally aborted.
-  TestScopedAbortInjection scopedAbortInjection(
-      FLAGS_abort_injection_pct,
-      std::numeric_limits<int32_t>::max(),
-      [](Task* /* unused */) { ++threadLocalStats.taskAbortCount; });
+  auto spillDirectory = maybeGenerateFaultySpillDirectory();
+  const auto tableScanDir = exec::test::TempDirectoryPath::create(false);
 
   std::vector<PlanWithSplits> plans;
   for (const auto& plan : hashJoinPlans(tableScanDir->getPath())) {
@@ -716,6 +764,10 @@ void MemoryArbitrationFuzzer::verify() {
 
   SCOPE_EXIT {
     waitForAllTasksToBeDeleted();
+    if (auto faultyFileSystem = std::dynamic_pointer_cast<FaultyFileSystem>(
+            filesystems::getFileSystem(spillDirectory->getPath(), nullptr))) {
+      faultyFileSystem->clearFileFaultInjections();
+    }
   };
 
   const auto numThreads = FLAGS_num_threads;
@@ -724,10 +776,11 @@ void MemoryArbitrationFuzzer::verify() {
   queryThreads.reserve(numThreads);
   for (int i = 0; i < numThreads; ++i) {
     auto seed = rng_();
-    queryThreads.emplace_back([&, i, seed]() {
+    queryThreads.emplace_back([&, spillDirectory, i, seed]() {
       FuzzerGenerator rng(seed);
       while (!stop) {
-        const auto prevAbortCount = threadLocalStats.taskAbortCount;
+        const auto prevSpillFsFaultCount = threadLocalStats.spillFsFaultCount;
+        const auto prevTaskAbortRequestCount = taskAbortRequestCount.load();
         try {
           const auto queryCtx = newQueryCtx(
               memory::memoryManager(),
@@ -751,6 +804,8 @@ void MemoryArbitrationFuzzer::verify() {
                     .copyResults(pool_.get());
           }
           ++stats_.wlock()->successCount;
+          VELOX_CHECK_EQ(
+              threadLocalStats.spillFsFaultCount, prevSpillFsFaultCount);
         } catch (const VeloxException& e) {
           auto lockedStats = stats_.wlock();
           if (e.errorCode() == error_code::kMemCapExceeded.c_str()) {
@@ -758,11 +813,26 @@ void MemoryArbitrationFuzzer::verify() {
           } else if (e.errorCode() == error_code::kMemAborted.c_str()) {
             ++lockedStats->abortCount;
           } else if (e.errorCode() == error_code::kInvalidState.c_str()) {
-            // Triggered abort on task.
-            VELOX_CHECK_GT(threadLocalStats.taskAbortCount, prevAbortCount);
-            VELOX_CHECK(
-                e.message().find("Aborted for external error") !=
-                std::string::npos);
+            const auto injectedSpillFsFault =
+                threadLocalStats.spillFsFaultCount > prevSpillFsFaultCount;
+            const auto injectedTaskAbortRequest =
+                taskAbortRequestCount > prevTaskAbortRequestCount;
+            VELOX_CHECK(injectedSpillFsFault || injectedTaskAbortRequest);
+            if (injectedTaskAbortRequest && !injectedSpillFsFault) {
+              VELOX_CHECK(
+                  e.message().find("Aborted for external error") !=
+                  std::string::npos);
+            } else if (!injectedTaskAbortRequest && injectedSpillFsFault) {
+              VELOX_CHECK(
+                  e.message().find("Fault file injection on") !=
+                  std::string::npos);
+            } else {
+              VELOX_CHECK(
+                  e.message().find("Fault file injection on") !=
+                      std::string::npos ||
+                  e.message().find("Aborted for external error") !=
+                      std::string::npos);
+            }
           } else {
             LOG(ERROR) << "Unexpected exception:\n" << e.what();
             std::rethrow_exception(std::current_exception());
@@ -773,12 +843,36 @@ void MemoryArbitrationFuzzer::verify() {
   }
 
   // Inject global arbitration.
+  auto shrinkRng = FuzzerGenerator(rng_());
   std::thread globalShrinkThread([&]() {
     while (!stop) {
-      if (getRandomIndex(rng_, 99) < FLAGS_global_arbitration_pct) {
+      if (getRandomIndex(shrinkRng, 99) < FLAGS_global_arbitration_pct) {
         memory::memoryManager()->shrinkPools();
       }
       std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+  });
+
+  // Create a thread that randomly abort one worker thread
+  // every task_abort_interval_ms milliseconds.
+  auto abortRng = FuzzerGenerator(rng_());
+  std::thread abortControlThread([&]() {
+    if (FLAGS_task_abort_interval_ms == 0) {
+      return;
+    }
+    while (!stop) {
+      try {
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(FLAGS_task_abort_interval_ms));
+        auto tasksList = Task::getRunningTasks();
+        vector_size_t index = getRandomIndex(abortRng, tasksList.size() - 1);
+        ++taskAbortRequestCount;
+        tasksList[index]->requestAbort();
+      } catch (const VeloxException& e) {
+        LOG(ERROR) << "Unexpected exception in abortControlScheduler:\n"
+                   << e.what();
+        std::rethrow_exception(std::current_exception());
+      }
     }
   });
 
@@ -790,6 +884,7 @@ void MemoryArbitrationFuzzer::verify() {
     queryThread.join();
   }
   globalShrinkThread.join();
+  abortControlThread.join();
 }
 
 void MemoryArbitrationFuzzer::go() {

@@ -63,7 +63,7 @@ class HiveColumnHandle : public ColumnHandle {
         hiveType_->toString());
   }
 
-  const std::string& name() const {
+  const std::string& name() const override {
     return name_;
   }
 
@@ -139,7 +139,11 @@ class HiveTableHandle : public ConnectorTableHandle {
     return tableName_;
   }
 
-  // TODO(mwish): 为啥有这个呢?
+  const std::string& name() const override {
+    return tableName();
+  }
+
+
   bool isFilterPushdownEnabled() const {
     return filterPushdownEnabled_;
   }

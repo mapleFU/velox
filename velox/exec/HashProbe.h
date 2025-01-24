@@ -129,7 +129,7 @@ class HashProbe : public Operator {
   // number mappings or input vectors. In this way input vectors do
   // not have to be copied and will be singly referenced by their
   // producer.
-  void clearIdentityProjectedOutput();
+  void clearProjectedOutput();
 
   // Populate output columns with matching build-side rows
   // for the right semi join and non-matching build-side rows
@@ -310,6 +310,23 @@ class HashProbe : public Operator {
   // memory reclamation or operator close.
   void clearBuffers();
 
+  // Returns the estimated row size of the projected output columns. nullopt
+  // will be returned if insufficient column stats is presented in 'table_', or
+  // the row size variation is too large. The row size is too large if ratio of
+  // max row size and avg row size is larger than 'kToleranceRatio' which is set
+  // to 10.
+  std::optional<uint64_t> estimatedRowSize(
+      const std::vector<vector_size_t>& varColumnsStats,
+      uint64_t totalFixedColumnsBytes);
+
+  // Returns the aggregated column stats at 'columnIndex' of 'table_'. Returns
+  // nullopt if the column stats is not available.
+  //
+  // NOTE: The column stats is collected by default for hash join table but it
+  // could be invalidated in case of spilling. But we should never expect usage
+  // of an invalidated table as we always spill the entire table.
+  std::optional<RowColumn::Stats> columnStats(int32_t columnIndex) const;
+
   // TODO: Define batch size as bytes based on RowContainer row sizes.
   const vector_size_t outputBatchSize_;
 
@@ -405,7 +422,7 @@ class HashProbe : public Operator {
   RowTypePtr filterInputType_;
 
   // The input channels that are projected to the output.
-  std::unordered_set<column_index_t> projectedInputColumns_;
+  folly::F14FastMap<column_index_t, column_index_t> projectedInputColumns_;
 
   // Maps input channels to channels in 'filterInputType_'.
   std::vector<IdentityProjection> filterInputProjections_;
@@ -632,7 +649,7 @@ class HashProbe : public Operator {
   // 'inputSpiller_' is created if some part of build-side rows have been
   // spilled. It is used to spill probe-side rows if the corresponding
   // build-side rows have been spilled.
-  std::unique_ptr<Spiller> inputSpiller_;
+  std::unique_ptr<NoRowContainerSpiller> inputSpiller_;
 
   // If not empty, the probe inputs with partition id set in
   // 'spillInputPartitionIds_' needs to spill. It is set along with 'spiller_'
