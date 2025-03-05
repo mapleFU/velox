@@ -44,6 +44,8 @@ class LambdaExpr : public SpecialForm {
   std::string toSql(
       std::vector<VectorPtr>* complexConstants = nullptr) const override;
 
+  // LambdaExpr::evalSpecialForm() creates instances of Callable and stores them in
+  // a FunctionVector.
   void evalSpecialForm(
       const SelectivityVector& rows,
       EvalCtx& context,
@@ -65,10 +67,13 @@ class LambdaExpr : public SpecialForm {
       folly::F14FastMap<std::string, int32_t>* shadowedNames,
       std::vector<common::Subfield>* subfields) const override;
 
+  //
   RowTypePtr signature_;
 
   /// The inner expression that will be applied to the elements of the input
   /// array/map.
+  ///
+  /// 内部执行的 sub-expression.
   ExprPtr body_;
 
   // List of Shared Exprs that are decendants of 'body_' for which reset() needs
@@ -78,6 +83,8 @@ class LambdaExpr : public SpecialForm {
   std::vector<ExprPtr> sharedExprsToReset_;
 
   /// List of field references to columns in the input row vector.
+  ///
+  /// capture 到的外部列, 作为 body_ 输入的参数, 也有可能没有任何 Capture.
   std::vector<std::shared_ptr<FieldReference>> capture_;
 
   /// These contain column indices of the captured columns with respect to the
@@ -90,6 +97,8 @@ class LambdaExpr : public SpecialForm {
   /// that it captures (in the same order as that in capture_). This is used to
   /// create an input row vector which is fed to the inner expression. Filled on
   /// first use.
+  ///
+  /// Capture 也当成参数之外的参数, 整合成函数参数
   RowTypePtr typeWithCapture_;
 };
 } // namespace facebook::velox::exec
