@@ -23,16 +23,8 @@
 #include "velox/vector/FlatVector.h"
 
 namespace facebook::velox::exec {
-<<<<<<< HEAD
-// 我觉得你是真的牛批, 直接写了两个 StringWriter, 一个是 reuseInput, 一个是不 reuseInput.
-template <bool reuseInput = false>
-class StringWriter;
 
-template <>
-class StringWriter<false /*reuseInput*/> : public UDFOutputString {
-=======
 class StringWriter : public UDFOutputString {
->>>>>>> main
  public:
   // Used to initialize top-level strings and allow zero-copy writes.
   StringWriter(FlatVector<StringView>* vector, int32_t offset)

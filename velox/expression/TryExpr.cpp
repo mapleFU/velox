@@ -45,7 +45,6 @@ void TryExpr::evalSpecialForm(
   // row.
   context.ensureErrorsVectorSize(rows.end());
 
->>>>>>> main
   inputs_[0]->eval(rows, context, result);
 
   nullOutErrors(rows, context, result);

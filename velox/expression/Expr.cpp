@@ -223,17 +223,12 @@ void Expr::computeMetadata() {
   }
 
   // (1) Compute deterministic_.
-<<<<<<< HEAD
-  // An expression is deterministic if it is a deterministic function call or a
-  // special form, and all its inputs are also deterministic.
+  // An expression is deterministic if it is a deterministic function call or
+  // a special form, and all its inputs are also deterministic.
   //
   // 注意到这个 desterminstic 好像不是递归的，只是单纯的看自己的 deterministic_.
   // 所以 SpecialForm 里面的 inputs_ 本身可以是 deterministic 的, 然后后面再去
   // 跟子表达式去处理 & desterminstic.
-=======
-  // An expression is deterministic if it is a deterministic function call or
-  // a special form, and all its inputs are also deterministic.
->>>>>>> main
   if (vectorFunction_) {
     // 利用 vectorFunction_ 的 isDeterministic() 方法
     deterministic_ = vectorFunctionMetadata_.deterministic;
@@ -419,15 +414,10 @@ bool Expr::evalArgsDefaultNulls(
         auto newErrors = context.errors();
         assert(newErrors); // lint
         if (flatNulls) {
-<<<<<<< HEAD
-          // There are both nulls and errors. Only a null with no error removes
-          // a row.
-          //
-          // error + Null 的时候可能不会移除一行, error 的优先级高于 Null.
-=======
           // There are both nulls and errors. Only a null with no error
           // removes a row.
->>>>>>> main
+          //
+          // error + Null 的时候可能不会移除一行, error 的优先级高于 Null.
           auto errorNulls = newErrors->errorFlags();
           auto rowBits = rows.mutableRows().asMutableRange().bits();
           auto nwords = bits::nwords(rows.rows().end());
@@ -1015,15 +1005,10 @@ void Expr::evaluateSharedSubexpr(
   VELOX_DCHECK(missingRows->hasSelections());
 
   // Fix finalSelection to avoid losing values outside missingRows.
-<<<<<<< HEAD
-  // Final selection of rows need to include sharedSubexprRows_, missingRows and
-  // current final selection of rows if set.
-  //
-  // 这里 Hook 了一个 FinalSelection 的 Hack, 让结果不被 overwrite.
-=======
   // Final selection of rows need to include sharedSubexprRows_, missingRows
   // and current final selection of rows if set.
->>>>>>> main
+  //
+  // 这里 Hook 了一个 FinalSelection 的 Hack, 让结果不被 overwrite.
   LocalSelectivityVector newFinalSelectionHolder(context, *sharedSubexprRows);
   auto* newFinalSelection = newFinalSelectionHolder.get();
   newFinalSelection->select(*missingRows);
@@ -1074,17 +1059,11 @@ Expr::PeelEncodingsResult Expr::peelEncodings(
 
   // Prepare the rows and vectors to peel.
 
-<<<<<<< HEAD
-  // Use finalSelection to generate peel to ensure those rows can be translated
-  // and ensure consistent peeling across multiple calls to this expression if
-  // its a shared subexpression.
-  //
-  // 生成更多的 rows, 用来做 Peel.
-=======
   // Use finalSelection to generate peel to ensure those rows can be
   // translated and ensure consistent peeling across multiple calls to this
   // expression if its a shared subexpression.
->>>>>>> main
+  //
+  // 生成更多的 rows, 用来做 Peel.
   const auto& rowsToPeel =
       context.isFinalSelection() ? rows : *context.finalSelection();
   [[maybe_unused]] auto numFields = context.row()->childrenSize();
@@ -1306,26 +1285,18 @@ void Expr::evalWithNulls(
 }
 
 // Optimization that attempts to cache results for inputs that are dictionary
-<<<<<<< HEAD
-// encoded and use the same base vector between subsequent input batches. Since
-// this hold onto a reference to the base vector and the cached results, it can
-// be memory intensive. Therefore in order to reduce this consumption and ensure
-// it is only employed for cases where it can be useful, it only starts caching
-// result after it encounters the same base at least twice.
-//
-// 复用上层的 dictionary. TableScan 传过来的 dictionary 可能是不会变的(即类似 Parquet 
-// 用 RowGroup 的 dictionary, 这样有助于 Peeling 的执行).
-//
-// evalWithMemo 要求只有一个 distinctField 而且还是字典的时候才可以执行.
-// 这里和 Peeling 的逻辑结合了, 这个字段是一个完整的字典, rows 可能很大,
-// 表示在这个字典中的位置.
-=======
 // encoded and use the same base vector between subsequent input batches.
 // Since this hold onto a reference to the base vector and the cached results,
 // it can be memory intensive. Therefore in order to reduce this consumption
 // and ensure it is only employed for cases where it can be useful, it only
 // starts caching result after it encounters the same base at least twice.
->>>>>>> main
+//
+// 复用上层的 dictionary. TableScan 传过来的 dictionary 可能是不会变的(即类似
+// Parquet 用 RowGroup 的 dictionary, 这样有助于 Peeling 的执行).
+//
+// evalWithMemo 要求只有一个 distinctField 而且还是字典的时候才可以执行.
+// 这里和 Peeling 的逻辑结合了, 这个字段是一个完整的字典, rows 可能很大,
+// 表示在这个字典中的位置.
 void Expr::evalWithMemo(
     const SelectivityVector& rows,
     EvalCtx& context,
@@ -1566,15 +1537,10 @@ void Expr::evalAllImpl(
   bool tryPeelArgs = deterministic_ ? true : false;
   bool defaultNulls = vectorFunctionMetadata_.defaultNullBehavior;
 
-<<<<<<< HEAD
-  // Tracks what subset of rows shall un-evaluated inputs and current expression
-  // evaluates. Initially points to rows.
-  //
-  // 套一层本次执行的 Selector, 可以分清本次和增量的 Selector.
-=======
   // Tracks what subset of rows shall un-evaluated inputs and current
   // expression evaluates. Initially points to rows.
->>>>>>> main
+  //
+  // 套一层本次执行的 Selector, 可以分清本次和增量的 Selector.
   MutableRemainingRows remainingRows(rows, context);
   if (defaultNulls) {
     // 以 default null 方式展开子表达式(args), 这里需要按照 Selector 增量展开 input 设置到
@@ -1659,17 +1625,11 @@ bool Expr::applyFunctionWithPeeling(
   peeledVectors.clear();
 
   // Translate the relevant rows.
-<<<<<<< HEAD
-  // Note: We do not need to translate final selection since at this stage those
-  // rows are not used but isFinalSelection() is only used to check whether
-  // pre-existing rows need to be preserved.
-  //
-  // 只对 Peeled inner rows 执行函数.
-=======
   // Note: We do not need to translate final selection since at this stage
   // those rows are not used but isFinalSelection() is only used to check
   // whether pre-existing rows need to be preserved.
->>>>>>> main
+  //
+  // 只对 Peeled inner rows 执行函数.
   auto newRows = peeledEncoding->translateToInnerRows(applyRows, newRowsHolder);
 
   withContextSaver([&](ContextSaver& saver) {

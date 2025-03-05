@@ -456,13 +456,10 @@ class DecodedVector {
 
   // Holds indices if an array of indices needs to be materialized,
   // e.g. when combining nested dictionaries.
-<<<<<<< HEAD
   //
-  // 当 `isIdentityMapping_` 和 `isConstantMapping_` 为 false 时, 会用这个来存储 index.
-  std::vector<vector_size_t> copiedIndices_;
-=======
+  // 当 `isIdentityMapping_` 和 `isConstantMapping_` 为 false 时, 会用这个来存储
+  // index.
   mutable std::vector<vector_size_t> copiedIndices_;
->>>>>>> main
 
   // Used as backing for 'nulls_' when null-ness is combined from
   // dictionary and base values.
