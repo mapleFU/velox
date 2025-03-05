@@ -52,6 +52,7 @@ class ExprCallable : public Callable {
       const BufferPtr& elementToTopLevelRows,
       VectorPtr* result) override {
     auto row = createRowVector(context, wrapCapture, args, rows.end());
+    // 创建内部行的执行上下文.
     EvalCtx lambdaCtx = createLambdaCtx(context, row, validRowsInReusedResult);
     ScopedVarSetter throwOnError(
         lambdaCtx.mutableThrowOnError(), context->throwOnError());
@@ -174,6 +175,7 @@ LambdaExpr::LambdaExpr(
       body_(std::move(body)),
       capture_(std::move(capture)) {
   std::unordered_set<ExprPtr> shared;
+  // 抽取内部表达式中的 cse, 设置到 `body_` 中
   extractSharedExpressions(body_, shared);
   for (auto& expr : shared) {
     sharedExprsToReset_.push_back(expr);
@@ -236,6 +238,9 @@ void LambdaExpr::evalSpecialForm(
   if (!typeWithCapture_) {
     makeTypeWithCapture(context);
   }
+  // 制作一个完整的列作为输入, 然后准备绑定参数
+  // 1. capture_ 对应的列在后面.
+  // 2. 函数参数 type 对应的列在前面( 即 signature_->size() )
   std::vector<VectorPtr> values(typeWithCapture_->size());
   for (auto i = 0; i < captureChannels_.size(); ++i) {
     assert(!values.empty());
@@ -245,13 +250,15 @@ void LambdaExpr::evalSpecialForm(
     context.ensureFieldLoaded(captureChannels_[i], rowsToLoad);
     values[signature_->size() + i] = context.getField(captureChannels_[i]);
   }
+  // capture 直接绑定了所有的输入, 然后构造单个 ExprCallable 对象.
   auto capture = std::make_shared<RowVector>(
       context.pool(),
       typeWithCapture_,
       BufferPtr(nullptr),
       rows.end(),
-      values,
+      std::move(values),
       0);
+  // 根据 body_ 创建一个 callable, 允许在 Selector 上去 call
   auto callable = std::make_shared<ExprCallable>(
       signature_, capture, body_, sharedExprsToReset_);
   std::shared_ptr<FunctionVector> functions;
@@ -259,10 +266,12 @@ void LambdaExpr::evalSpecialForm(
     functions = std::make_shared<FunctionVector>(context.pool(), type_);
     result = functions;
   } else {
+    // Reuse output
     VELOX_CHECK(result->encoding() == VectorEncoding::Simple::FUNCTION);
     functions = std::static_pointer_cast<FunctionVector>(result);
   }
   functions->addFunction(callable, rows);
+  // 设置 rows 对应的 callable function.
 }
 
 void LambdaExpr::makeTypeWithCapture(EvalCtx& context) {
@@ -274,6 +283,7 @@ void LambdaExpr::makeTypeWithCapture(EvalCtx& context) {
     auto& contextType = context.row()->type()->as<TypeKind::ROW>();
     auto parameterNames = signature_->names();
     auto parameterTypes = signature_->children();
+    // 根据 naming 来匹配 index.
     for (auto& reference : capture_) {
       auto& name = reference->field();
       auto channel = contextType.getChildIdx(name);

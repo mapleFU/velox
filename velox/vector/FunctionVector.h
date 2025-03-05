@@ -32,6 +32,7 @@ class Callable {
  public:
   virtual ~Callable() = default;
 
+  // 拥有 Capture 的输入.
   virtual bool hasCapture() const = 0;
 
   /// Applies 'this' to 'args' for 'rows' and returns the result in
@@ -156,6 +157,7 @@ class FunctionVector : public BaseVector {
     functions_.push_back(callable);
   }
 
+  // Function 不允许 Null
   bool containsNullAt(vector_size_t idx) const override {
     return false;
   }
