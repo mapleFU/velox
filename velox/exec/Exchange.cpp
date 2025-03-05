@@ -112,6 +112,7 @@ BlockingReason Exchange::isBlocked(ContinueFuture* future) {
   }
 
   ContinueFuture dataFuture;
+  // 通过 ExchangeClient::next 去拉取 Driver 的数据
   currentPages_ = exchangeClient_->next(
       driverId_, preferredOutputBatchBytes_, &atEnd_, &dataFuture);
   if (!currentPages_.empty() || atEnd_) {
