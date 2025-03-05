@@ -30,7 +30,7 @@ set -efx -o pipefail
 # so that some low level types are the same size. Also, disable warnings.
 SCRIPTDIR=$(dirname "${BASH_SOURCE[0]}")
 source $SCRIPTDIR/setup-helper-functions.sh
-NPROC=$(getconf _NPROCESSORS_ONLN)
+NPROC=${BUILD_THREADS:-$(getconf _NPROCESSORS_ONLN)}
 export CXXFLAGS=$(get_cxx_flags) # Used by boost.
 export CFLAGS=${CXXFLAGS//"-std=c++17"/} # Used by LZO.
 CMAKE_BUILD_TYPE="${BUILD_TYPE:-Release}"
@@ -175,7 +175,7 @@ function install_mvfst {
 }
 
 function install_duckdb {
-  if $BUILD_DUCKDB ; then
+  if [[ "$BUILD_DUCKDB" == "true" ]]; then
     echo 'Building DuckDB'
     wget_and_untar https://github.com/duckdb/duckdb/archive/refs/tags/${DUCKDB_VERSION}.tar.gz duckdb
     cmake_install_dir duckdb -DBUILD_UNITTESTS=OFF -DENABLE_SANITIZER=OFF -DENABLE_UBSAN=OFF -DBUILD_SHELL=OFF -DEXPORT_DLL_SYMBOLS=OFF -DCMAKE_BUILD_TYPE=Release

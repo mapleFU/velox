@@ -34,7 +34,7 @@ source $SCRIPTDIR/setup-helper-functions.sh
 # are the same size.
 COMPILER_FLAGS=$(get_cxx_flags)
 export COMPILER_FLAGS
-NPROC=$(getconf _NPROCESSORS_ONLN)
+NPROC=${BUILD_THREADS:-$(getconf _NPROCESSORS_ONLN)}
 BUILD_DUCKDB="${BUILD_DUCKDB:-true}"
 export CMAKE_BUILD_TYPE=Release
 VELOX_BUILD_SHARED=${VELOX_BUILD_SHARED:-"OFF"} #Build folly shared for use in libvelox.so.
@@ -229,7 +229,7 @@ function install_conda {
 }
 
 function install_duckdb {
-  if $BUILD_DUCKDB ; then
+  if [[ "$BUILD_DUCKDB" == "true" ]]; then
     echo 'Building DuckDB'
     wget_and_untar https://github.com/duckdb/duckdb/archive/refs/tags/${DUCKDB_VERSION}.tar.gz duckdb
     cmake_install_dir duckdb -DBUILD_UNITTESTS=OFF -DENABLE_SANITIZER=OFF -DENABLE_UBSAN=OFF -DBUILD_SHELL=OFF -DEXPORT_DLL_SYMBOLS=OFF -DCMAKE_BUILD_TYPE=Release

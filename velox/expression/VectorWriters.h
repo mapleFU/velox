@@ -353,8 +353,12 @@ struct VectorWriter<
     std::enable_if_t<std::is_same_v<T, Varchar> | std::is_same_v<T, Varbinary>>>
     : public VectorWriterBase {
   using vector_t = typename TypeToFlatVector<T>::type;
+<<<<<<< HEAD
   // 默认: StringWriter</*reuseInput=*/false>;
   using exec_out_t = StringWriter<>;
+=======
+  using exec_out_t = StringWriter;
+>>>>>>> main
 
   void init(vector_t& vector, bool uniqueAndMutable = false) {
     proxy_.vector_ = &vector;

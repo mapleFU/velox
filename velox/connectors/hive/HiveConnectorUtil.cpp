@@ -288,7 +288,7 @@ void checkColumnNameLowerCase(const std::shared_ptr<const Type>& type) {
 }
 
 void checkColumnNameLowerCase(
-    const SubfieldFilters& filters,
+    const common::SubfieldFilters& filters,
     const std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>&
         infoColumns) {
   for (const auto& filterIt : filters) {
@@ -349,7 +349,7 @@ std::shared_ptr<common::ScanSpec> makeScanSpec(
     const RowTypePtr& rowType,
     const folly::F14FastMap<std::string, std::vector<const common::Subfield*>>&
         outputSubfields,
-    const SubfieldFilters& filters,
+    const common::SubfieldFilters& filters,
     const RowTypePtr& dataColumns,
     const std::unordered_map<std::string, std::shared_ptr<HiveColumnHandle>>&
         partitionKeys,
@@ -634,12 +634,18 @@ namespace {
 bool applyPartitionFilter(
     const TypePtr& type,
     const std::string& partitionValue,
+    bool isPartitionDateDaysSinceEpoch,
     common::Filter* filter) {
   if (type->isDate()) {
-    const auto result = util::fromDateString(
-        StringView(partitionValue), util::ParseMode::kPrestoCast);
-    VELOX_CHECK(!result.hasError());
-    return applyFilter(*filter, result.value());
+    int32_t result = 0;
+    // days_since_epoch partition values are integers in string format. Eg.
+    // Iceberg partition values.
+    if (isPartitionDateDaysSinceEpoch) {
+      result = folly::to<int32_t>(partitionValue);
+    } else {
+      result = DATE()->toDays(static_cast<folly::StringPiece>(partitionValue));
+    }
+    return applyFilter(*filter, result);
   }
 
   switch (type->kind()) {
@@ -701,6 +707,7 @@ bool testFilters(
           return applyPartitionFilter(
               handlesIter->second->dataType(),
               iter->second.value(),
+              handlesIter->second->isPartitionDateValueDaysSinceEpoch(),
               child->filter());
         }
         // Column is missing, most likely due to schema evolution. Or it's a
@@ -738,6 +745,7 @@ std::unique_ptr<dwio::common::BufferedInput> createBufferedInput(
     const dwio::common::ReaderOptions& readerOpts,
     const ConnectorQueryCtx* connectorQueryCtx,
     std::shared_ptr<io::IoStatistics> ioStats,
+    std::shared_ptr<filesystems::File::IoStats> fsStats,
     folly::Executor* executor) {
   if (connectorQueryCtx->cache()) {
     return std::make_unique<dwio::common::CachedBufferedInput>(
@@ -749,6 +757,7 @@ std::unique_ptr<dwio::common::BufferedInput> createBufferedInput(
             connectorQueryCtx->scanId(), readerOpts.loadQuantum()),
         fileHandle.groupId.id(),
         ioStats,
+        std::move(fsStats),
         executor,
         readerOpts);
   }
@@ -760,6 +769,7 @@ std::unique_ptr<dwio::common::BufferedInput> createBufferedInput(
           connectorQueryCtx->scanId(), readerOpts.loadQuantum()),
       fileHandle.groupId.id(),
       std::move(ioStats),
+      std::move(fsStats),
       executor,
       readerOpts);
 }
@@ -837,7 +847,7 @@ core::TypedExprPtr extractFiltersFromRemainingFilter(
     const core::TypedExprPtr& expr,
     core::ExpressionEvaluator* evaluator,
     bool negated,
-    SubfieldFilters& filters,
+    common::SubfieldFilters& filters,
     double& sampleRate) {
   // 只处理 call.
   auto* call = dynamic_cast<const core::CallTypedExpr*>(expr.get());

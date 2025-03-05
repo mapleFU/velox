@@ -23,11 +23,14 @@
 
 namespace facebook::velox::connector::hive {
 
+<<<<<<< HEAD
 using SubfieldFilters =
     std::unordered_map<common::Subfield, std::unique_ptr<common::Filter>>;
 
 /// Hive 的 column handle, 这里特殊处理了 subfield 的逻辑. 但我总觉得这个叫 Hive
 /// 是不是历史原因, 感觉跟 Hive 其实没那么大关系? 还是 FB 内部就这么叫的.
+=======
+>>>>>>> main
 class HiveColumnHandle : public ColumnHandle {
  public:
   enum class ColumnType {
@@ -40,6 +43,13 @@ class HiveColumnHandle : public ColumnHandle {
     kRowId,
   };
 
+  struct ColumnParseParameters {
+    enum PartitionDateValueFormat {
+      kISO8601,
+      kDaysSinceEpoch,
+    } partitionDateValueFormat;
+  };
+
   /// NOTE: 'dataType' is the column type in target write table. 'hiveType' is
   /// converted type of the corresponding column in source table which might not
   /// be the same type, and the table scan needs to do data coercion if needs.
@@ -50,12 +60,14 @@ class HiveColumnHandle : public ColumnHandle {
       ColumnType columnType,
       TypePtr dataType,
       TypePtr hiveType,
-      std::vector<common::Subfield> requiredSubfields = {})
+      std::vector<common::Subfield> requiredSubfields = {},
+      ColumnParseParameters columnParseParameters = {})
       : name_(name),
         columnType_(columnType),
         dataType_(std::move(dataType)),
         hiveType_(std::move(hiveType)),
-        requiredSubfields_(std::move(requiredSubfields)) {
+        requiredSubfields_(std::move(requiredSubfields)),
+        columnParseParameters_(columnParseParameters) {
     VELOX_USER_CHECK(
         dataType_->equivalent(*hiveType_),
         "data type {} and hive type {} do not match",
@@ -103,6 +115,11 @@ class HiveColumnHandle : public ColumnHandle {
     return columnType_ == ColumnType::kPartitionKey;
   }
 
+  bool isPartitionDateValueDaysSinceEpoch() const {
+    return columnParseParameters_.partitionDateValueFormat ==
+        ColumnParseParameters::kDaysSinceEpoch;
+  }
+
   std::string toString() const;
 
   folly::dynamic serialize() const override;
@@ -122,6 +139,7 @@ class HiveColumnHandle : public ColumnHandle {
   const TypePtr dataType_;
   const TypePtr hiveType_;
   const std::vector<common::Subfield> requiredSubfields_;
+  const ColumnParseParameters columnParseParameters_;
 };
 
 class HiveTableHandle : public ConnectorTableHandle {
@@ -130,7 +148,7 @@ class HiveTableHandle : public ConnectorTableHandle {
       std::string connectorId,
       const std::string& tableName,
       bool filterPushdownEnabled,
-      SubfieldFilters subfieldFilters,
+      common::SubfieldFilters subfieldFilters,
       const core::TypedExprPtr& remainingFilter,
       const RowTypePtr& dataColumns = nullptr,
       const std::unordered_map<std::string, std::string>& tableParameters = {});
@@ -148,8 +166,12 @@ class HiveTableHandle : public ConnectorTableHandle {
     return filterPushdownEnabled_;
   }
 
+<<<<<<< HEAD
   // 对 Subfield 的 Filtering
   const SubfieldFilters& subfieldFilters() const {
+=======
+  const common::SubfieldFilters& subfieldFilters() const {
+>>>>>>> main
     return subfieldFilters_;
   }
 
@@ -179,7 +201,7 @@ class HiveTableHandle : public ConnectorTableHandle {
  private:
   const std::string tableName_;
   const bool filterPushdownEnabled_;
-  const SubfieldFilters subfieldFilters_;
+  const common::SubfieldFilters subfieldFilters_;
   const core::TypedExprPtr remainingFilter_;
   const RowTypePtr dataColumns_;
   const std::unordered_map<std::string, std::string> tableParameters_;

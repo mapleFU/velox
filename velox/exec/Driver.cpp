@@ -577,6 +577,8 @@ StopReason Driver::runInternal(
 
         // 在 Output 之前, 检查 Operator 是否 Blocked.
         withDeltaCpuWallTimer(op, &OperatorStats::isBlockedTiming, [&]() {
+          TestValue::adjust(
+              "facebook::velox::exec::Driver::runInternal::isBlocked", op);
           CALL_OPERATOR(
               blockingReason_ = op->isBlocked(&future),
               op,
@@ -710,7 +712,7 @@ StopReason Driver::runInternal(
 >>>>>>> main
               if (finished) {
                 withDeltaCpuWallTimer(
-                    op, &OperatorStats::finishTiming, [this, &nextOp]() {
+                    nextOp, &OperatorStats::finishTiming, [this, &nextOp]() {
                       TestValue::adjust(
                           "facebook::velox::exec::Driver::runInternal::noMoreInput",
                           nextOp);
@@ -1175,6 +1177,8 @@ std::string blockingReasonToString(BlockingReason reason) {
       return "kWaitForArbitration";
     case BlockingReason::kWaitForScanScaleUp:
       return "kWaitForScanScaleUp";
+    case BlockingReason::kWaitForIndexLookup:
+      return "kWaitForIndexLookup";
     default:
       VELOX_UNREACHABLE(
           fmt::format("Unknown blocking reason {}", static_cast<int>(reason)));

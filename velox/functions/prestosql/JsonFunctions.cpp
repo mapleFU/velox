@@ -13,12 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <glog/logging.h>
+
 #include "velox/common/base/SortingNetwork.h"
 #include "velox/expression/VectorFunction.h"
-#include "velox/functions/lib/Utf8Utils.h"
 #include "velox/functions/lib/string/StringImpl.h"
 #include "velox/functions/prestosql/json/JsonStringUtil.h"
 #include "velox/functions/prestosql/json/SIMDJsonUtil.h"
+#include "velox/functions/prestosql/types/JsonCastOperator.h"
 #include "velox/functions/prestosql/types/JsonType.h"
 
 namespace facebook::velox::functions {
@@ -151,35 +153,43 @@ class JsonParseFunction : public exec::VectorFunction {
     const auto& arg = args[0];
     if (arg->isConstantEncoding()) {
       auto value = arg->as<ConstantVector<StringView>>()->valueAt(0);
-      bool needNormalize =
-          needNormalizeForJsonParse(value.data(), value.size());
       auto size = value.size();
-      if (needNormalize) {
-        try {
-          size = normalizedSizeForJsonParse(value.data(), value.size());
-        } catch (const VeloxException& e) {
-          if (!e.isUserError()) {
-            throw;
-          }
-          context.setErrors(rows, std::current_exception());
-          return;
-        }
-      }
-      paddedInput_.resize(size + simdjson::SIMDJSON_PADDING);
-      VELOX_CHECK_EQ(prepareInput(value, needNormalize), size);
-
       auto buffer = AlignedBuffer::allocate<char>(size, context.pool());
-      if (auto error = parse(size, needNormalize)) {
-        context.setErrors(rows, errors_[error]);
-        return;
-      }
-      auto* output = buffer->asMutable<char>();
-      auto outputSize = concatViews(views_, output);
-
       BufferPtr stringViews =
           AlignedBuffer::allocate<StringView>(1, context.pool());
       auto rawStringViews = stringViews->asMutable<StringView>();
-      rawStringViews[0] = StringView(output, outputSize);
+
+      try {
+        bool needNormalize =
+            needNormalizeForJsonParse(value.data(), value.size());
+
+        if (needNormalize) {
+          size = normalizedSizeForJsonParse(value.data(), value.size());
+        }
+        paddedInput_.resize(size + simdjson::SIMDJSON_PADDING);
+        VELOX_CHECK_EQ(prepareInput(value, needNormalize), size);
+
+        if (auto error = parse(size, needNormalize)) {
+          context.setErrors(rows, errors_[error]);
+          clearState();
+          return;
+        }
+        auto* output = buffer->asMutable<char>();
+        auto outputSize = concatViews(views_, output);
+        rawStringViews[0] = StringView(output, outputSize);
+      } catch (const VeloxException& e) {
+        clearState();
+
+        if (!e.isUserError()) {
+          throw;
+        }
+        context.setErrors(rows, std::current_exception());
+
+        FB_LOG_EVERY_MS(WARNING, 1000)
+            << "Caught user error in json_parse: " << e.message();
+
+        return;
+      }
 
       auto constantBase = std::make_shared<FlatVector<StringView>>(
           context.pool(),
@@ -234,17 +244,31 @@ class JsonParseFunction : public exec::VectorFunction {
         if (hasError[row]) {
           return;
         }
-        auto value = flatInput->valueAt(row);
-        auto size = prepareInput(value, needNormalizes[row]);
-        if (auto error = parse(size, needNormalizes[row])) {
-          context.setVeloxExceptionError(row, errors_[error]);
+
+        try {
+          auto value = flatInput->valueAt(row);
+          auto size = prepareInput(value, needNormalizes[row]);
+          if (auto error = parse(size, needNormalizes[row])) {
+            context.setVeloxExceptionError(row, errors_[error]);
+            clearState();
+            return;
+          }
+          auto outputSize = concatViews(views_, output);
+          rawStringViews[row] = StringView(output, outputSize);
+          if (!StringView::isInline(outputSize)) {
+            output += outputSize;
+          }
+        } catch (const VeloxException& e) {
           clearState();
-          return;
-        }
-        auto outputSize = concatViews(views_, output);
-        rawStringViews[row] = StringView(output, outputSize);
-        if (!StringView::isInline(outputSize)) {
-          output += outputSize;
+
+          if (!e.isUserError()) {
+            throw;
+          }
+
+          context.setVeloxExceptionError(row, std::current_exception());
+
+          FB_LOG_EVERY_MS(WARNING, 1000)
+              << "Caught user error in json_parse: " << e.message();
         }
       });
 
@@ -474,6 +498,49 @@ class JsonParseFunction : public exec::VectorFunction {
   mutable std::vector<FastSortKey> fastSortKeys_;
 };
 
+// This function is called when $internal$json_string_to_array/map/row
+// is called. It is used for expressions like 'Cast(json_parse(x) as
+// ARRAY<...>)' etc. This is an optimization to avoid parsing the json string
+// twice.
+class JsonInternalCastFunction : public exec::VectorFunction {
+ public:
+  void apply(
+      const SelectivityVector& rows,
+      std::vector<VectorPtr>& args,
+      const TypePtr& resultType,
+      exec::EvalCtx& context,
+      VectorPtr& result) const override {
+    VELOX_CHECK_EQ(args.size(), 1);
+    const auto& arg = *args[0];
+    jsonCastOperator_.castFrom(arg, context, rows, resultType, result);
+  }
+
+  static std::vector<std::shared_ptr<exec::FunctionSignature>>
+  signaturesArray() {
+    return {exec::FunctionSignatureBuilder()
+                .argumentType("varchar")
+                .returnType("array(unknown)")
+                .build()};
+  }
+
+  static std::vector<std::shared_ptr<exec::FunctionSignature>> signaturesMap() {
+    return {exec::FunctionSignatureBuilder()
+                .argumentType("varchar")
+                .returnType("map(unknown, unknown)")
+                .build()};
+  }
+
+  static std::vector<std::shared_ptr<exec::FunctionSignature>> signaturesRow() {
+    return {exec::FunctionSignatureBuilder()
+                .argumentType("varchar")
+                .returnType("row(unknown)")
+                .build()};
+  }
+
+ private:
+  mutable JsonCastOperator jsonCastOperator_;
+};
+
 } // namespace
 
 VELOX_DECLARE_VECTOR_FUNCTION(
@@ -489,5 +556,20 @@ VELOX_DECLARE_STATEFUL_VECTOR_FUNCTION(
        const velox::core::QueryConfig&) {
       return std::make_shared<JsonParseFunction>();
     });
+
+VELOX_DECLARE_VECTOR_FUNCTION(
+    udf_$internal$_json_string_to_array,
+    JsonInternalCastFunction::signaturesArray(),
+    std::make_unique<JsonInternalCastFunction>());
+
+VELOX_DECLARE_VECTOR_FUNCTION(
+    udf_$internal$_json_string_to_map,
+    JsonInternalCastFunction::signaturesMap(),
+    std::make_unique<JsonInternalCastFunction>());
+
+VELOX_DECLARE_VECTOR_FUNCTION(
+    udf_$internal$_json_string_to_row,
+    JsonInternalCastFunction::signaturesRow(),
+    std::make_unique<JsonInternalCastFunction>());
 
 } // namespace facebook::velox::functions

@@ -79,6 +79,8 @@ option(
 option(VELOX_MONO_LIBRARY "Build single unified library." OFF)
 option(ENABLE_ALL_WARNINGS "Enable -Wall and -Wextra compiler warnings." ON)
 option(VELOX_BUILD_SHARED "Build Velox as shared libraries." OFF)
+option(VELOX_SKIP_WAVE_BRANCH_KERNEL_TEST "Disable Wave branch kernel test."
+       OFF)
 # While it's possible to build both in one go we currently want to build either
 # static or shared.
 cmake_dependent_option(
@@ -149,6 +151,8 @@ option(
   VELOX_ENABLE_INT64_BUILD_PARTITION_BOUND
   "make buildPartitionBounds_ a vector int64 instead of int32 to avoid integer overflow when the hashtable has billions of records"
   OFF)
+option(VELOX_SIMDJSON_SKIPUTF8VALIDATION
+       "Skip simdjson utf8 validation in JSON parsing" OFF)
 
 # Explicitly force compilers to generate colored output. Compilers usually do
 # this by default if they detect the output is a terminal, but this assumption
@@ -491,7 +495,7 @@ if(${VELOX_BUILD_MINIMAL_WITH_DWIO}
 
   # Locate or build protobuf.
   velox_set_source(Protobuf)
-  velox_resolve_dependency(Protobuf CONFIG 3.21.7 REQUIRED)
+  velox_resolve_dependency(Protobuf 3.21.7 REQUIRED)
   include_directories(${Protobuf_INCLUDE_DIRS})
 endif()
 
@@ -592,7 +596,7 @@ if(NOT VELOX_DISABLE_GOOGLETEST)
   velox_set_source(GTest)
   velox_resolve_dependency(GTest)
   set(VELOX_GTEST_INCUDE_DIR
-      "${gtest_SOURCE_DIR}/googletest/include"
+      "${gtest_SOURCE_DIR}/include"
       PARENT_SCOPE)
 endif()
 

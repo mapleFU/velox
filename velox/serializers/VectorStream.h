@@ -17,7 +17,6 @@
 
 #include "velox/common/memory/StreamArena.h"
 #include "velox/serializers/PrestoSerializer.h"
-#include "velox/serializers/PrestoSerializerSerializationUtils.h"
 #include "velox/vector/BaseVector.h"
 
 namespace facebook::velox::serializer::presto::detail {
@@ -180,6 +179,14 @@ class VectorStream {
     return isUuid_;
   }
 
+  bool isIpAddress() const {
+    return isIpAddress_;
+  }
+
+  bool isIpPrefix() const {
+    return isIpPrefix_;
+  }
+
   void clear();
 
  private:
@@ -196,6 +203,8 @@ class VectorStream {
   const bool nullsFirst_;
   const bool isLongDecimal_;
   const bool isUuid_;
+  const bool isIpAddress_;
+  const bool isIpPrefix_;
   const PrestoVectorSerde::PrestoOptions opts_;
   std::optional<VectorEncoding::Simple> encoding_;
   int32_t nonNullCount_{0};
@@ -206,7 +215,7 @@ class VectorStream {
   ByteOutputStream nulls_;
   ByteOutputStream lengths_;
   ByteOutputStream values_;
-  std::vector<VectorStream> children_;
+  std::vector<VectorStream, memory::StlAllocator<VectorStream>> children_;
   bool isDictionaryStream_{false};
   bool isConstantStream_{false};
 };
