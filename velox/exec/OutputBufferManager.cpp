@@ -107,6 +107,8 @@ bool OutputBufferManager::getData(
     DataAvailableCallback notify,
     DataConsumerActiveCheckCallback activeCheck) {
   if (auto buffer = getBufferIfExists(taskId)) {
+    // 尝试拿到对应 task 的数据, 这个 OutputBuffer 自己内部管理 destination
+    // 的数据.
     buffer->getData(destination, maxBytes, sequence, notify, activeCheck);
     return true;
   }
