@@ -1329,6 +1329,7 @@ class LocalPartitionNode : public PlanNode {
 
 class PartitionedOutputNode : public PlanNode {
  public:
+  /// 这里会生成一个 PartitionedOutput 节点, 输出 Shuffle 数据
   enum class Kind {
     kPartitioned,
     kBroadcast,

@@ -19,6 +19,7 @@
 
 namespace facebook::velox::exec {
 
+/// Exchange 的 Buffer Manager, 用于管理 PartitionedOutput 的输出缓冲区
 class OutputBufferManager {
  public:
   /// Options for shuffle. This is initialized once and affects both

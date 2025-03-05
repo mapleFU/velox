@@ -55,6 +55,7 @@ class LocalExchangeSource : public exec::ExchangeSource {
     auto buffers = OutputBufferManager::getInstance().lock();
     VELOX_CHECK_NOT_NULL(buffers, "invalid OutputBufferManager");
     VELOX_CHECK(requestPending_);
+    // 记录需要请求的 sequence.
     auto requestedSequence = sequence_;
     auto self = shared_from_this();
     // Since this lambda may outlive 'this', we need to capture a
@@ -75,6 +76,7 @@ class LocalExchangeSource : public exec::ExchangeSource {
       }
 
       if (requestedSequence > sequence && !data.empty()) {
+        // 取消掉更早的 sequence.
         VLOG(2) << "Receives earlier sequence than requested: task "
                 << remoteTaskId_ << ", destination " << destination_
                 << ", requested " << sequence << ", received "
@@ -90,6 +92,7 @@ class LocalExchangeSource : public exec::ExchangeSource {
       std::vector<std::unique_ptr<SerializedPage>> pages;
       bool atEnd = false;
       int64_t totalBytes = 0;
+      // 消费 data, 转移到 pages 中, page 最后会被 queue_->enqueue.
       for (auto& inputPage : data) {
         if (!inputPage) {
           atEnd = true;
@@ -141,6 +144,8 @@ class LocalExchangeSource : public exec::ExchangeSource {
       }
       // Outside of queue mutex.
       if (atEnd_) {
+        // No more data will be produced, so we can delete the results.
+        // 干光 <TaskId, Destination> 的数据.
         buffers->deleteResults(remoteTaskId_, destination_);
       }
 

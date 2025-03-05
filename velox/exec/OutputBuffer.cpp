@@ -245,6 +245,7 @@ void DestinationBuffer::loadData(ArbitraryBuffer* buffer, uint64_t maxBytes) {
   }
 }
 
+// 尝试消费 sequence 中的数据
 std::vector<std::shared_ptr<SerializedPage>> DestinationBuffer::acknowledge(
     int64_t sequence,
     bool fromGetData) {
@@ -397,6 +398,7 @@ void OutputBuffer::addOutputBuffersLocked(int numBuffers) {
   for (int32_t i = buffers_.size(); i < numBuffers; ++i) {
     auto buffer = std::make_unique<DestinationBuffer>();
     if (isBroadcast()) {
+      // 如果是 broadcast, 需要把 dataToBroadcast_ 中的数据广播一遍.
       for (const auto& data : dataToBroadcast_) {
         buffer->enqueue(data);
       }
@@ -500,6 +502,7 @@ void OutputBuffer::enqueueBroadcastOutputLocked(
   VELOX_CHECK_NULL(arbitraryBuffer_);
   VELOX_DCHECK(dataAvailableCbs.empty());
 
+  // Broadcast 会需要把每个数据广播一边, 所以会把 data 弄成 shared 然后广播
   std::shared_ptr<SerializedPage> sharedData(data.release());
   for (auto& buffer : buffers_) {
     if (buffer != nullptr) {
@@ -724,6 +727,8 @@ void OutputBuffer::getData(
   {
     std::lock_guard<std::mutex> l(mutex_);
 
+    // 尝试拿到对应 task 的数据, 这个 OutputBuffer 自己内部管理 destination
+    // 的数据. 如果没有的话会尝试 emplace.
     if (!isPartitioned() && destination >= buffers_.size()) {
       addOutputBuffersLocked(destination + 1);
     }
@@ -731,6 +736,7 @@ void OutputBuffer::getData(
     VELOX_CHECK_LT(destination, buffers_.size());
     auto* buffer = buffers_[destination].get();
     if (buffer) {
+      //
       freed = buffer->acknowledge(sequence, true);
       updateAfterAcknowledgeLocked(freed, promises);
       data = buffer->getData(

@@ -43,6 +43,7 @@ struct DataAvailable {
   DataAvailableCallback callback{nullptr};
   int64_t sequence{0};
   std::vector<std::unique_ptr<folly::IOBuf>> data;
+  // 没有消费完的 bytes
   std::vector<int64_t> remainingBytes;
 
   void notify() {
@@ -57,6 +58,9 @@ struct DataAvailable {
 ///
 /// NOTE: there is only one arbitrary buffer setup for arbitrary output to share
 /// among destinations. Also, this class is not thread-safe.
+///
+/// Arbitrary 的攒 Page, 随机 Output 输出, 给输出数据提供空间. 如果返回 nullptr,
+/// 这里协议 表示不再有数据进入, 后面消费的地方需要知道这个标记.
 class ArbitraryBuffer {
  public:
   /// Returns true if this arbitrary buffer has no buffered pages.
@@ -67,6 +71,9 @@ class ArbitraryBuffer {
   /// Returns true if this arbitrary buffer will not receive any new pages from
   /// enqueue() but it can still has buffered pages waiting to dispatch to
   /// destination on data fetch.
+  ///
+  /// 这里消费的时候, 如果消费完了数据, noMoreData 最后一个也会是 nullptr.(
+  /// 残留一个 nullptr 的页面 ).
   bool hasNoMoreData() const {
     return !pages_.empty() && (pages_.back() == nullptr);
   }
@@ -79,9 +86,13 @@ class ArbitraryBuffer {
 
   /// Returns a number of pages with total bytes no less than 'maxBytes' if
   /// there are sufficient buffered pages.
+  ///
+  /// 拿到 maxBytes 的数据, 如果没有数据, 返回包含 nullptr, 表示没有数据了.
   std::vector<std::shared_ptr<SerializedPage>> getPages(uint64_t maxBytes);
 
   /// Append the available page sizes to `out'.
+  ///
+  /// 返回剩下的 page->size() 列表.
   void getAvailablePageSizes(std::vector<int64_t>& out) const;
 
   std::string toString() const;
@@ -187,6 +198,7 @@ class DestinationBuffer {
  private:
   void clearNotify();
 
+  // 内部缓存的 data_
   std::vector<std::shared_ptr<SerializedPage>> data_;
   // The sequence number of the first in 'data_'.
   int64_t sequence_ = 0;
@@ -319,6 +331,8 @@ class OutputBuffer {
   /// and will start blocking producers soon. This is used to dynamically scale
   /// the number of consumers, for example, increase number of TableWriter
   /// tasks.
+  ///
+  /// Buffer 的数据量足够多了.
   bool isOverutilized() const;
 
   /// Gets the Stats of this output buffer.
@@ -417,6 +431,8 @@ class OutputBuffer {
   // which is only used by arbitrary output type.
   int32_t nextArbitraryLoadBufferIndex_{0};
   // One buffer per destination.
+  //
+  // destination 有对应的输出位置.
   std::vector<std::unique_ptr<DestinationBuffer>> buffers_;
   // The sizes of buffers_ and finishedBufferStats_ are the same, but
   // finishedBufferStats_[i] is set if and only if buffers_[i] is null as
